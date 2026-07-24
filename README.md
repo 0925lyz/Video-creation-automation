@@ -44,6 +44,14 @@ Open `http://127.0.0.1:8787/`. The dashboard provides real inventory, task contr
 
 The complete operating, platform-support, capability-boundary, optimization, and JaguarTV growth plan is in `JaguarTV内容工厂完整使用与营销增长方案.md`.
 
+## Tencent Cloud / server deployment
+
+For Tencent Cloud Lighthouse deployment, use:
+
+- `scripts/server-install.sh` for first-time server setup.
+- `scripts/server-sync.sh` for pulling later GitHub updates and restarting the service.
+- `腾讯云轻量服务器部署指南.md` for the full private-repo, Deploy Key, security-group, and systemd workflow.
+
 ## BGM library
 
 Put team-approved `.mp3`, `.m4a`, `.aac`, `.wav`, or `.flac` tracks in `assets/bgm/`. A track is selected deterministically for each candidate and automatically ducked under the pt-BR voice. When the directory is empty, the factory generates and caches an original 150 BPM Brazilian funk-inspired demo beat.
