@@ -1,0 +1,119 @@
+run:
+  timezone: Asia/Shanghai
+  output_language: pt-BR
+  workspace: workspace
+
+sources:
+  enabled: [youtube, bilibili]      # add douyin / xiaohongshu once their services run
+  exclude_languages: [pt, pt-BR, pt-PT]
+  keywords_file: config/keywords.jaguartv.yaml
+  creators_file: config/creators.example.yaml
+  # Which keyword languages go to which platform (see keywords file terms.*)
+  platform_language:
+    youtube: [en, es, pt]
+    bilibili: [zh-CN, zh]
+    douyin: [zh-CN, zh]
+    xiaohongshu: [zh-CN, zh]
+  adapters:
+    bilibili:
+      cookies_file: ""              # optional Netscape cookies.txt to improve reliability
+    douyin:
+      api_base: http://127.0.0.1:8000   # self-hosted Douyin_TikTok_Download_API
+    xiaohongshu:
+      api_base: http://127.0.0.1:5556   # self-hosted XHS-Downloader API mode
+
+discovery:
+  max_candidates_per_keyword: 3
+
+selection:
+  min_score: 45
+  max_source_duration_sec: 600
+  min_height: 360
+  duplicate_threshold: 0.90
+
+edit:
+  render_engine: remotion             # ffmpeg | remotion
+  output_duration_sec: [12, 30]
+  max_segments_per_source: 3
+  segment_overlap_sec: 3
+  layout_mode: original            # original | vertical
+  aspect_ratio: "source"
+  resolution: [1080, 1920]         # used only when layout_mode=vertical
+  source_subtitle_cleanup: "off"
+  source_subtitle_crop_bottom_ratio: 0.18
+
+localization:
+  target: pt-BR
+  asr_enabled: false
+  whisper_model: tiny
+  tts_voice: Luciana
+  tts_rate: 185
+  # Hook variants for A/B testing; tracking.hook_version selects the active one
+  # and is embedded in every UTM link as utm_content=<candidate-id>_<hook-version>.
+  hooks:
+    A: "Olha só o que aconteceu aqui."
+    B: "Você precisa ver isso até o final."
+
+audio:
+  # auto: localize only when subtitles/ASR prove speech; otherwise preserve source music.
+  source_mode: auto                 # auto | localize | preserve
+  source_music_volume: 1.0
+  voice_volume: 1.0
+  bgm_volume: 0.62                 # louder Funk under localized narration
+  bgm_dir: assets/bgm
+  bgm_path: ""
+
+remotion:
+  add_bgm_under_source: true
+  content_bgm_volume: 0.16
+  endcard_bgm_volume: 0.24
+  top_badge: "VÍDEO DO DIA 🔥"
+  bottom_headline: "Assista esportes ao vivo"
+  bottom_subline: "Canais, jogos e entretenimento em um só app"
+
+brand:
+  default_cta: https://copa.jarg.top/
+  default_kit: jaguartv
+  kits:
+    jaguartv:
+      watermark:
+        mode: image            # image | text
+        image: assets/brand/logo.png
+        text: "Jaguar TV"      # fallback when image missing
+        position: top_left     # top_left | top_right | bottom_left | bottom_right
+        opacity: 0.92
+        width: 170
+      cover:
+        mode: frame            # frame | image
+        image: ""              # mode=image: server path or project-relative image
+      endcard:
+        mode: generated        # generated | image
+        image: ""              # mode=image: full-frame 1080x1920 PNG
+        title: "Jaguar TV"
+        tagline: "O melhor app de TV ao vivo e esportes"
+        site: "Jarg.top"
+        duration_sec: 3
+        background: "#04220E"
+        accent: "#8CE522"
+        features:
+          - ["Anti-Freeze", "Estabilidade máxima em dias de jogos"]
+          - ["4K Real", "A definição mais nítida do mercado"]
+          - ["Futebol Total", "Canais premium 100% liberados"]
+          - ["Sinal Raiz", "Servidores dedicados, sem intermediários"]
+
+lark:
+  enabled: false                 # flip to true after filling app_id/folder_token
+  domain: https://open.feishu.cn # or https://open.larksuite.com
+  app_id: ""
+  app_secret_env: LARK_APP_SECRET
+  folder_token: ""
+  upload: [video, cover, metadata]   # finished packages only, never source videos
+
+tracking:
+  # Every rendered video gets one unique link per publish platform:
+  #   {base_url}?utm_source={platform}&utm_medium={utm_medium}
+  #     &utm_campaign={campaign}&utm_content={candidate-id}_{hook_version}
+  base_url: https://copa.jarg.top/baixar-o-app
+  utm_medium: organic_social
+  campaign: hoje_sports
+  hook_version: A

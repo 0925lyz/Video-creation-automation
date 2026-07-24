@@ -1,0 +1,1701 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import os
+import random
+import re
+import shutil
+import sqlite3
+import struct
+import subprocess
+import threading
+import urllib.parse
+import urllib.request
+import wave
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable, Iterable
+
+import yaml
+from PIL import Image, ImageDraw, ImageFont
+
+from .scoring import score_candidate_v2
+
+
+ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_CONFIG = ROOT / "config" / "pipeline.yaml"
+
+
+def scoring_config_path(config: dict[str, Any]) -> str | None:
+    configured = str(config.get("selection", {}).get("scoring_file", "config/scoring.yaml"))
+    path = resolve_config_path(config, configured)
+    return str(path) if path.exists() else None
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def run_command(args: list[str], *, cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(args, cwd=cwd, check=check, text=True, capture_output=True)
+
+
+def require_binary(name: str) -> str:
+    path = shutil.which(name)
+    if not path:
+        raise RuntimeError(f"Missing required binary: {name}")
+    return path
+
+
+def load_config(path: Path | str | None = None) -> dict[str, Any]:
+    config_path = Path(path or DEFAULT_CONFIG).expanduser().resolve()
+    with config_path.open("r", encoding="utf-8") as handle:
+        config = yaml.safe_load(handle) or {}
+    config["_path"] = str(config_path)
+    config["_root"] = str(config_path.parent.parent)
+    return config
+
+
+def resolve_config_path(config: dict[str, Any], value: str) -> Path:
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        return path
+    return Path(config["_root"]) / path
+
+
+def workspace_dir(config: dict[str, Any]) -> Path:
+    value = config.get("run", {}).get("workspace", "workspace")
+    path = resolve_config_path(config, value)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def connect_db(config: dict[str, Any]) -> sqlite3.Connection:
+    db_path = workspace_dir(config) / "factory.db"
+    connection = sqlite3.connect(db_path)
+    connection.row_factory = sqlite3.Row
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS candidates (
+          id TEXT PRIMARY KEY,
+          platform TEXT NOT NULL,
+          source_id TEXT,
+          url TEXT NOT NULL,
+          title TEXT NOT NULL DEFAULT '',
+          description TEXT NOT NULL DEFAULT '',
+          duration REAL,
+          view_count INTEGER NOT NULL DEFAULT 0,
+          detected_language TEXT,
+          score REAL NOT NULL DEFAULT 0,
+          status TEXT NOT NULL,
+          metadata_json TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS candidates_platform_source
+          ON candidates(platform, source_id) WHERE source_id IS NOT NULL;
+        CREATE TABLE IF NOT EXISTS events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          candidate_id TEXT NOT NULL,
+          event_type TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS publications (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          candidate_id TEXT NOT NULL,
+          platform TEXT NOT NULL,
+          account TEXT NOT NULL DEFAULT '',
+          scheduled_at TEXT,
+          published_at TEXT,
+          status TEXT NOT NULL DEFAULT 'QUEUED',
+          post_url TEXT NOT NULL DEFAULT '',
+          error TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(candidate_id, platform, account, scheduled_at)
+        );
+        CREATE TABLE IF NOT EXISTS performance_snapshots (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          candidate_id TEXT NOT NULL,
+          platform TEXT NOT NULL,
+          captured_at TEXT NOT NULL,
+          views INTEGER NOT NULL DEFAULT 0,
+          likes INTEGER NOT NULL DEFAULT 0,
+          comments INTEGER NOT NULL DEFAULT 0,
+          shares INTEGER NOT NULL DEFAULT 0,
+          clicks INTEGER NOT NULL DEFAULT 0,
+          installs INTEGER NOT NULL DEFAULT 0,
+          registrations INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS performance_candidate_platform
+          ON performance_snapshots(candidate_id, platform, captured_at DESC);
+        CREATE TABLE IF NOT EXISTS workers (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          role TEXT NOT NULL,
+          host TEXT NOT NULL,
+          status TEXT NOT NULL,
+          current_job TEXT NOT NULL DEFAULT '',
+          last_seen TEXT NOT NULL,
+          metadata_json TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE TABLE IF NOT EXISTS conversion_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          candidate_id TEXT NOT NULL,
+          platform TEXT NOT NULL DEFAULT '',
+          hook_version TEXT NOT NULL DEFAULT '',
+          event_type TEXT NOT NULL,
+          occurred_at TEXT NOT NULL,
+          visitor_id TEXT NOT NULL DEFAULT '',
+          payload_json TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE INDEX IF NOT EXISTS conversion_candidate_type
+          ON conversion_events(candidate_id, event_type, occurred_at DESC);
+        CREATE TABLE IF NOT EXISTS feedback_actions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          candidate_id TEXT,
+          keyword TEXT NOT NULL DEFAULT '',
+          action_type TEXT NOT NULL,
+          reason TEXT NOT NULL,
+          score REAL NOT NULL DEFAULT 0,
+          status TEXT NOT NULL DEFAULT 'PROPOSED',
+          created_at TEXT NOT NULL
+        );
+        """
+    )
+    return connection
+
+
+def append_event(connection: sqlite3.Connection, candidate_id: str, event_type: str, payload: dict[str, Any]) -> None:
+    connection.execute(
+        "INSERT INTO events(candidate_id,event_type,payload_json,created_at) VALUES(?,?,?,?)",
+        (candidate_id, event_type, json.dumps(payload, ensure_ascii=False), now_iso()),
+    )
+    connection.commit()
+
+
+def candidate_id(platform: str, source_id: str | None, url: str) -> str:
+    stable = f"{platform}:{source_id or url}"
+    return hashlib.sha256(stable.encode("utf-8")).hexdigest()[:16]
+
+
+def infer_platform(info: dict[str, Any]) -> str:
+    extractor = str(info.get("extractor_key") or info.get("extractor") or "unknown").lower()
+    webpage = str(info.get("webpage_url") or info.get("url") or "").lower()
+    for name, needles in {
+        "youtube": ("youtube", "youtu.be"),
+        "bilibili": ("bilibili", "b23.tv"),
+        "douyin": ("douyin",),
+        "tiktok": ("tiktok",),
+        "facebook": ("facebook", "fb.watch"),
+        "kwai": ("kwai", "kuaishou"),
+    }.items():
+        if any(needle in extractor or needle in webpage for needle in needles):
+            return name
+    return extractor.split(":", 1)[0] or "unknown"
+
+
+def likely_language(text: str) -> tuple[str, float]:
+    compact = re.sub(r"\s+", "", text or "")
+    if not compact:
+        return "unknown", 0.0
+    if re.search(r"[\u4e00-\u9fff]", compact):
+        return "zh", 0.92
+    lowered = compact.lower()
+    pt_tokens = (
+        "você", "vocês", "não", "que", "para", "com", "uma", "brasil", "futebol",
+        "olha", "aconteceu", "aqui", "gostou", "descubra", "conteúdo", "conteúdos",
+        "hoje", "incrível", "incríveis", "mais", "este", "esta", "isso", "só",
+    )
+    hits = sum(token in lowered for token in pt_tokens)
+    if hits >= 3:
+        return "pt", min(0.95, 0.55 + hits * 0.08)
+    if re.search(r"[a-zA-Z]", compact):
+        return "en", 0.55
+    return "unknown", 0.2
+
+
+def yt_dlp_search(query: str, platform: str, limit: int) -> list[dict[str, Any]]:
+    require_binary("yt-dlp")
+    prefix = "ytsearch" if platform == "youtube" else "bilisearch"
+    target = f"{prefix}{limit}:{query}"
+    result = run_command(
+        ["yt-dlp", "--force-ipv4", "--flat-playlist", "--dump-single-json", "--no-warnings", target],
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or f"{platform} search failed")
+    payload = json.loads(result.stdout)
+    return [entry for entry in payload.get("entries", []) if entry]
+
+
+DEFAULT_PLATFORM_LANGUAGE = {
+    "youtube": ["en", "es", "pt"],
+    "bilibili": ["zh-CN", "zh"],
+    "douyin": ["zh-CN", "zh"],
+    "xiaohongshu": ["zh-CN", "zh"],
+}
+
+
+def terms_for_platform(
+    terms_by_language: dict[str, list[str]], platform: str, config: dict[str, Any]
+) -> list[str]:
+    """Route keyword languages to platforms (zh terms -> douyin/bilibili,
+    en/es terms -> youtube). Falls back to every configured term."""
+    routing = {**DEFAULT_PLATFORM_LANGUAGE, **(config.get("sources", {}).get("platform_language") or {})}
+    wanted = routing.get(platform)
+    if not wanted:
+        return [term for terms in terms_by_language.values() for term in terms]
+    selected: list[str] = []
+    for language in wanted:
+        selected.extend(terms_by_language.get(language, []))
+    if not selected:  # nothing in the preferred languages: use everything
+        selected = [term for terms in terms_by_language.values() for term in terms]
+    return selected
+
+
+WEEKDAY_KEYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+def category_active_today(category_config: dict[str, Any], today_index: int | None = None) -> bool:
+    """Keyword groups can be paused (enabled: false) or scheduled to
+    specific weekdays (days: [mon, ...]) for daily rotation."""
+    if category_config.get("enabled") is False:
+        return False
+    days = category_config.get("days")
+    if not days:
+        return True
+    index = datetime.now().weekday() if today_index is None else today_index
+    return WEEKDAY_KEYS[index] in {str(day).strip().lower()[:3] for day in days}
+
+
+def discover(config: dict[str, Any], *, platforms: Iterable[str] | None = None, limit: int | None = None) -> dict[str, int]:
+    from .sources import SEARCHABLE_PLATFORMS, SourceError, get_adapter
+
+    connection = connect_db(config)
+    keyword_path = resolve_config_path(config, config["sources"]["keywords_file"])
+    keywords = yaml.safe_load(keyword_path.read_text(encoding="utf-8")) or {}
+    enabled = list(platforms or config.get("sources", {}).get("enabled", []))
+    supported = [platform for platform in enabled if platform in SEARCHABLE_PLATFORMS]
+    per_query = int(limit or config.get("discovery", {}).get("max_candidates_per_keyword", 10))
+    stats = {"discovered": 0, "inserted": 0, "language_rejected": 0, "errors": 0, "categories_skipped": 0}
+    for category, category_config in keywords.items():
+        if not category_active_today(category_config or {}):
+            stats["categories_skipped"] += 1
+            continue
+        terms_by_language = category_config.get("terms", {})
+        for platform in supported:
+            try:
+                adapter = get_adapter(platform, config)
+            except SourceError as error:
+                stats["errors"] += 1
+                print(f"WARN {platform}: {error}")
+                continue
+            for term in terms_for_platform(terms_by_language, platform, config):
+                try:
+                    entries = adapter.search(str(term), per_query)
+                except Exception as error:
+                    stats["errors"] += 1
+                    print(f"WARN {platform} search {term!r}: {error}")
+                    continue
+                for info in entries:
+                    stats["discovered"] += 1
+                    url = str(info.get("webpage_url") or info.get("url") or "")
+                    source_id = str(info.get("id") or "") or None
+                    actual_platform = infer_platform(info) or platform
+                    cid = candidate_id(actual_platform, source_id, url)
+                    title = str(info.get("title") or "")
+                    language, confidence = likely_language(f"{title} {info.get('description') or ''}")
+                    rejected = language in {"pt", "pt-BR", "pt-PT"} and confidence >= 0.7
+                    status = "LANGUAGE_REJECTED" if rejected else "DISCOVERED"
+                    if rejected:
+                        stats["language_rejected"] += 1
+                    timestamp = now_iso()
+                    score, breakdown = score_candidate_v2(info, str(term), scoring_config_path(config))
+                    values = (
+                        cid,
+                        actual_platform,
+                        source_id,
+                        url,
+                        title,
+                        str(info.get("description") or ""),
+                        info.get("duration"),
+                        int(info.get("view_count") or 0),
+                        language,
+                        score,
+                        status,
+                        json.dumps({
+                            **info, "category": category, "keyword": term,
+                            "score_breakdown": breakdown,
+                        }, ensure_ascii=False),
+                        timestamp,
+                        timestamp,
+                    )
+                    cursor = connection.execute(
+                        """INSERT OR IGNORE INTO candidates
+                        (id,platform,source_id,url,title,description,duration,view_count,detected_language,score,status,metadata_json,created_at,updated_at)
+                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        values,
+                    )
+                    stats["inserted"] += cursor.rowcount
+    connection.commit()
+    return stats
+
+
+def list_candidates(config: dict[str, Any], status: str | None = None, limit: int = 50) -> list[sqlite3.Row]:
+    connection = connect_db(config)
+    if status:
+        return connection.execute(
+            "SELECT * FROM candidates WHERE status=? ORDER BY score DESC, created_at DESC LIMIT ?",
+            (status, limit),
+        ).fetchall()
+    return connection.execute(
+        "SELECT * FROM candidates ORDER BY created_at DESC LIMIT ?", (limit,)
+    ).fetchall()
+
+
+def inspect_url(config: dict[str, Any], url: str) -> str:
+    if "xiaohongshu.com" in url or "xhslink.com" in url:
+        return inspect_xhs_url(config, url)
+    result = run_command(["yt-dlp", "--force-ipv4", "--dump-single-json", "--skip-download", "--no-warnings", url], check=False)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "Unable to inspect URL")
+    info = json.loads(result.stdout)
+    platform = infer_platform(info)
+    source_id = str(info.get("id") or "") or None
+    cid = candidate_id(platform, source_id, url)
+    title = str(info.get("title") or "")
+    language, _ = likely_language(f"{title} {info.get('description') or ''}")
+    timestamp = now_iso()
+    score, breakdown = score_candidate_v2(info, title, scoring_config_path(config))
+    connection = connect_db(config)
+    connection.execute(
+        """INSERT OR REPLACE INTO candidates
+        (id,platform,source_id,url,title,description,duration,view_count,detected_language,score,status,metadata_json,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            cid, platform, source_id, url, title, str(info.get("description") or ""), info.get("duration"),
+            int(info.get("view_count") or 0), language, score, "DISCOVERED",
+            json.dumps({**info, "score_breakdown": breakdown}, ensure_ascii=False), timestamp, timestamp,
+        ),
+    )
+    connection.commit()
+    return cid
+
+
+def inspect_xhs_url(config: dict[str, Any], url: str) -> str:
+    """Register a Xiaohongshu note as a candidate via the XHS-Downloader service."""
+    from .sources import get_adapter
+
+    adapter = get_adapter("xiaohongshu", config)
+    payload = adapter._post("/xhs/detail", {"url": url, "download": False})
+    data = payload.get("data") or {}
+    title = str(data.get("作品标题") or data.get("title") or "")
+    description = str(data.get("作品描述") or data.get("desc") or "")
+    source_id = str(data.get("作品ID") or data.get("note_id") or "") or None
+    cid = candidate_id("xiaohongshu", source_id, url)
+    language, _ = likely_language(f"{title} {description}")
+    info = {
+        "id": source_id, "title": title, "description": description,
+        "view_count": int(data.get("浏览量") or 0), "like_count": int(data.get("点赞数量") or 0),
+        "comment_count": int(data.get("评论数量") or 0), "webpage_url": url,
+    }
+    score, breakdown = score_candidate_v2(info, title, scoring_config_path(config))
+    timestamp = now_iso()
+    connection = connect_db(config)
+    connection.execute(
+        """INSERT OR REPLACE INTO candidates
+        (id,platform,source_id,url,title,description,duration,view_count,detected_language,score,status,metadata_json,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            cid, "xiaohongshu", source_id, url, title, description, None,
+            info["view_count"], language, score, "DISCOVERED",
+            json.dumps({**data, "score_breakdown": breakdown}, ensure_ascii=False), timestamp, timestamp,
+        ),
+    )
+    connection.commit()
+    return cid
+
+
+def download_candidate(config: dict[str, Any], row: sqlite3.Row) -> Path:
+    from .sources import SourceError, get_adapter
+
+    work = workspace_dir(config) / "jobs" / row["id"]
+    work.mkdir(parents=True, exist_ok=True)
+    output = work / "source.%(ext)s"
+    connection = connect_db(config)
+    try:
+        adapter = get_adapter(row["platform"], config)
+        adapter.download(row["url"], str(output))
+    except (SourceError, RuntimeError) as error:
+        connection.execute("UPDATE candidates SET status='DOWNLOAD_FAILED',updated_at=? WHERE id=?", (now_iso(), row["id"]))
+        append_event(connection, row["id"], "DOWNLOAD_FAILED", {"stderr": str(error)[-4000:]})
+        raise RuntimeError(str(error)) from error
+    media = next((path for path in work.glob("source.*") if path.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov"}), None)
+    if not media:
+        raise RuntimeError("download completed but no media file was found")
+    subtitle_result = run_command([
+        "yt-dlp", "--force-ipv4", "--skip-download", "--write-auto-subs", "--write-subs",
+        "--sub-langs", "en,zh-Hans,zh-Hant,es,fr,de,ja,ko", "--convert-subs", "srt",
+        "-o", str(output), row["url"],
+    ], check=False)
+    connection.execute("UPDATE candidates SET status='DOWNLOADED',updated_at=? WHERE id=?", (now_iso(), row["id"]))
+    append_event(connection, row["id"], "DOWNLOADED", {
+        "path": str(media),
+        "bytes": media.stat().st_size,
+        "subtitles": "available" if subtitle_result.returncode == 0 else "unavailable",
+    })
+    return media
+
+
+def download_top(config: dict[str, Any], limit: int, candidate: str | None = None) -> dict[str, int]:
+    connection = connect_db(config)
+    minimum = float(config.get("selection", {}).get("min_score", 0))
+    if candidate:
+        rows = connection.execute(
+            "SELECT * FROM candidates WHERE id=? AND status IN ('DISCOVERED','DOWNLOAD_FAILED')", (candidate,)
+        ).fetchall()
+    else:
+        rows = connection.execute(
+            "SELECT * FROM candidates WHERE status='DISCOVERED' AND score>=? ORDER BY score DESC LIMIT ?",
+            (minimum, limit),
+        ).fetchall()
+    stats = {"selected": len(rows), "downloaded": 0, "failed": 0}
+    for row in rows:
+        try:
+            download_candidate(config, row)
+            stats["downloaded"] += 1
+        except Exception as error:
+            stats["failed"] += 1
+            print(f"WARN download {row['id']}: {error}")
+    return stats
+
+
+def parse_srt(path: Path) -> str:
+    text = path.read_text(encoding="utf-8", errors="replace")
+    lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.isdigit() or "-->" in stripped:
+            continue
+        stripped = re.sub(r"<[^>]+>", "", stripped)
+        if not lines or stripped != lines[-1]:
+            lines.append(stripped)
+    return " ".join(lines)
+
+
+def transcribe_with_whisper(media: Path, output_dir: Path) -> str:
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError as error:
+        raise RuntimeError("No subtitles found and faster-whisper is not installed") from error
+    model_name = os.environ.get("JAGUARTV_WHISPER_MODEL", "tiny")
+    model = WhisperModel(model_name, device="cpu", compute_type="int8")
+    segments, info = model.transcribe(str(media), vad_filter=True)
+    transcript = " ".join(segment.text.strip() for segment in segments if segment.text.strip())
+    (output_dir / "transcript_source.json").write_text(
+        json.dumps({"model": model_name, "language": info.language, "probability": info.language_probability, "text": transcript}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return transcript
+
+
+def source_text(work: Path, media: Path, fallback: str, *, enable_asr: bool = True) -> str:
+    subtitles = sorted([*work.glob("source*.srt"), *work.glob("source*.vtt")])
+    for subtitle in subtitles:
+        text = parse_srt(subtitle)
+        if len(text) >= 30:
+            return text
+    if enable_asr:
+        try:
+            return transcribe_with_whisper(media, work)
+        except RuntimeError:
+            pass
+    payload = {"provider": "metadata_fallback", "language": "unknown", "text": fallback}
+    (work / "transcript_source.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return fallback
+
+
+def media_has_audio(path: Path) -> bool:
+    result = run_command([
+        "ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
+        "stream=index", "-of", "csv=p=0", str(path),
+    ], check=False)
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
+def choose_audio_strategy(
+    config: dict[str, Any], work: Path, media: Path
+) -> tuple[str, str, str]:
+    """Return (mode, transcript, reason) for the render audio policy.
+
+    `auto` only localizes when subtitles or ASR provide speech evidence. This
+    prevents music-only clips from receiving invented narration and captions.
+    """
+    requested = str(config.get("audio", {}).get("source_mode", "auto")).strip().lower()
+    if requested not in {"auto", "localize", "preserve"}:
+        raise RuntimeError("audio.source_mode must be auto, localize, or preserve")
+
+    subtitle_files = sorted([*work.glob("source*.srt"), *work.glob("source*.vtt")])
+    for subtitle in subtitle_files:
+        transcript = parse_srt(subtitle)
+        if len(transcript) >= 30:
+            return "localized", transcript, f"subtitle:{subtitle.name}"
+
+    if requested != "preserve" and bool(config.get("localization", {}).get("asr_enabled", False)):
+        try:
+            transcript = transcribe_with_whisper(media, work).strip()
+        except RuntimeError:
+            transcript = ""
+        if len(transcript) >= 30:
+            return "localized", transcript, "asr_speech_detected"
+
+    has_audio = media_has_audio(media)
+    if requested == "localize":
+        return "localized", "", "forced_localization_without_transcript"
+    if has_audio:
+        return "preserve_source", "", "no_speech_evidence_source_audio_preserved"
+    return "bgm_only", "", "no_speech_evidence_source_has_no_audio"
+
+
+DEFAULT_HOOK = "Olha só o que aconteceu aqui."
+PUBLISH_PLATFORMS = ("youtube", "tiktok", "kwai", "facebook")
+
+
+def active_hook(config: dict[str, Any]) -> tuple[str, str]:
+    """Return (hook_version, hook_text) selected by tracking.hook_version."""
+    version = str(config.get("tracking", {}).get("hook_version", "A")).strip() or "A"
+    hooks = config.get("localization", {}).get("hooks") or {}
+    text = str(hooks.get(version) or DEFAULT_HOOK)
+    return version, text
+
+
+def build_tracking_url(config: dict[str, Any], candidate: str, platform: str) -> str:
+    """Unique attribution link per candidate x platform (utm_content=<cid>_<hook>)."""
+    tracking = config.get("tracking", {})
+    base = str(
+        tracking.get("base_url")
+        or config.get("brand", {}).get("default_cta", "https://copa.jarg.top/")
+    ).strip()
+    version, _ = active_hook(config)
+    params = urllib.parse.urlencode({
+        "utm_source": platform,
+        "utm_medium": str(tracking.get("utm_medium", "organic_social")),
+        "utm_campaign": str(tracking.get("campaign", "content_factory")),
+        "utm_content": f"{candidate}_{version}",
+    })
+    separator = "&" if "?" in base else "?"
+    return f"{base}{separator}{params}"
+
+
+def tracking_links(config: dict[str, Any], candidate: str) -> dict[str, str]:
+    return {platform: build_tracking_url(config, candidate, platform) for platform in PUBLISH_PLATFORMS}
+
+
+def translate_to_ptbr(text: str) -> str:
+    clean = re.sub(r"\s+", " ", text).strip()[:1600]
+    if not clean:
+        return "Veja este momento incrível e descubra mais no JaguarTV Hoje."
+    query = urllib.parse.urlencode({"client": "gtx", "sl": "auto", "tl": "pt", "dt": "t", "q": clean})
+    request = urllib.request.Request(
+        f"https://translate.googleapis.com/translate_a/single?{query}",
+        headers={"User-Agent": "Mozilla/5.0"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        translated = "".join(part[0] for part in payload[0] if part and part[0])
+    except Exception as error:
+        # Never fall back to the untranslated source text: a Chinese/English
+        # script would otherwise be narrated by the pt-BR voice unnoticed.
+        raise RuntimeError(f"pt-BR translation failed: {error}") from error
+    translated = translated.strip()
+    if not translated:
+        raise RuntimeError("pt-BR translation returned empty text")
+    return translated
+
+
+def build_ptbr_script(source: str, *, hook: str = DEFAULT_HOOK) -> str:
+    clean_source = re.sub(r"https?://\S+", "", source)
+    clean_source = re.sub(r"欢迎.{0,8}(订阅|关注).*$", "", clean_source).strip()
+    translated = translate_to_ptbr(clean_source)
+    words = translated.split()
+    body = " ".join(words[:105])
+    closing = "Gostou? Descubra mais conteúdos no JaguarTV Hoje."
+    return f"{hook} {body} {closing}".strip()
+
+
+def assert_script_is_portuguese(script: str) -> None:
+    """Language gate: block production when the script clearly is not pt."""
+    language, confidence = likely_language(script)
+    if language == "zh":
+        raise RuntimeError(
+            "Language gate: pt-BR script still contains Chinese text; "
+            "translation likely failed, refusing to narrate it"
+        )
+    if language == "pt":
+        return
+    # Latin-script text without Portuguese stopwords: long texts should have
+    # matched pt tokens, so treat confident non-pt as a failure.
+    if len(script) > 120 and confidence >= 0.5:
+        raise RuntimeError(
+            f"Language gate: script detected as '{language}' instead of pt-BR"
+        )
+
+
+def media_duration(path: Path) -> float:
+    result = run_command([
+        "ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", str(path)
+    ])
+    return float(result.stdout.strip())
+
+
+def media_dimensions(path: Path) -> tuple[int, int]:
+    result = run_command([
+        "ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+        "stream=width,height", "-of", "json", str(path)
+    ])
+    payload = json.loads(result.stdout)
+    stream = payload["streams"][0]
+    width = int(stream.get("width") or 1080)
+    height = int(stream.get("height") or 1920)
+    return width - width % 2, height - height % 2
+
+
+def render_output_size(config: dict[str, Any], media: Path) -> tuple[int, int]:
+    layout = str(config.get("edit", {}).get("layout_mode", "vertical")).strip().lower()
+    if layout == "original":
+        return media_dimensions(media)
+    resolution = config.get("edit", {}).get("resolution", [1080, 1920])
+    return int(resolution[0]), int(resolution[1])
+
+
+def write_srt(text: str, duration: float, destination: Path) -> None:
+    raw_sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", text) if part.strip()]
+    sentences: list[str] = []
+    for sentence in raw_sentences:
+        words = sentence.split()
+        chunk: list[str] = []
+        for word in words:
+            proposed = " ".join([*chunk, word])
+            if chunk and (len(chunk) >= 9 or len(proposed) > 58):
+                sentences.append(" ".join(chunk))
+                chunk = [word]
+            else:
+                chunk.append(word)
+        if chunk:
+            sentences.append(" ".join(chunk))
+    if not sentences:
+        sentences = [text]
+    total_chars = sum(max(1, len(sentence)) for sentence in sentences)
+    cursor = 0.0
+    blocks = []
+    for index, sentence in enumerate(sentences, start=1):
+        share = max(1, len(sentence)) / total_chars
+        length = max(1.2, duration * share)
+        end = min(duration, cursor + length)
+        blocks.append(f"{index}\n{format_srt_time(cursor)} --> {format_srt_time(end)}\n{sentence}\n")
+        cursor = end
+    destination.write_text("\n".join(blocks), encoding="utf-8")
+
+
+def format_srt_time(seconds: float) -> str:
+    milliseconds = max(0, int(seconds * 1000))
+    hours, remainder = divmod(milliseconds, 3_600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    secs, millis = divmod(remainder, 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+
+
+def tts_ptbr(text: str, destination: Path) -> None:
+    """pt-BR narration. macOS `say` (Luciana) preferred; espeak-ng as a
+    cross-platform fallback so the pipeline also runs in Linux sandboxes
+    (Codex/CI). Fallback quality is lower — fine for tests, not release."""
+    if shutil.which("say"):
+        run_command(["say", "-v", "Luciana", "-r", "185", "-o", str(destination), text])
+        return
+    for binary in ("espeak-ng", "espeak"):
+        if shutil.which(binary):
+            wav = destination.with_suffix(".wav")
+            run_command([binary, "-v", "pt-br", "-s", "165", "-w", str(wav), text])
+            if wav != destination:
+                if shutil.which("ffmpeg"):
+                    run_command(["ffmpeg", "-y", "-i", str(wav), str(destination)])
+                else:
+                    wav.replace(destination)
+            return
+    raise RuntimeError("No TTS backend found: install macOS `say` (Luciana) or espeak-ng")
+
+
+def generate_funk_bgm(destination: Path, duration: float = 32.0, bpm: int = 150) -> Path:
+    """Generate an original, voice-free Brazilian funk-inspired demo beat."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    sample_rate = 44_100
+    total_samples = int(duration * sample_rate)
+    step_seconds = 60.0 / bpm / 4.0
+    kick_steps = {0, 3, 6, 10, 12, 15}
+    clap_steps = {4, 12}
+    bass_notes = (55.0, 55.0, 65.41, 49.0)
+    rng = random.Random(20260720)
+
+    with wave.open(str(destination), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(sample_rate)
+        frames = bytearray()
+        for index in range(total_samples):
+            time = index / sample_rate
+            step = int(time / step_seconds)
+            position = time - step * step_seconds
+            pattern_step = step % 16
+            value = 0.0
+
+            if pattern_step in kick_steps and position < 0.20:
+                envelope = math.exp(-position * 20.0)
+                frequency = 48.0 + 85.0 * math.exp(-position * 30.0)
+                value += 0.92 * envelope * math.sin(2.0 * math.pi * frequency * position)
+            if pattern_step in clap_steps and position < 0.12:
+                envelope = math.exp(-position * 35.0)
+                value += 0.28 * envelope * rng.uniform(-1.0, 1.0)
+            if step % 2 == 0 and position < 0.045:
+                envelope = math.exp(-position * 75.0)
+                value += 0.10 * envelope * rng.uniform(-1.0, 1.0)
+            if position < step_seconds * 0.82:
+                note = bass_notes[(step // 4) % len(bass_notes)]
+                value += 0.12 * math.sin(2.0 * math.pi * note * time)
+
+            sample = max(-1.0, min(1.0, value))
+            frames.extend(struct.pack("<h", int(sample * 26_000)))
+            if len(frames) >= 131_072:
+                output.writeframesraw(frames)
+                frames.clear()
+        if frames:
+            output.writeframesraw(frames)
+    return destination
+
+
+def select_bgm(config: dict[str, Any], candidate: str) -> tuple[Path, str]:
+    audio = config.get("audio", {})
+    configured_path = str(audio.get("bgm_path") or "").strip()
+    if configured_path:
+        path = resolve_config_path(config, configured_path)
+        if not path.exists():
+            raise RuntimeError(f"Configured BGM does not exist: {path}")
+        return path, "configured"
+
+    bgm_dir = resolve_config_path(config, str(audio.get("bgm_dir", "assets/bgm")))
+    tracks = sorted(
+        path for path in bgm_dir.glob("*")
+        if path.is_file() and path.suffix.lower() in {".mp3", ".m4a", ".aac", ".wav", ".flac"}
+    )
+    if tracks:
+        track_index = int(hashlib.sha256(candidate.encode("utf-8")).hexdigest()[:8], 16) % len(tracks)
+        return tracks[track_index], "library"
+
+    generated = workspace_dir(config) / "generated_audio" / "funk_150bpm_original.wav"
+    if not generated.exists():
+        generate_funk_bgm(generated)
+    return generated, "generated"
+
+
+def parse_srt_blocks(path: Path) -> list[tuple[float, float, str]]:
+    blocks = []
+    content = path.read_text(encoding="utf-8", errors="replace").strip()
+    for raw_block in re.split(r"\n\s*\n", content):
+        lines = [line.strip() for line in raw_block.splitlines() if line.strip()]
+        if len(lines) < 3 or "-->" not in lines[1]:
+            continue
+        start_text, end_text = [part.strip() for part in lines[1].split("-->", 1)]
+        blocks.append((parse_srt_time(start_text), parse_srt_time(end_text), " ".join(lines[2:])))
+    return blocks
+
+
+def parse_srt_time(value: str) -> float:
+    hours, minutes, remainder = value.replace(",", ".").split(":")
+    return int(hours) * 3600 + int(minutes) * 60 + float(remainder)
+
+
+def load_font(size: int) -> ImageFont.FreeTypeFont:
+    candidates = [
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+        # Linux fallbacks so pt-BR accents render correctly off-macOS
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    ]
+    for candidate in candidates:
+        if Path(candidate).exists():
+            return ImageFont.truetype(candidate, size=size)
+    return ImageFont.load_default(size=size)
+
+
+def wrap_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont, max_width: int) -> list[str]:
+    words = text.split()
+    lines: list[str] = []
+    current = ""
+    for word in words:
+        proposed = f"{current} {word}".strip()
+        width = draw.textbbox((0, 0), proposed, font=font, stroke_width=2)[2]
+        if current and width > max_width:
+            lines.append(current)
+            current = word
+        else:
+            current = proposed
+    if current:
+        lines.append(current)
+    return lines[:2]
+
+
+def brand_kit(config: dict[str, Any], kit_name: str | None = None) -> dict[str, Any]:
+    """Resolve the active brand kit (watermark + endcard) from config."""
+    brand = config.get("brand", {})
+    kits = brand.get("kits") or {}
+    name = str(kit_name or brand.get("default_kit") or "").strip()
+    kit = dict(kits.get(name) or {})
+    kit.setdefault("watermark", {})
+    kit.setdefault("endcard", {})
+    kit.setdefault("cover", {})
+    kit["_name"] = name or "builtin"
+    return kit
+
+
+def render_cover_image(config: dict[str, Any], kit: dict[str, Any], source_video: Path, destination: Path) -> str:
+    """Create the review cover from a configured image or a video frame."""
+    settings = kit.get("cover", {})
+    image_path = str(settings.get("image") or "").strip()
+    mode = str(settings.get("mode") or "frame").strip().lower()
+    if mode == "image" and image_path:
+        source = resolve_config_path(config, image_path)
+        if source.exists():
+            width, height = media_dimensions(source_video)
+            cover = Image.open(source).convert("RGB").resize((width, height), Image.LANCZOS)
+            cover.save(destination, quality=92)
+            return "configured_image"
+    run_command(["ffmpeg", "-y", "-ss", "1", "-i", str(source_video), "-frames:v", "1", "-q:v", "2", str(destination)])
+    return "video_frame"
+
+
+def hex_color(value: str, fallback: tuple[int, int, int]) -> tuple[int, int, int]:
+    text = str(value or "").strip().lstrip("#")
+    if len(text) == 6:
+        try:
+            return tuple(int(text[i:i + 2], 16) for i in (0, 2, 4))  # type: ignore[return-value]
+        except ValueError:
+            pass
+    return fallback
+
+
+def watermark_position(position: str, width: int, height: int, canvas_width: int = 1080, canvas_height: int = 1920) -> tuple[int, int]:
+    margin = 34
+    return {
+        "top_left": (margin, 40),
+        "top_right": (canvas_width - width - margin, 40),
+        "bottom_left": (margin, canvas_height - height - 90),
+        "bottom_right": (canvas_width - width - margin, canvas_height - height - 90),
+    }.get(position, (margin, 40))
+
+
+def render_watermark(config: dict[str, Any], kit: dict[str, Any], destination: Path, size: tuple[int, int] = (1080, 1920)) -> Path:
+    settings = kit.get("watermark", {})
+    canvas_width, canvas_height = size
+    canvas = Image.new("RGBA", size, (0, 0, 0, 0))
+    opacity = max(0.0, min(1.0, float(settings.get("opacity", 0.9))))
+    mode = str(settings.get("mode", "text"))
+    image_path = str(settings.get("image") or "").strip()
+    placed = False
+    if mode == "image" and image_path:
+        source = resolve_config_path(config, image_path)
+        if source.exists():
+            logo = Image.open(source).convert("RGBA")
+            base_width = int(settings.get("width", 170))
+            width = max(90, int(base_width * min(canvas_width / 1080, canvas_height / 1920)))
+            ratio = width / logo.width
+            logo = logo.resize((width, max(1, int(logo.height * ratio))), Image.LANCZOS)
+            if opacity < 1.0:
+                alpha = logo.getchannel("A").point(lambda value: int(value * opacity))
+                logo.putalpha(alpha)
+            canvas.alpha_composite(logo, watermark_position(str(settings.get("position", "top_left")), *logo.size, canvas_width, canvas_height))
+            placed = True
+    if not placed:
+        text = str(settings.get("text") or "JaguarTV Hoje")
+        font_brand = load_font(42)
+        draw = ImageDraw.Draw(canvas)
+        box = draw.textbbox((0, 0), text, font=font_brand)
+        pad = 24
+        width, height = box[2] - box[0] + pad * 2, box[3] - box[1] + pad * 2
+        x, y = watermark_position(str(settings.get("position", "top_left")), width, height, canvas_width, canvas_height)
+        draw.rounded_rectangle((x, y, x + width, y + height), radius=12, fill=(0, 0, 0, int(145 * opacity)))
+        draw.text((x + pad, y + pad - box[1]), text, font=font_brand, fill=(255, 255, 255, int(255 * opacity)))
+    output = destination / "logo.png"
+    canvas.save(output)
+    return output
+
+
+def render_endcard(config: dict[str, Any], kit: dict[str, Any], destination: Path, size: tuple[int, int] = (1080, 1920)) -> Path:
+    settings = kit.get("endcard", {})
+    output = destination / "endcard.png"
+    canvas_width, canvas_height = size
+    scale = min(canvas_width / 1080, canvas_height / 1920)
+    image_path = str(settings.get("image") or "").strip()
+    if str(settings.get("mode", "generated")) == "image" and image_path:
+        source = resolve_config_path(config, image_path)
+        if source.exists():
+            card = Image.open(source).convert("RGBA").resize(size, Image.LANCZOS)
+            card.putalpha(255)
+            card.save(output)
+            return output
+    background = hex_color(str(settings.get("background", "#04220E")), (4, 34, 14))
+    accent = hex_color(str(settings.get("accent", "#8CE522")), (140, 229, 34))
+    card = Image.new("RGBA", size, (*background, 255))
+    draw = ImageDraw.Draw(card)
+    y = int(canvas_height * 0.12)
+    # Brand logo centered on top when available
+    logo_path = str(kit.get("watermark", {}).get("image") or "").strip()
+    if logo_path:
+        source = resolve_config_path(config, logo_path)
+        if source.exists():
+            logo = Image.open(source).convert("RGBA")
+            logo_width = max(90, int(260 * scale))
+            ratio = logo_width / logo.width
+            logo = logo.resize((logo_width, max(1, int(logo.height * ratio))), Image.LANCZOS)
+            card.alpha_composite(logo, ((canvas_width - logo.width) // 2, y))
+            y += logo.height + int(48 * scale)
+    title = str(settings.get("title") or "Jaguar TV")
+    tagline = str(settings.get("tagline") or "")
+    title_font = load_font(max(36, int(96 * scale)))
+    tagline_font = load_font(max(22, int(42 * scale)))
+    title_box = draw.textbbox((0, 0), title, font=title_font)
+    draw.text(((canvas_width - (title_box[2] - title_box[0])) / 2, y), title, font=title_font, fill="white")
+    y += (title_box[3] - title_box[1]) + int(30 * scale)
+    if tagline:
+        for line in wrap_text(draw, tagline, tagline_font, int(canvas_width * 0.82)):
+            box = draw.textbbox((0, 0), line, font=tagline_font)
+            draw.text(((canvas_width - (box[2] - box[0])) / 2, y), line, font=tagline_font, fill=(*accent, 255))
+            y += (box[3] - box[1]) + int(16 * scale)
+    y += int(36 * scale)
+    # Feature cards: [name, description]
+    feature_title_font = load_font(max(24, int(46 * scale)))
+    feature_text_font = load_font(max(18, int(34 * scale)))
+    features = [item for item in (settings.get("features") or []) if item][:4]
+    for feature in features:
+        name = str(feature[0] if isinstance(feature, (list, tuple)) and feature else feature)
+        detail = str(feature[1]) if isinstance(feature, (list, tuple)) and len(feature) > 1 else ""
+        row_height = max(72, int(132 * scale))
+        left = int(canvas_width * 0.08)
+        right = int(canvas_width * 0.92)
+        draw.rounded_rectangle(
+            (left, y, right, y + row_height), radius=max(8, int(20 * scale)),
+            fill=(18, 62, 31, 255), outline=(*accent, 210), width=2,
+        )
+        dot_x = left + int(32 * scale)
+        text_x = left + int(80 * scale)
+        dot = max(5, int(9 * scale))
+        draw.ellipse((dot_x, y + row_height // 2 - dot, dot_x + dot * 2, y + row_height // 2 + dot), fill=(*accent, 255))
+        draw.text((text_x, y + int(18 * scale)), name, font=feature_title_font, fill=(*accent, 255))
+        if detail:
+            draw.text((text_x, y + int(72 * scale)), detail[:52], font=feature_text_font, fill=(224, 236, 224, 255))
+        y += row_height + int(20 * scale)
+    site = str(settings.get("site") or "").strip()
+    if site:
+        y = min(max(y + int(30 * scale), int(canvas_height * 0.84)), canvas_height - int(110 * scale))
+        site_font = load_font(max(28, int(56 * scale)))
+        box = draw.textbbox((0, 0), site, font=site_font)
+        width = box[2] - box[0]
+        draw.rounded_rectangle(((canvas_width - width) // 2 - int(44 * scale), y - int(20 * scale), (canvas_width + width) // 2 + int(44 * scale), y + (box[3] - box[1]) + int(34 * scale)),
+                               radius=max(8, int(16 * scale)), fill=(*accent, 255))
+        draw.text(((canvas_width - width) / 2, y), site, font=site_font, fill=(6, 40, 16, 255))
+    # The end card is a full-frame ad, never a translucent overlay over source.
+    card.putalpha(255)
+    card.save(output)
+    return output
+
+
+def render_overlay_assets(
+    subtitles: Path | None, destination: Path, config: dict[str, Any] | None = None, kit_name: str | None = None,
+    size: tuple[int, int] = (1080, 1920),
+) -> tuple[Path, list[tuple[Path, float, float]], Path]:
+    destination.mkdir(parents=True, exist_ok=True)
+    config = config or {}
+    kit = brand_kit(config, kit_name)
+    canvas_width, canvas_height = size
+    scale = min(canvas_width / 1080, canvas_height / 1920)
+    font_large = load_font(max(28, int(54 * scale)))
+    logo = render_watermark(config, kit, destination, size)
+
+    subtitle_assets: list[tuple[Path, float, float]] = []
+    subtitle_blocks = parse_srt_blocks(subtitles) if subtitles else []
+    for index, (start, end, text) in enumerate(subtitle_blocks, start=1):
+        image = Image.new("RGBA", size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        lines = wrap_text(draw, text, font_large, int(canvas_width * 0.84))
+        spacing = 16
+        boxes = [draw.textbbox((0, 0), line, font=font_large, stroke_width=3) for line in lines]
+        heights = [box[3] - box[1] for box in boxes]
+        total_height = sum(heights) + spacing * max(0, len(lines) - 1)
+        y = int(canvas_height * 0.78) - total_height // 2
+        max_line_width = max((box[2] - box[0] for box in boxes), default=0)
+        draw.rounded_rectangle(
+            ((canvas_width - max_line_width) // 2 - 30, y - 22, (canvas_width + max_line_width) // 2 + 30, y + total_height + 24),
+            radius=18,
+            fill=(0, 0, 0, 165),
+        )
+        for line, height, box in zip(lines, heights, boxes):
+            width = box[2] - box[0]
+            draw.text(((canvas_width - width) // 2, y), line, font=font_large, fill="white", stroke_width=3, stroke_fill="black")
+            y += height + spacing
+        path = destination / f"subtitle_{index:03d}.png"
+        image.save(path)
+        subtitle_assets.append((path, start, end))
+
+    endcard = render_endcard(config, kit, destination, size)
+    return logo, subtitle_assets, endcard
+
+
+def render_video_ffmpeg(
+    config: dict[str, Any], media: Path, voice: Path | None, bgm: Path | None,
+    subtitles: Path | None, output: Path, duration: float, audio_mode: str = "localized",
+    start_time: float = 0.0,
+) -> None:
+    render_target = output.with_name(
+        f".{output.stem}.{os.getpid()}.{threading.get_ident()}.rendering{output.suffix}"
+    )
+    overlays_dir = output.parent / "overlays"
+    kit = brand_kit(config)
+    output_width, output_height = render_output_size(config, media)
+    layout_mode = str(config.get("edit", {}).get("layout_mode", "vertical")).strip().lower()
+    logo, subtitle_assets, endcard = render_overlay_assets(subtitles, overlays_dir, config, size=(output_width, output_height))
+    image_inputs = [logo, *(path for path, _, _ in subtitle_assets), endcard]
+    args = ["ffmpeg", "-y", "-ss", f"{max(0.0, start_time):.3f}", "-t", f"{duration:.3f}", "-i", str(media)]
+    if audio_mode == "localized":
+        if not voice or not bgm:
+            raise RuntimeError("Localized render requires voice and BGM")
+        args.extend(["-i", str(voice), "-stream_loop", "-1", "-i", str(bgm)])
+        image_input_start = 3
+    elif audio_mode == "preserve_source":
+        image_input_start = 1
+    elif audio_mode == "bgm_only":
+        if not bgm:
+            raise RuntimeError("BGM-only render requires a BGM track")
+        args.extend(["-stream_loop", "-1", "-i", str(bgm)])
+        image_input_start = 2
+    else:
+        raise RuntimeError(f"Unsupported audio mode: {audio_mode}")
+    for image in image_inputs:
+        args.extend(["-loop", "1", "-i", str(image)])
+
+    cleanup_mode = str(config.get("edit", {}).get("source_subtitle_cleanup", "crop"))
+    crop_ratio = float(config.get("edit", {}).get("source_subtitle_crop_bottom_ratio", 0.18))
+    crop_ratio = max(0.0, min(0.35, crop_ratio))
+    if layout_mode == "original":
+        foreground_filter = (
+            f"scale={output_width}:{output_height}:force_original_aspect_ratio=decrease,"
+            f"pad={output_width}:{output_height}:(ow-iw)/2:(oh-ih)/2"
+        )
+    elif cleanup_mode == "crop" and crop_ratio > 0:
+        foreground_filter = (
+            f"crop=iw:trunc(ih*{1.0 - crop_ratio:.4f}/2)*2:0:0,"
+            f"scale={output_width}:{output_height}:force_original_aspect_ratio=decrease"
+        )
+    else:
+        foreground_filter = f"scale={output_width}:{output_height}:force_original_aspect_ratio=decrease"
+
+    if layout_mode == "original":
+        chains = [
+            f"[0:v]{foreground_filter}[v0]",
+            f"[v0][{image_input_start}:v]overlay=0:0[v1]",
+        ]
+    else:
+        chains = [
+            "[0:v]split=2[base][front]",
+            f"[base]scale={output_width}:{output_height}:force_original_aspect_ratio=increase,crop={output_width}:{output_height},gblur=sigma=24[bg]",
+            f"[front]{foreground_filter}[fg]",
+            "[bg][fg]overlay=(W-w)/2:(H-h)/2[v0]",
+            f"[v0][{image_input_start}:v]overlay=0:0[v1]",
+        ]
+    current = "v1"
+    input_index = image_input_start + 1
+    for overlay_index, (_, start, end) in enumerate(subtitle_assets, start=2):
+        next_label = f"v{overlay_index}"
+        chains.append(f"[{current}][{input_index}:v]overlay=0:0:enable='between(t,{start:.3f},{end:.3f})'[{next_label}]")
+        current = next_label
+        input_index += 1
+    endcard_seconds = max(1.0, min(6.0, float(kit.get("endcard", {}).get("duration_sec", 3))))
+    chains.append(
+        f"[{current}][{input_index}:v]overlay=0:0:enable='gte(t,{max(0, duration - endcard_seconds):.3f})'[v]"
+    )
+    voice_volume = float(config.get("audio", {}).get("voice_volume", 1.0))
+    bgm_volume = float(config.get("audio", {}).get("bgm_volume", 0.62))
+    fade_out_start = max(0.0, duration - 1.0)
+    if audio_mode == "localized":
+        chains.append(f"[1:a]volume={voice_volume},apad,asplit=2[voice_sc][voice_mix]")
+        chains.append(
+            f"[2:a]volume={bgm_volume},atrim=0:{duration:.3f},"
+            f"afade=t=in:st=0:d=0.35,afade=t=out:st={fade_out_start:.3f}:d=1[bgm]"
+        )
+        chains.append("[bgm][voice_sc]sidechaincompress=threshold=0.060:ratio=4:attack=12:release=220[bgm_ducked]")
+        chains.append("[bgm_ducked][voice_mix]amix=inputs=2:duration=first:dropout_transition=1:normalize=0[a]")
+    elif audio_mode == "preserve_source":
+        source_volume = float(config.get("audio", {}).get("source_music_volume", 1.0))
+        chains.append(
+            f"[0:a]volume={source_volume},atrim=0:{duration:.3f},"
+            f"afade=t=out:st={fade_out_start:.3f}:d=1[a]"
+        )
+    else:
+        chains.append(
+            f"[1:a]volume={bgm_volume},atrim=0:{duration:.3f},"
+            f"afade=t=in:st=0:d=0.35,afade=t=out:st={fade_out_start:.3f}:d=1[a]"
+        )
+    args.extend([
+        "-filter_complex", ";".join(chains), "-map", "[v]", "-map", "[a]", "-t", f"{duration:.3f}",
+        "-r", "30", "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(render_target),
+    ])
+    result = run_command(args, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr[-6000:])
+    render_target.replace(output)
+
+
+def remotion_template_dir() -> Path:
+    return Path(__file__).resolve().parent / "remotion_template"
+
+
+def ensure_remotion_runtime(config: dict[str, Any]) -> Path:
+    """Prepare a workspace-local Remotion runtime.
+
+    The source package stays immutable; Node dependencies live under
+    workspace/remotion_runtime so a zipped deployment can bootstrap itself on
+    first Remotion render.
+    """
+    require_binary("node")
+    require_binary("npm")
+    template = remotion_template_dir()
+    runtime = workspace_dir(config) / "remotion_runtime"
+    shutil.copytree(template, runtime, dirs_exist_ok=True)
+    remotion_bin = runtime / "node_modules" / ".bin" / "remotion"
+    if not remotion_bin.exists():
+        result = run_command(["npm", "install", "--no-audit", "--no-fund"], cwd=runtime, check=False)
+        if result.returncode != 0:
+            raise RuntimeError(
+                "Remotion dependencies install failed. Ensure Node.js/npm network access works.\n"
+                + (result.stderr or result.stdout)[-4000:]
+            )
+    return runtime
+
+
+def render_clean_segment(
+    config: dict[str, Any], media: Path, voice: Path | None, bgm: Path | None,
+    output: Path, duration: float, audio_mode: str, start_time: float,
+) -> None:
+    """Render only the clean video/audio segment, with no logo/endcard overlays."""
+    render_target = output.with_name(
+        f".{output.stem}.{os.getpid()}.{threading.get_ident()}.rendering{output.suffix}"
+    )
+    output_width, output_height = render_output_size(config, media)
+    layout_mode = str(config.get("edit", {}).get("layout_mode", "vertical")).strip().lower()
+    cleanup_mode = str(config.get("edit", {}).get("source_subtitle_cleanup", "crop"))
+    crop_ratio = max(
+        0.0, min(0.35, float(config.get("edit", {}).get("source_subtitle_crop_bottom_ratio", 0.18)))
+    )
+    if layout_mode == "original":
+        foreground_filter = (
+            f"scale={output_width}:{output_height}:force_original_aspect_ratio=decrease,"
+            f"pad={output_width}:{output_height}:(ow-iw)/2:(oh-ih)/2"
+        )
+        video_chains = [f"[0:v]{foreground_filter}[v]"]
+    elif cleanup_mode == "crop" and crop_ratio > 0:
+        foreground_filter = (
+            f"crop=iw:trunc(ih*{1.0 - crop_ratio:.4f}/2)*2:0:0,"
+            f"scale={output_width}:{output_height}:force_original_aspect_ratio=decrease"
+        )
+        video_chains = [
+            "[0:v]split=2[base][front]",
+            f"[base]scale={output_width}:{output_height}:force_original_aspect_ratio=increase,crop={output_width}:{output_height},gblur=sigma=24[bg]",
+            f"[front]{foreground_filter}[fg]",
+            "[bg][fg]overlay=(W-w)/2:(H-h)/2[v]",
+        ]
+    else:
+        foreground_filter = f"scale={output_width}:{output_height}:force_original_aspect_ratio=decrease"
+        video_chains = [
+            "[0:v]split=2[base][front]",
+            f"[base]scale={output_width}:{output_height}:force_original_aspect_ratio=increase,crop={output_width}:{output_height},gblur=sigma=24[bg]",
+            f"[front]{foreground_filter}[fg]",
+            "[bg][fg]overlay=(W-w)/2:(H-h)/2[v]",
+        ]
+
+    args = ["ffmpeg", "-y", "-ss", f"{max(0.0, start_time):.3f}", "-t", f"{duration:.3f}", "-i", str(media)]
+    audio_chains: list[str] = []
+    voice_volume = float(config.get("audio", {}).get("voice_volume", 1.0))
+    bgm_volume = float(config.get("audio", {}).get("bgm_volume", 0.62))
+    source_volume = float(config.get("audio", {}).get("source_music_volume", 1.0))
+    fade_out_start = max(0.0, duration - 1.0)
+    if audio_mode == "localized":
+        if not voice or not bgm:
+            raise RuntimeError("Localized clean render requires voice and BGM")
+        args.extend(["-i", str(voice), "-stream_loop", "-1", "-i", str(bgm)])
+        audio_chains.extend([
+            f"[1:a]volume={voice_volume},apad,asplit=2[voice_sc][voice_mix]",
+            f"[2:a]volume={bgm_volume},atrim=0:{duration:.3f},afade=t=in:st=0:d=0.35,afade=t=out:st={fade_out_start:.3f}:d=1[bgm]",
+            "[bgm][voice_sc]sidechaincompress=threshold=0.060:ratio=4:attack=12:release=220[bgm_ducked]",
+            "[bgm_ducked][voice_mix]amix=inputs=2:duration=first:dropout_transition=1:normalize=0[a]",
+        ])
+    elif audio_mode == "preserve_source":
+        audio_chains.append(
+            f"[0:a]volume={source_volume},atrim=0:{duration:.3f},afade=t=out:st={fade_out_start:.3f}:d=1[a]"
+        )
+    elif audio_mode == "bgm_only":
+        if not bgm:
+            raise RuntimeError("BGM-only clean render requires a BGM track")
+        args.extend(["-stream_loop", "-1", "-i", str(bgm)])
+        audio_chains.append(
+            f"[1:a]volume={bgm_volume},atrim=0:{duration:.3f},afade=t=in:st=0:d=0.35,afade=t=out:st={fade_out_start:.3f}:d=1[a]"
+        )
+    else:
+        raise RuntimeError(f"Unsupported audio mode: {audio_mode}")
+
+    args.extend([
+        "-filter_complex", ";".join(video_chains + audio_chains),
+        "-map", "[v]", "-map", "[a]", "-t", f"{duration:.3f}", "-r", "30",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(render_target),
+    ])
+    result = run_command(args, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr[-6000:])
+    render_target.replace(output)
+
+
+def render_video_remotion(
+    config: dict[str, Any], media: Path, voice: Path | None, bgm: Path | None,
+    subtitles: Path | None, output: Path, duration: float, audio_mode: str,
+    start_time: float = 0.0,
+) -> None:
+    runtime = ensure_remotion_runtime(config)
+    kit = brand_kit(config)
+    endcard_seconds = max(1.0, min(6.0, float(kit.get("endcard", {}).get("duration_sec", 3))))
+    endcard_seconds = min(endcard_seconds, max(1.0, duration - 1.0))
+    content_duration = max(1.0, duration - endcard_seconds)
+    clean = output.with_name(f"{output.stem}_clean_input.mp4")
+    render_clean_segment(config, media, voice, bgm, clean, content_duration, audio_mode, start_time)
+
+    width, height = media_dimensions(clean)
+    logo_path = resolve_config_path(config, str(kit.get("watermark", {}).get("image") or ""))
+    public_dir = runtime / "public" / "renders" / output.stem
+    if public_dir.exists():
+        shutil.rmtree(public_dir)
+    public_dir.mkdir(parents=True, exist_ok=True)
+    public_source = public_dir / "source.mp4"
+    shutil.copy2(clean, public_source)
+    public_logo = public_dir / "logo.png"
+    if logo_path.exists():
+        shutil.copy2(logo_path, public_logo)
+    public_bgm = public_dir / "bgm.wav"
+    has_bgm = bool(bgm and bgm.exists())
+    if has_bgm and bgm:
+        shutil.copy2(bgm, public_bgm)
+    public_prefix = f"renders/{output.stem}"
+    remotion_settings = config.get("remotion", {}) or {}
+    title = str(kit.get("endcard", {}).get("title") or "Jaguar TV")
+    site = str(kit.get("endcard", {}).get("site") or "Jarg.top")
+    props = {
+        "sourceVideo": f"{public_prefix}/source.mp4",
+        "logoImage": f"{public_prefix}/logo.png" if logo_path.exists() else "",
+        "bgmAudio": f"{public_prefix}/bgm.wav" if has_bgm else "",
+        "width": width,
+        "height": height,
+        "fps": 30,
+        "durationSeconds": duration,
+        "contentSeconds": content_duration,
+        "contentBgmVolume": (
+            float(remotion_settings.get("content_bgm_volume", 0.16))
+            if audio_mode == "preserve_source" and has_bgm else 0.0
+        ),
+        "endcardBgmVolume": float(remotion_settings.get("endcard_bgm_volume", 0.24)) if has_bgm else 0.0,
+        "title": title,
+        "tagline": str(kit.get("endcard", {}).get("tagline") or "O melhor app de TV ao vivo e esportes"),
+        "topBadge": str(remotion_settings.get("top_badge") or "VÍDEO DO DIA 🔥"),
+        "bottomHeadline": str(remotion_settings.get("bottom_headline") or "Assista esportes ao vivo"),
+        "bottomSubline": str(remotion_settings.get("bottom_subline") or "Canais, jogos e entretenimento em um só app"),
+        "site": site,
+        "endcardCta": str(remotion_settings.get("endcard_cta") or f"BAIXE EM {site}"),
+        "subtitles": [
+            {"start": start, "end": end, "text": text}
+            for start, end, text in parse_srt_blocks(subtitles)
+        ] if subtitles else [],
+    }
+    props_path = output.with_name(f"{output.stem}_remotion_props.json")
+    props_path.write_text(json.dumps(props, ensure_ascii=False, indent=2), encoding="utf-8")
+    render_target = output.with_name(
+        f".{output.stem}.{os.getpid()}.{threading.get_ident()}.remotion{output.suffix}"
+    )
+    remotion_bin = runtime / "node_modules" / ".bin" / "remotion"
+    result = run_command([
+        str(remotion_bin), "render", "src/index.tsx", "JaguarTVBrand",
+        str(render_target), "--props", json.dumps(props, ensure_ascii=False), "--log", "error",
+    ], cwd=runtime, check=False)
+    if result.returncode != 0:
+        raise RuntimeError("Remotion render failed:\n" + (result.stderr or result.stdout)[-6000:])
+    render_target.replace(output)
+
+
+def render_video(
+    config: dict[str, Any], media: Path, voice: Path | None, bgm: Path | None,
+    subtitles: Path | None, output: Path, duration: float, audio_mode: str = "localized",
+    start_time: float = 0.0,
+) -> None:
+    engine = str(config.get("edit", {}).get("render_engine", "ffmpeg")).strip().lower()
+    if engine == "remotion":
+        return render_video_remotion(config, media, voice, bgm, subtitles, output, duration, audio_mode, start_time)
+    if engine != "ffmpeg":
+        raise RuntimeError("edit.render_engine must be ffmpeg or remotion")
+    return render_video_ffmpeg(config, media, voice, bgm, subtitles, output, duration, audio_mode, start_time)
+
+
+def qa_video(path: Path, config: dict[str, Any] | None = None) -> dict[str, Any]:
+    result = run_command([
+        "ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+        "stream=width,height,codec_name:format=duration", "-of", "json", str(path)
+    ])
+    payload = json.loads(result.stdout)
+    stream = payload["streams"][0]
+    duration = float(payload["format"]["duration"])
+    checks = {
+        "playable": True,
+        "width": stream.get("width"),
+        "height": stream.get("height"),
+        "duration": duration,
+        "codec": stream.get("codec_name"),
+    }
+    layout = str((config or {}).get("edit", {}).get("layout_mode", "vertical")).strip().lower()
+    if layout == "original":
+        checks["passed"] = int(checks["width"] or 0) >= 360 and int(checks["height"] or 0) >= 360 and 20 <= duration <= 60.5
+    else:
+        checks["passed"] = checks["width"] == 1080 and checks["height"] == 1920 and 20 <= duration <= 60.5
+    return checks
+
+
+def short_duration_bounds(config: dict[str, Any]) -> tuple[float, float]:
+    configured = config.get("edit", {}).get("output_duration_sec", [20, 60])
+    if isinstance(configured, (list, tuple)) and len(configured) >= 2:
+        minimum = float(configured[0])
+        maximum = float(configured[1])
+    else:
+        minimum = 20.0
+        maximum = float(configured)
+    return max(12.0, minimum), min(60.0, max(minimum, maximum))
+
+
+def short_segments(config: dict[str, Any], source_duration: float, preferred_duration: float) -> list[dict[str, Any]]:
+    """Build YouTube Shorts/TikTok-compatible segment windows.
+
+    A normal source produces one package. Longer sources can produce multiple
+    review packages, capped so a batch remains practical on a local machine.
+    """
+    minimum, maximum = short_duration_bounds(config)
+    target = max(minimum, min(maximum, preferred_duration, source_duration))
+    if source_duration <= maximum + 2.0:
+        return [{"index": 1, "total": 1, "start": 0.0, "duration": max(minimum, min(maximum, source_duration))}]
+
+    edit = config.get("edit", {})
+    max_segments = max(1, int(edit.get("max_segments_per_source", 3)))
+    overlap = max(0.0, float(edit.get("segment_overlap_sec", 3)))
+    stride = max(5.0, target - overlap)
+    possible = max(1, int(math.ceil((source_duration - target) / stride)) + 1)
+    count = min(max_segments, possible)
+    segments = []
+    for index in range(count):
+        if count == 1:
+            start = 0.0
+        else:
+            start = min(max(0.0, source_duration - target), index * stride)
+        duration = min(target, source_duration - start)
+        if duration >= minimum:
+            segments.append({"index": index + 1, "total": count, "start": start, "duration": duration})
+    return segments or [{"index": 1, "total": 1, "start": 0.0, "duration": min(maximum, source_duration)}]
+
+
+def produce_candidate(
+    config: dict[str, Any], row: sqlite3.Row,
+    progress_callback: Callable[[int, str], None] | None = None,
+) -> Path:
+    def progress(value: int, message: str) -> None:
+        if progress_callback:
+            progress_callback(value, message)
+
+    require_binary("ffmpeg")
+    require_binary("ffprobe")
+    progress(5, "正在读取源素材")
+    work = workspace_dir(config) / "jobs" / row["id"]
+    media = next((path for path in work.glob("source.*") if path.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov"}), None)
+    if not media:
+        raise RuntimeError(f"No downloaded media for {row['id']}")
+    os.environ.setdefault(
+        "JAGUARTV_WHISPER_MODEL", str(config.get("localization", {}).get("whisper_model", "tiny"))
+    )
+    hook_version, hook_text = active_hook(config)
+    audio_mode, transcript, audio_reason = choose_audio_strategy(config, work, media)
+    progress(18, f"音轨策略：{audio_mode}")
+    script = ""
+    voice: Path | None = None
+    bgm: Path | None = None
+    bgm_source = "source_music" if audio_mode == "preserve_source" else "none"
+    if audio_mode == "localized":
+        fallback_text = f"{row['title']}. {row['description']}".strip()
+        script = build_ptbr_script(transcript or fallback_text, hook=hook_text)
+        assert_script_is_portuguese(script)
+        progress(32, "葡语脚本检查通过")
+        voice = work / "voice_ptbr.aiff"
+        tts_ptbr(script, voice)
+        progress(48, "葡语配音已生成")
+        bgm, bgm_source = select_bgm(config, row["id"])
+        progress(55, "Funk BGM 已准备")
+    elif audio_mode == "bgm_only":
+        bgm, bgm_source = select_bgm(config, row["id"])
+        progress(55, "静音源素材已加入 Funk BGM")
+    else:
+        progress(55, "无对白证据，保留源音乐且不生成旁白字幕")
+    script_payload = {
+        "hook": hook_text,
+        "hook_version": hook_version,
+        "text": script,
+        "title_source": row["title"],
+        "audio_mode": audio_mode,
+        "audio_reason": audio_reason,
+    }
+    (work / "script_ptbr.json").write_text(json.dumps(script_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    source_duration = media_duration(media)
+    subtitles: Path | None = None
+    if audio_mode == "localized" and voice:
+        voice_duration = media_duration(voice)
+        preferred_duration = min(60.0, source_duration, max(20.0, voice_duration + 3.0))
+        subtitles = work / "subtitles_ptbr.srt"
+        write_srt(script, max(1.0, voice_duration), subtitles)
+    else:
+        preferred_duration = min(60.0, source_duration)
+        for stale in (work / "voice_ptbr.aiff", work / "subtitles_ptbr.srt"):
+            stale.unlink(missing_ok=True)
+    render_engine = str(config.get("edit", {}).get("render_engine", "ffmpeg")).strip().lower()
+    if (
+        render_engine == "remotion"
+        and audio_mode == "preserve_source"
+        and config.get("remotion", {}).get("add_bgm_under_source", True) is not False
+    ):
+        bgm, bgm_source = select_bgm(config, row["id"])
+        progress(58, "Remotion 品牌模式已准备轻量 Funk BGM")
+    segments = short_segments(config, source_duration, preferred_duration)
+    progress(60, f"Short 切片：{len(segments)} 段")
+    cleanup_mode = str(config.get("edit", {}).get("source_subtitle_cleanup", "crop"))
+    crop_ratio = max(
+        0.0, min(0.35, float(config.get("edit", {}).get("source_subtitle_crop_bottom_ratio", 0.18)))
+    )
+    translated_title = translate_to_ptbr(row["title"])[:100]
+    publishing_text = script or f"{translated_title}. Descubra mais conteúdos no Jaguar TV."
+    reviews: list[Path] = []
+    qa_results: list[dict[str, Any]] = []
+    review_root = workspace_dir(config) / "ready_for_review"
+    stale_single_review = review_root / row["id"]
+    if len(segments) > 1 and stale_single_review.exists():
+        shutil.rmtree(stale_single_review)
+    if len(segments) == 1:
+        for stale_part in review_root.glob(f"{row['id']}_part*"):
+            if stale_part.is_dir():
+                shutil.rmtree(stale_part)
+    for segment in segments:
+        segment_index = int(segment["index"])
+        segment_total = int(segment["total"])
+        package_id = row["id"] if segment_total == 1 else f"{row['id']}_part{segment_index:02d}"
+        output = work / ("master_9x16.mp4" if segment_total == 1 else f"master_9x16_part{segment_index:02d}.mp4")
+        progress(62 + int((segment_index - 1) * 24 / max(1, segment_total)), f"正在渲染第 {segment_index}/{segment_total} 个 Short")
+        render_video(
+            config, media, voice, bgm, subtitles, output, float(segment["duration"]),
+            audio_mode=audio_mode, start_time=float(segment["start"]),
+        )
+        qa = qa_video(output, config)
+        qa["segment"] = {"index": segment_index, "total": segment_total, "start": segment["start"], "duration": segment["duration"]}
+        qa_results.append(qa)
+        (work / ("qa.json" if segment_total == 1 else f"qa_part{segment_index:02d}.json")).write_text(
+            json.dumps(qa, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        if not qa["passed"]:
+            raise RuntimeError(f"QA failed for {package_id}: {qa}")
+        review = review_root / package_id
+        review.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(output, review / "video.mp4")
+        cover = review / "cover.jpg"
+        active_kit = brand_kit(config)
+        cover_source = render_cover_image(config, active_kit, output, cover)
+        links = tracking_links(config, package_id)
+        title_suffix = f" - Parte {segment_index}" if segment_total > 1 else ""
+        metadata = {
+            "job_id": package_id,
+            "source_job_id": row["id"],
+            "source": {"platform": row["platform"], "url": row["url"], "title": row["title"]},
+            "segment": {"index": segment_index, "total": segment_total, "start_sec": segment["start"], "duration_sec": segment["duration"]},
+            "ptbr_script": script,
+            "hook_version": hook_version,
+            "youtube": {
+                "title": f"{translated_title}{title_suffix}"[:100],
+                "description": f"{publishing_text[:500]}\n\n▶ {links['youtube']}",
+                "hashtags": ["JaguarTV", "Brasil", "Shorts"],
+                "cta_url": links["youtube"],
+            },
+            "tiktok": {"caption": publishing_text[:220], "hashtags": ["JaguarTV", "ParaVoce"], "cta_url": links["tiktok"]},
+            "kwai": {"caption": publishing_text[:220], "hashtags": ["JaguarTV", "Brasil"], "cta_url": links["kwai"]},
+            "facebook": {
+                "text": f"{publishing_text[:500]}\n\n▶ {links['facebook']}",
+                "hashtags": ["JaguarTV"],
+                "cta_url": links["facebook"],
+            },
+            "cta_url": config.get("brand", {}).get("default_cta", "https://copa.jarg.top/"),
+            "brand_kit": brand_kit(config)["_name"],
+            "brand_assets": {
+                "cover_source": cover_source,
+                "watermark": str(brand_kit(config).get("watermark", {}).get("image") or ""),
+                "endcard": str(brand_kit(config).get("endcard", {}).get("image") or ""),
+            },
+            "render_engine": render_engine,
+            "tracking_links": links,
+            "audio": {
+                "mode": audio_mode,
+                "reason": audio_reason,
+                "source_audio_removed": audio_mode != "preserve_source",
+                "source_audio_preserved": audio_mode == "preserve_source",
+                "voice": "pt-BR/Luciana" if voice else "",
+                "bgm": str(bgm) if bgm else "",
+                "bgm_source": bgm_source,
+            },
+        "visual_cleanup": {
+            "layout_mode": str(config.get("edit", {}).get("layout_mode", "vertical")),
+            "source_subtitle_mode": cleanup_mode,
+            "source_subtitle_crop_bottom_ratio": crop_ratio,
+        },
+            "qa": qa,
+        }
+        (review / "metadata.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+        (review / "review.json").write_text(
+            json.dumps({"decision": "pending", "note": "", "reviewed_at": ""}, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        reviews.append(review)
+
+    progress(94, "质量检查通过，正在打包")
+    manifest = {
+        "job_id": row["id"], "status": "READY_FOR_REVIEW", "created_at": now_iso(),
+        "assets": {
+            "source": str(media), "voice": str(voice) if voice else "", "bgm": str(bgm) if bgm else "",
+            "reviews": [str(path) for path in reviews],
+        },
+        "segments": segments,
+        "render_engine": render_engine,
+        "audio_policy": {
+            "mode": audio_mode,
+            "reason": audio_reason,
+            "source_audio_removed": audio_mode != "preserve_source",
+            "bgm_source": bgm_source,
+        },
+        "qa": qa_results,
+    }
+    (work / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    connection = connect_db(config)
+    connection.execute("UPDATE candidates SET status='READY_FOR_REVIEW',updated_at=? WHERE id=?", (now_iso(), row["id"]))
+    append_event(connection, row["id"], "READY_FOR_REVIEW", manifest)
+    for review in reviews:
+        upload_to_lark(config, review.name, review, connection)
+    progress(100, "审核包已生成")
+    return reviews[0]
+
+
+def upload_to_lark(config: dict[str, Any], candidate: str, review_dir: Path, connection: sqlite3.Connection) -> None:
+    """Best-effort Lark upload; failure never blocks production."""
+    from .lark_store import LarkError, lark_enabled, upload_review_package
+
+    if not lark_enabled(config):
+        return
+    try:
+        result = upload_review_package(config, candidate, review_dir)
+    except (LarkError, Exception) as error:  # noqa: BLE001 - network side effect
+        append_event(connection, candidate, "LARK_UPLOAD_FAILED", {"error": str(error)[:1000]})
+        print(f"WARN lark upload {candidate}: {error}")
+        return
+    video_url = (result.get("files", {}).get("video.mp4") or {}).get("url", "")
+    append_event(connection, candidate, "LARK_UPLOADED", result)
+    metadata_path = review_dir / "metadata.json"
+    if metadata_path.exists() and video_url:
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata["lark"] = {"video_url": video_url, "folder_token": result.get("folder_token", "")}
+            metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+        except json.JSONDecodeError:
+            pass
+
+
+def produce_top(
+    config: dict[str, Any], limit: int, candidate: str | None = None,
+    progress_callback: Callable[[int, str], None] | None = None,
+) -> dict[str, int]:
+    connection = connect_db(config)
+    if candidate:
+        rows = connection.execute("SELECT * FROM candidates WHERE id=?", (candidate,)).fetchall()
+    else:
+        rows = connection.execute(
+            "SELECT * FROM candidates WHERE status IN ('DOWNLOADED','PRODUCTION_FAILED') ORDER BY score DESC LIMIT ?", (limit,)
+        ).fetchall()
+    stats = {"selected": len(rows), "produced": 0, "failed": 0}
+    for row in rows:
+        try:
+            produce_candidate(config, row, progress_callback=progress_callback)
+            stats["produced"] += 1
+        except Exception as error:
+            stats["failed"] += 1
+            connection.execute("UPDATE candidates SET status='PRODUCTION_FAILED',updated_at=? WHERE id=?", (now_iso(), row["id"]))
+            append_event(connection, row["id"], "PRODUCTION_FAILED", {"error": str(error)})
+            print(f"WARN produce {row['id']}: {error}")
+    return stats
+
+
+def generate_review_index(config: dict[str, Any]) -> Path:
+    root = workspace_dir(config) / "ready_for_review"
+    root.mkdir(parents=True, exist_ok=True)
+    cards = []
+    for directory in sorted((path for path in root.iterdir() if path.is_dir()), reverse=True):
+        metadata_path = directory / "metadata.json"
+        if not metadata_path.exists():
+            continue
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        source = metadata.get("source", {})
+        audio = metadata.get("audio", {})
+        cleanup = metadata.get("visual_cleanup", {})
+        if audio.get("mode") == "preserve_source":
+            audio_summary = "música original preservada · sem narração/legendas"
+        elif audio.get("mode") == "bgm_only":
+            audio_summary = f"Funk BGM ({audio.get('bgm_source', 'unknown')}) · sem narração/legendas"
+        else:
+            audio_summary = f"pt-BR + Funk BGM ({audio.get('bgm_source', 'unknown')}) · áudio original removido"
+        video_path = directory / "video.mp4"
+        version = int(video_path.stat().st_mtime) if video_path.exists() else 0
+        cards.append(
+            f"<article><video controls preload='metadata' src='{directory.name}/video.mp4?v={version}'></video>"
+            f"<div><h2>{html_escape(metadata.get('youtube', {}).get('title', directory.name))}</h2>"
+            f"<p>{html_escape(source.get('platform', ''))} · <a href='{html_escape(source.get('url', ''))}'>源视频</a></p>"
+            f"<p>Audio: {html_escape(audio_summary)}<br>"
+            f"Visual cleanup: {html_escape(cleanup.get('source_subtitle_mode', 'off'))}</p>"
+            f"<p>{html_escape(metadata.get('ptbr_script', '')[:420])}</p>"
+            f"<a class='button' href='{directory.name}/metadata.json'>查看发布包</a></div></article>"
+        )
+    html = f"""<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>JaguarTV Review</title><style>
+body{{margin:0;font-family:Arial,sans-serif;background:#f4f5f7;color:#17191c}}header{{padding:24px 5vw;background:#111;color:#fff;position:sticky;top:0;z-index:2}}main{{max-width:1180px;margin:28px auto;padding:0 22px;display:grid;gap:22px}}article{{display:grid;grid-template-columns:260px 1fr;background:#fff;border:1px solid #ddd;border-radius:8px;overflow:hidden}}video{{width:260px;aspect-ratio:9/16;background:#000}}article div{{padding:24px}}h1,h2{{margin:0 0 12px}}p{{line-height:1.55}}a{{color:#087f5b}}.button{{display:inline-block;padding:10px 14px;background:#111;color:#fff;text-decoration:none;border-radius:6px}}@media(max-width:720px){{article{{grid-template-columns:1fr}}video{{width:100%;max-height:70vh}}}}
+</style></head><body><header><h1>JaguarTV · Fila de revisão</h1><p>{len(cards)} vídeos prontos</p></header><main>{''.join(cards) or '<p>Nenhum vídeo pronto.</p>'}</main></body></html>"""
+    index = root / "index.html"
+    index.write_text(html, encoding="utf-8")
+    return index
+
+
+def html_escape(value: str) -> str:
+    return str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")

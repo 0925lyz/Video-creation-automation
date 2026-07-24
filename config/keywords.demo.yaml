@@ -1,0 +1,5 @@
+football:
+  weight: 1.0
+  terms:
+    en: [football skills]
+    zh-CN: [巴西足球]

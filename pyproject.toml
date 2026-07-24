@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jaguartv-content-factory"
+version = "0.1.0"
+description = "Local batch discovery and pt-BR video localization pipeline for JaguarTV"
+requires-python = ">=3.12"
+dependencies = [
+  "Pillow>=11.0",
+  "PyYAML>=6.0.2",
+]
+
+[project.optional-dependencies]
+asr = ["faster-whisper>=1.1.1"]
+test = ["pytest>=8.3"]
+
+[project.scripts]
+workbuddy = "jaguartv_factory.cli:main"
+jaguartv = "jaguartv_factory.cli:main"
+
+[tool.setuptools.package-data]
+jaguartv_factory = ["web/*.html", "web/*.css", "web/*.js", "remotion_template/package.json", "remotion_template/src/*.tsx"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
