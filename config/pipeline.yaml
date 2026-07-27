@@ -6,7 +6,7 @@ run:
 sources:
   enabled: [youtube, bilibili]      # add douyin / xiaohongshu once their services run
   exclude_languages: [pt, pt-BR, pt-PT]
-  keywords_file: config/keywords.jaguartv.yaml
+  keywords_file: config/keywords.demo.yaml
   creators_file: config/creators.example.yaml
   # Which keyword languages go to which platform (see keywords file terms.*)
   platform_language:

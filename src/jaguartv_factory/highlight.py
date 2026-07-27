@@ -152,13 +152,18 @@ def parse_srt(path: Path | None) -> list[TranscriptCue]:
         if timing_index is None:
             continue
         start_text, end_text = (part.strip() for part in lines[timing_index].split("-->", 1))
-        cues.append(TranscriptCue(_srt_seconds(start_text), _srt_seconds(end_text), " ".join(lines[timing_index + 1:])))
+        try:
+            cues.append(TranscriptCue(_srt_seconds(start_text), _srt_seconds(end_text), " ".join(lines[timing_index + 1:])))
+        except ValueError:
+            continue
     return cues
 
 
 def _srt_seconds(value: str) -> float:
-    hours, minutes, rest = value.replace(".", ",").split(":")
-    seconds, millis = rest.split(",")
+    match = re.search(r"(\d{1,2}):(\d{2}):(\d{2})(?:[,.](\d{1,3}))?", value)
+    if not match:
+        raise ValueError(f"invalid subtitle timestamp: {value}")
+    hours, minutes, seconds, millis = match.groups(default="0")
     return int(hours) * 3600 + int(minutes) * 60 + int(seconds) + int(millis[:3].ljust(3, "0")) / 1000
 
 

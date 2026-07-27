@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from jaguartv_factory.compliance import assert_render_allowed
-from jaguartv_factory.highlight import SignalPoint, TranscriptCue, rank_highlight_windows
+from jaguartv_factory.highlight import SignalPoint, TranscriptCue, parse_srt, rank_highlight_windows
 from jaguartv_factory.strategy import classify_content, render_audio_mode, resolve_production_strategy
 
 
@@ -55,6 +55,18 @@ def test_highlight_ranking_uses_audio_motion_scene_keyword_and_replay():
         right_start, right_end = segments[1]["source_start"], segments[1]["source_end"]
         overlap = max(0, min(left_end, right_end) - max(left_start, right_start))
         assert overlap <= 7.5
+
+
+def test_parse_srt_accepts_youtube_vtt_timing_settings(tmp_path: Path):
+    subtitle = tmp_path / "source.en.vtt"
+    subtitle.write_text(
+        "WEBVTT\n\n"
+        "00:00:07.860 --> 00:00:11.190 align:start position:0%\n"
+        "Gol bonito\n\n",
+        encoding="utf-8",
+    )
+    cues = parse_srt(subtitle)
+    assert cues == [TranscriptCue(7.86, 11.19, "Gol bonito")]
 
 
 def test_compliance_blocks_unknown_rights_and_allows_verified():
