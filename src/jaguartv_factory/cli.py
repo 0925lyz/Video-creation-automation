@@ -41,6 +41,28 @@ def doctor() -> int:
     tts = shutil.which("say") or shutil.which("espeak-ng") or shutil.which("espeak")
     checks["tts"] = tts
     checks["ptbr_voice"] = "Luciana (macOS)" if shutil.which("say") else ("espeak pt-br (fallback)" if tts else None)
+    codex_home = Path.home() / ".codex"
+    skill_names = (
+        "douyin-downloader", "tiktok-crawling", "agent-reach", "dlazy-merge",
+        "bilibili-video-crawler", "bilibili-downloader-plus", "yt-dlp-downloader",
+        "eye-yt-dlp", "bilibili-video-parser", "all-translate", "nologo-open-api",
+        "tencentcloud-tts", "apify-ultimate-scraper", "openclaw-video-editor",
+        "wavespeed-watermark-remover", "tencent-mps", "google-trends", "speech-recognition",
+    )
+    checks["skillhub_skills"] = {
+        name: (codex_home / "skills" / name / "SKILL.md").exists() for name in skill_names
+    }
+    checks["mediacrawler_repo"] = next(
+        (
+            str(path) for path in (
+                Path.cwd().parent / "MediaCrawler",
+                Path.cwd() / "MediaCrawler",
+                Path("/opt/MediaCrawler"),
+            )
+            if (path / ".git").exists()
+        ),
+        "",
+    )
     checks["ready"] = all(checks[name] for name in ("python3", "yt-dlp", "ffmpeg", "ffprobe")) and (
         bool(checks["edge_tts"]) or bool(tts)
     )
