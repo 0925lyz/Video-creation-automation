@@ -14,8 +14,10 @@ configured on the service side.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
+import sys
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -24,6 +26,16 @@ from typing import Any
 
 class SourceError(RuntimeError):
     """Search/download failure local to one adapter."""
+
+
+def yt_dlp_binary() -> str:
+    path = shutil.which("yt-dlp")
+    if path:
+        return path
+    sibling = Path(sys.executable).parent / "yt-dlp"
+    if sibling.exists():
+        return str(sibling)
+    raise SourceError("yt-dlp binary is missing")
 
 
 def run(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -56,16 +68,23 @@ class YtDlpAdapter:
 
     def _cookie_args(self) -> list[str]:
         cookies = str(self.options.get("cookies_file") or "").strip()
-        return ["--cookies", cookies] if cookies and Path(cookies).exists() else []
+        if cookies and Path(cookies).expanduser().exists():
+            return ["--cookies", str(Path(cookies).expanduser())]
+        browser = str(
+            os.environ.get(f"JAGUARTV_{self.platform.upper()}_COOKIES_FROM_BROWSER")
+            or os.environ.get("JAGUARTV_COOKIES_FROM_BROWSER")
+            or self.options.get("cookies_from_browser")
+            or ""
+        ).strip()
+        return ["--cookies-from-browser", browser] if browser else []
 
     def search(self, term: str, limit: int) -> list[dict[str, Any]]:
-        if not shutil.which("yt-dlp"):
-            raise SourceError("yt-dlp binary is missing")
+        yt_dlp = yt_dlp_binary()
         prefix = self.search_prefixes.get(self.platform)
         if not prefix:
             raise SourceError(f"{self.platform} has no yt-dlp search support")
         result = run([
-            "yt-dlp", "--force-ipv4", "--flat-playlist", "--dump-single-json",
+            yt_dlp, "--force-ipv4", "--flat-playlist", "--dump-single-json",
             "--no-warnings", *self._cookie_args(), f"{prefix}{limit}:{term}",
         ])
         if result.returncode != 0:
@@ -75,7 +94,7 @@ class YtDlpAdapter:
 
     def download(self, url: str, output_template: str) -> None:
         args = [
-            "yt-dlp", "--force-ipv4", "--no-playlist", "--write-info-json",
+            yt_dlp_binary(), "--force-ipv4", "--no-playlist", "--write-info-json",
             *self._cookie_args(),
             "-f", "bv*[height<=1080]+ba/b[height<=1080]/b", "--merge-output-format", "mp4",
             "-o", output_template, url,

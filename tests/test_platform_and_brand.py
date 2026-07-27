@@ -17,7 +17,7 @@ from jaguartv_factory.core import (
 from jaguartv_factory.dashboard import candidate_rows, skip_candidate
 from jaguartv_factory.scoring import score_candidate_v2
 from jaguartv_factory.server_store import archive_review_package
-from jaguartv_factory.sources import SourceError, XhsApiAdapter, get_adapter
+from jaguartv_factory.sources import SourceError, XhsApiAdapter, YtDlpAdapter, get_adapter, yt_dlp_binary
 
 
 def make_config(tmp_path: Path) -> dict:
@@ -85,6 +85,16 @@ def test_source_adapters_resolve_and_fail_cleanly():
     assert get_adapter("tiktok", config).platform == "tiktok"
     with pytest.raises(SourceError):
         get_adapter("unknown-platform", config)
+
+
+def test_yt_dlp_adapter_supports_browser_cookie_env(monkeypatch):
+    monkeypatch.setenv("JAGUARTV_YOUTUBE_COOKIES_FROM_BROWSER", "chrome")
+    adapter = YtDlpAdapter("youtube", {})
+    assert adapter._cookie_args() == ["--cookies-from-browser", "chrome"]
+
+
+def test_yt_dlp_binary_can_resolve_from_virtualenv():
+    assert Path(yt_dlp_binary()).name == "yt-dlp"
 
 
 def test_brand_kit_and_endcard_render(tmp_path: Path):

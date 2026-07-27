@@ -19,10 +19,13 @@ sources:
   adapters:
     bilibili:
       cookies_file: ""              # optional Netscape cookies.txt to improve reliability
+      cookies_from_browser: ""       # local-only option, e.g. chrome; keep empty on server
     tiktok:
       cookies_file: ""              # optional TikTok cookies.txt for age/region-limited videos
+      cookies_from_browser: ""
     facebook:
       cookies_file: ""              # Facebook keyword search is not supported; direct URLs can use cookies
+      cookies_from_browser: ""
     douyin:
       api_base: http://127.0.0.1:8000   # self-hosted Douyin_TikTok_Download_API
     xiaohongshu:
