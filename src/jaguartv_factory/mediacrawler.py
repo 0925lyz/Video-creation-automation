@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from typing import Any, Iterable
 
-from .core import candidate_id, connect_db, likely_language, now_iso, scoring_config_path
+from .core import candidate_id, candidate_too_long, connect_db, likely_language, now_iso, scoring_config_path, source_duration_limit
 from .scoring import score_candidate_v2
 
 
@@ -31,6 +31,13 @@ PLATFORM_FIELDS = {
         "media": ("video_url", "video_download_url"),
         "views": ("view_count", "video_play_count"),
     },
+    "tiktok": {
+        "aliases": ("tiktok", "tk"),
+        "id": ("video_id", "aweme_id", "id"),
+        "page": ("webpage_url", "video_url", "share_url"),
+        "media": ("video_download_url", "video_url", "download_url"),
+        "views": ("video_play_count", "view_count", "play_count"),
+    },
 }
 
 
@@ -52,7 +59,7 @@ def infer_jsonl_platform(path: Path, explicit: str | None = None) -> str:
     for platform, fields in PLATFORM_FIELDS.items():
         if candidate in fields["aliases"] or parts.intersection(fields["aliases"]):
             return platform
-    raise ValueError("Cannot infer platform; pass --platform douyin, bilibili, or xiaohongshu")
+    raise ValueError("Cannot infer platform; pass --platform douyin, bilibili, xiaohongshu, or tiktok")
 
 
 def ingest_mediacrawler_jsonl(
@@ -112,6 +119,7 @@ def ingest_mediacrawler_jsonl(
             }
             language, _ = likely_language(f"{title} {description}")
             score, breakdown = score_candidate_v2(info, title, scoring_config_path(config))
+            too_long = candidate_too_long(config, duration)
             timestamp = now_iso()
             cursor = connection.execute(
                 """INSERT OR IGNORE INTO candidates
@@ -120,8 +128,15 @@ def ingest_mediacrawler_jsonl(
                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     candidate_id(normalized_platform, source_id, url), normalized_platform, source_id, url,
-                    title, description, duration, views, language, score, "DISCOVERED",
-                    json.dumps({**info, "score_breakdown": breakdown}, ensure_ascii=False), timestamp, timestamp,
+                    title, description, duration, views, language, score, "TOO_LONG" if too_long else "DISCOVERED",
+                    json.dumps({
+                        **info,
+                        "duration_gate": {
+                            "max_source_duration_sec": source_duration_limit(config),
+                            "too_long": too_long,
+                        },
+                        "score_breakdown": breakdown,
+                    }, ensure_ascii=False), timestamp, timestamp,
                 ),
             )
             if cursor.rowcount:

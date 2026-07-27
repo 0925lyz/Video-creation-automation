@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import uuid
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -31,6 +32,46 @@ def public_url(config: dict[str, Any], relative: str | Path) -> str:
     return f"{public_base_url(config)}/{value}"
 
 
+def remote_review_settings(config: dict[str, Any]) -> dict[str, str]:
+    storage = config.get("storage", {}) or {}
+    return {
+        "host": str(os.environ.get("JAGUARTV_REMOTE_REVIEW_HOST") or storage.get("remote_review_host") or "").strip(),
+        "user": str(os.environ.get("JAGUARTV_REMOTE_REVIEW_USER") or storage.get("remote_review_user") or "").strip(),
+        "key_file": str(os.environ.get("JAGUARTV_REMOTE_REVIEW_KEY") or storage.get("remote_review_key") or "").strip(),
+        "root": str(os.environ.get("JAGUARTV_REMOTE_REVIEW_ROOT") or storage.get("remote_review_root") or "").strip(),
+    }
+
+
+def sync_review_package_to_remote(config: dict[str, Any], package_id: str, destination: Path) -> dict[str, Any]:
+    settings = remote_review_settings(config)
+    if not (settings["host"] and settings["user"] and settings["key_file"] and settings["root"]):
+        return {"enabled": False, "reason": "remote_review_* is not configured"}
+    key = Path(settings["key_file"]).expanduser()
+    if not key.exists():
+        return {"enabled": False, "reason": f"ssh key does not exist: {key}"}
+    safe_id = re.sub(r"[^A-Za-z0-9_.-]", "_", package_id)
+    remote_base = settings["root"].rstrip("/")
+    remote_dir = f"{remote_base}/{safe_id}"
+    ssh_target = f"{settings['user']}@{settings['host']}"
+    ssh_base = ["ssh", "-i", str(key), "-o", "StrictHostKeyChecking=accept-new", ssh_target]
+    mkdir = subprocess.run([*ssh_base, "mkdir", "-p", remote_dir], text=True, capture_output=True, check=False)
+    if mkdir.returncode != 0:
+        return {"enabled": True, "ok": False, "error": (mkdir.stderr or mkdir.stdout)[-1000:]}
+    scp = subprocess.run(
+        [
+            "scp", "-i", str(key), "-o", "StrictHostKeyChecking=accept-new",
+            *[str(destination / name) for name in ("video.mp4", "cover.jpg", "metadata.json", "review.json") if (destination / name).is_file()],
+            f"{ssh_target}:{remote_dir}/",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if scp.returncode != 0:
+        return {"enabled": True, "ok": False, "error": (scp.stderr or scp.stdout)[-1000:]}
+    return {"enabled": True, "ok": True, "remote_dir": remote_dir}
+
+
 def archive_review_package(config: dict[str, Any], package_id: str, review_dir: Path) -> dict[str, Any]:
     safe_id = re.sub(r"[^A-Za-z0-9_.-]", "_", package_id)
     destination = storage_root(config) / "review" / safe_id
@@ -55,6 +96,8 @@ def archive_review_package(config: dict[str, Any], package_id: str, review_dir: 
         "public_base_url": public_base_url(config),
         "files": copied,
     }
+    remote_result = sync_review_package_to_remote(config, package_id, destination)
+    result["remote_sync"] = remote_result
     metadata_path = destination / "metadata.json"
     if metadata_path.exists():
         try:
@@ -62,6 +105,19 @@ def archive_review_package(config: dict[str, Any], package_id: str, review_dir: 
             metadata["server_storage"] = result
             metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
             shutil.copy2(metadata_path, review_dir / "metadata.json")
+            if remote_result.get("ok"):
+                settings = remote_review_settings(config)
+                key = Path(settings["key_file"]).expanduser()
+                ssh_target = f"{settings['user']}@{settings['host']}"
+                subprocess.run(
+                    [
+                        "scp", "-i", str(key), "-o", "StrictHostKeyChecking=accept-new",
+                        str(metadata_path), f"{ssh_target}:{str(remote_result['remote_dir']).rstrip('/')}/metadata.json",
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
         except (json.JSONDecodeError, OSError):
             pass
     return result

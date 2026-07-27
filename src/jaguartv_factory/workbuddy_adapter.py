@@ -219,14 +219,16 @@ def classify_localization(media: Path, *, model_name: str = "base") -> Localizat
     )
 
 
-def edge_tts_ptbr(text: str, destination: Path, *, voice: str = "pt-BR-AntonioNeural") -> Path:
+def edge_tts_ptbr(
+    text: str, destination: Path, *, voice: str = "pt-BR-AntonioNeural", rate: str = "+8%"
+) -> Path:
     try:
         import edge_tts
     except ImportError as error:
         raise RuntimeError("edge-tts is not installed; install .[localization]") from error
 
     async def synthesize(path: Path) -> None:
-        await edge_tts.Communicate(text, voice).save(str(path))
+        await edge_tts.Communicate(text, voice, rate=rate).save(str(path))
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="jaguartv-tts-") as temporary:

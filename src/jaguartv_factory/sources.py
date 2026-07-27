@@ -6,7 +6,7 @@ Each adapter implements:
        like_count, comment_count, timestamp, thumbnail, extractor_key)
   download(url, output_template) -> None (raises on failure)
 
-youtube/bilibili use yt-dlp directly. douyin/xiaohongshu call self-hosted
+youtube/bilibili/tiktok/facebook use yt-dlp where supported. douyin/xiaohongshu call self-hosted
 services (Douyin_TikTok_Download_API, XHS-Downloader) over HTTP because
 yt-dlp support for those platforms is unreliable; both need account cookies
 configured on the service side.
@@ -48,7 +48,7 @@ class YtDlpAdapter:
     yt-dlp >= 2024.02 (auto buvid3); a real cookies file further improves
     reliability."""
 
-    search_prefixes = {"youtube": "ytsearch", "bilibili": "bilisearch"}
+    search_prefixes = {"youtube": "ytsearch", "bilibili": "bilisearch", "tiktok": "tiktoksearch"}
 
     def __init__(self, platform: str, options: dict[str, Any] | None = None):
         self.platform = platform
@@ -192,11 +192,13 @@ class XhsApiAdapter:
 ADAPTERS = {
     "youtube": YtDlpAdapter,
     "bilibili": YtDlpAdapter,
+    "tiktok": YtDlpAdapter,
+    "facebook": YtDlpAdapter,
     "douyin": DouyinApiAdapter,
     "xiaohongshu": XhsApiAdapter,
 }
 
-SEARCHABLE_PLATFORMS = ("youtube", "bilibili", "douyin")
+SEARCHABLE_PLATFORMS = ("youtube", "bilibili", "douyin", "tiktok", "facebook")
 
 
 def get_adapter(platform: str, config: dict[str, Any]) -> Any:

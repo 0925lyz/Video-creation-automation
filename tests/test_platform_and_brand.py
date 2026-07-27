@@ -81,6 +81,9 @@ def test_source_adapters_resolve_and_fail_cleanly():
     with pytest.raises(SourceError):
         XhsApiAdapter("xiaohongshu", {}).search("足球", 3)
     with pytest.raises(SourceError):
+        get_adapter("facebook", config).search("football", 1)
+    assert get_adapter("tiktok", config).platform == "tiktok"
+    with pytest.raises(SourceError):
         get_adapter("unknown-platform", config)
 
 
@@ -115,6 +118,38 @@ def test_review_package_archives_to_factory_server_storage(tmp_path: Path):
     assert result["files"]["video.mp4"]["url"] == "https://factory.jarg.top/media/review/c1/video.mp4"
     metadata = json.loads((review / "metadata.json").read_text(encoding="utf-8"))
     assert metadata["server_storage"]["package_id"] == "c1"
+    assert metadata["server_storage"]["remote_sync"]["enabled"] is False
+
+
+def test_inventory_scans_server_review_packages_without_db_row(tmp_path: Path):
+    config = {
+        "_root": str(tmp_path),
+        "run": {"workspace": "workspace"},
+        "storage": {
+            "root": "workspace/server_media",
+            "public_base_url": "https://factory.jarg.top/media",
+        },
+    }
+    review = tmp_path / "workspace" / "server_media" / "review" / "pkg1"
+    review.mkdir(parents=True)
+    (review / "video.mp4").write_bytes(b"video")
+    (review / "cover.jpg").write_bytes(b"cover")
+    (review / "review.json").write_text('{"decision":"pending"}', encoding="utf-8")
+    (review / "metadata.json").write_text(
+        json.dumps({
+            "job_id": "pkg1",
+            "source": {"platform": "youtube", "url": "https://example.test/v", "title": "Server only"},
+            "content_type": "football",
+            "segment_strategy": "sports_highlight",
+            "audio_policy": "localize_ptbr",
+            "segment": {"duration_sec": 30, "highlight_score": 77},
+        }),
+        encoding="utf-8",
+    )
+    rows = candidate_rows(config)
+    assert rows[0]["id"] == "pkg1"
+    assert rows[0]["status"] == "READY_FOR_REVIEW"
+    assert rows[0]["server_url"] == "https://factory.jarg.top/media/review/pkg1/video.mp4"
 
 
 def test_skip_candidate_and_inventory_fields(tmp_path: Path):

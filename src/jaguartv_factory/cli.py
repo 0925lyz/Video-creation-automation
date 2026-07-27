@@ -79,7 +79,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("doctor")
 
     discover_parser = subparsers.add_parser("discover")
-    discover_parser.add_argument("--platform", action="append", choices=["youtube", "bilibili", "douyin"])
+    discover_parser.add_argument("--platform", action="append", choices=["youtube", "bilibili", "douyin", "xiaohongshu", "tiktok", "facebook"])
     discover_parser.add_argument("--limit", type=int)
 
     ingest_parser = subparsers.add_parser("ingest")
@@ -87,7 +87,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     crawler_parser = subparsers.add_parser("ingest-mediacrawler")
     crawler_parser.add_argument("path", type=Path)
-    crawler_parser.add_argument("--platform", choices=("douyin", "bilibili", "xiaohongshu"))
+    crawler_parser.add_argument("--platform", choices=("douyin", "bilibili", "xiaohongshu", "tiktok"))
     crawler_parser.add_argument("--min-likes", type=int, default=0)
     crawler_parser.add_argument("--min-views", type=int, default=0)
 

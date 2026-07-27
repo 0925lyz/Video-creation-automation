@@ -288,7 +288,10 @@ def discover(config: dict[str, Any], *, platforms: Iterable[str] | None = None, 
     enabled = list(platforms or config.get("sources", {}).get("enabled", []))
     supported = [platform for platform in enabled if platform in SEARCHABLE_PLATFORMS]
     per_query = int(limit or config.get("discovery", {}).get("max_candidates_per_keyword", 10))
-    stats = {"discovered": 0, "inserted": 0, "language_rejected": 0, "errors": 0, "categories_skipped": 0}
+    stats = {
+        "discovered": 0, "inserted": 0, "language_rejected": 0,
+        "too_long": 0, "errors": 0, "categories_skipped": 0,
+    }
     for category, category_config in keywords.items():
         if not category_active_today(category_config or {}):
             stats["categories_skipped"] += 1
@@ -317,9 +320,12 @@ def discover(config: dict[str, Any], *, platforms: Iterable[str] | None = None, 
                     title = str(info.get("title") or "")
                     language, confidence = likely_language(f"{title} {info.get('description') or ''}")
                     rejected = language in {"pt", "pt-BR", "pt-PT"} and confidence >= 0.7
-                    status = "LANGUAGE_REJECTED" if rejected else "DISCOVERED"
+                    too_long = candidate_too_long(config, info.get("duration"))
+                    status = "LANGUAGE_REJECTED" if rejected else ("TOO_LONG" if too_long else "DISCOVERED")
                     if rejected:
                         stats["language_rejected"] += 1
+                    if too_long:
+                        stats["too_long"] += 1
                     timestamp = now_iso()
                     score, breakdown = score_candidate_v2(info, str(term), scoring_config_path(config))
                     values = (
@@ -336,6 +342,10 @@ def discover(config: dict[str, Any], *, platforms: Iterable[str] | None = None, 
                         status,
                         json.dumps({
                             **info, "category": category, "keyword": term,
+                            "duration_gate": {
+                                "max_source_duration_sec": source_duration_limit(config),
+                                "too_long": too_long,
+                            },
                             "score_breakdown": breakdown,
                         }, ensure_ascii=False),
                         timestamp,
@@ -386,9 +396,18 @@ def inspect_url(config: dict[str, Any], url: str) -> str:
         (
             cid, platform, source_id, url, title, str(info.get("description") or ""), info.get("duration"),
             int(info.get("view_count") or 0), language, score, "DISCOVERED",
-            json.dumps({**info, "score_breakdown": breakdown}, ensure_ascii=False), timestamp, timestamp,
+            json.dumps({
+                **info,
+                "duration_gate": {
+                    "max_source_duration_sec": source_duration_limit(config),
+                    "too_long": candidate_too_long(config, info.get("duration")),
+                },
+                "score_breakdown": breakdown,
+            }, ensure_ascii=False), timestamp, timestamp,
         ),
     )
+    if candidate_too_long(config, info.get("duration")):
+        connection.execute("UPDATE candidates SET status='TOO_LONG',updated_at=? WHERE id=?", (now_iso(), cid))
     connection.commit()
     return cid
 
@@ -410,6 +429,7 @@ def inspect_xhs_url(config: dict[str, Any], url: str) -> str:
         "view_count": int(data.get("浏览量") or 0), "like_count": int(data.get("点赞数量") or 0),
         "comment_count": int(data.get("评论数量") or 0), "webpage_url": url,
     }
+    duration = data.get("duration") or data.get("视频时长") or data.get("video_duration")
     score, breakdown = score_candidate_v2(info, title, scoring_config_path(config))
     timestamp = now_iso()
     connection = connect_db(config)
@@ -418,11 +438,20 @@ def inspect_xhs_url(config: dict[str, Any], url: str) -> str:
         (id,platform,source_id,url,title,description,duration,view_count,detected_language,score,status,metadata_json,created_at,updated_at)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
-            cid, "xiaohongshu", source_id, url, title, description, None,
+            cid, "xiaohongshu", source_id, url, title, description, duration,
             info["view_count"], language, score, "DISCOVERED",
-            json.dumps({**data, "score_breakdown": breakdown}, ensure_ascii=False), timestamp, timestamp,
+            json.dumps({
+                **data,
+                "duration_gate": {
+                    "max_source_duration_sec": source_duration_limit(config),
+                    "too_long": candidate_too_long(config, duration),
+                },
+                "score_breakdown": breakdown,
+            }, ensure_ascii=False), timestamp, timestamp,
         ),
     )
+    if candidate_too_long(config, duration):
+        connection.execute("UPDATE candidates SET status='TOO_LONG',updated_at=? WHERE id=?", (now_iso(), cid))
     connection.commit()
     return cid
 
@@ -438,6 +467,16 @@ def download_candidate(config: dict[str, Any], row: sqlite3.Row) -> Path:
         metadata = json.loads(row["metadata_json"] or "{}")
     except json.JSONDecodeError:
         metadata = {}
+    duration = row["duration"] or metadata.get("duration")
+    if candidate_too_long(config, duration):
+        connection.execute("UPDATE candidates SET status='TOO_LONG',updated_at=? WHERE id=?", (now_iso(), row["id"]))
+        append_event(connection, row["id"], "TOO_LONG", {
+            "duration": duration,
+            "max_source_duration_sec": source_duration_limit(config),
+        })
+        raise RuntimeError(
+            f"source duration {duration}s exceeds max_source_duration_sec={source_duration_limit(config):.0f}"
+        )
     direct_url = str(metadata.get("direct_media_url") or "").strip()
     direct_error = ""
     try:
@@ -587,6 +626,45 @@ def choose_audio_strategy(
     if has_audio:
         return "preserve_source", "", "no_speech_evidence_source_audio_preserved"
     return "bgm_only", "", "no_speech_evidence_source_has_no_audio"
+
+
+def localization_profile_for_candidate(row: sqlite3.Row, metadata: dict[str, Any], work: Path, media: Path) -> dict[str, Any]:
+    subtitle_files = sorted([*work.glob("source*.srt"), *work.glob("source*.vtt")])
+    subtitle_text = ""
+    for subtitle in subtitle_files[:3]:
+        try:
+            subtitle_text += " " + parse_srt(subtitle)
+        except OSError:
+            pass
+    chinese_subtitles = bool(re.search(r"[\u4e00-\u9fff]", subtitle_text))
+    detected_language = str(row["detected_language"] or metadata.get("language") or "").lower()
+    title_text = f"{row['title']} {row['description']} {metadata.get('title') or ''} {metadata.get('description') or ''}"
+    title_has_chinese = bool(re.search(r"[\u4e00-\u9fff]", title_text))
+    has_audio = media_has_audio(media)
+    if chinese_subtitles:
+        class_id = 1
+        mode = "localized"
+        subtitle_mode = "ptbr_subtitles"
+        reason = "chinese_subtitles_detected"
+    elif has_audio and (detected_language.startswith("zh") or title_has_chinese):
+        class_id = 3
+        mode = "localized"
+        subtitle_mode = "none"
+        reason = "chinese_audio_inferred_without_screen_subtitles"
+    else:
+        class_id = 2
+        mode = "preserve_source" if has_audio else "bgm_only"
+        subtitle_mode = "none"
+        reason = "no_chinese_speech_or_subtitle_evidence"
+    return {
+        "class": class_id,
+        "audio_mode": mode,
+        "subtitle_mode": subtitle_mode,
+        "chinese_subtitles": chinese_subtitles,
+        "detected_language": detected_language or "unknown",
+        "subtitle_files": [path.name for path in subtitle_files],
+        "reason": reason,
+    }
 
 
 DEFAULT_HOOK = "Olha só o que aconteceu aqui."
@@ -744,6 +822,7 @@ def tts_ptbr(
     *,
     provider: str = "auto",
     edge_voice: str = "pt-BR-AntonioNeural",
+    edge_rate: str = "+8%",
 ) -> None:
     """Generate pt-BR narration with WorkBuddy's edge-tts path first.
 
@@ -755,7 +834,7 @@ def tts_ptbr(
         raise ValueError("localization.tts_provider must be auto, edge or system")
     if provider in {"auto", "edge"}:
         try:
-            edge_tts_ptbr(text, destination, voice=edge_voice)
+            edge_tts_ptbr(text, destination, voice=edge_voice, rate=edge_rate)
             return
         except RuntimeError:
             if provider == "edge":
@@ -987,8 +1066,14 @@ def render_endcard(config: dict[str, Any], kit: dict[str, Any], destination: Pat
     output = destination / "endcard.png"
     canvas_width, canvas_height = size
     scale = min(canvas_width / 1080, canvas_height / 1920)
+    mode = str(settings.get("mode", "generated")).strip().lower()
     image_path = str(settings.get("image") or "").strip()
-    if str(settings.get("mode", "generated")) == "image" and image_path:
+    if mode == "orientation_image":
+        image_path = str(
+            settings.get("portrait_image") if canvas_height >= canvas_width else settings.get("landscape_image")
+            or image_path
+        ).strip()
+    if mode in {"image", "orientation_image"} and image_path:
         source = resolve_config_path(config, image_path)
         if source.exists():
             card = Image.open(source).convert("RGBA").resize(size, Image.LANCZOS)
@@ -1431,10 +1516,15 @@ def qa_video(path: Path, config: dict[str, Any] | None = None) -> dict[str, Any]
         "codec": stream.get("codec_name"),
     }
     layout = str((config or {}).get("edit", {}).get("layout_mode", "vertical")).strip().lower()
+    minimum, maximum = short_duration_bounds(config or {})
     if layout == "original":
-        checks["passed"] = int(checks["width"] or 0) >= 360 and int(checks["height"] or 0) >= 360 and 20 <= duration <= 60.5
+        checks["passed"] = (
+            int(checks["width"] or 0) >= 360
+            and int(checks["height"] or 0) >= 360
+            and minimum <= duration <= maximum + 0.5
+        )
     else:
-        checks["passed"] = checks["width"] == 1080 and checks["height"] == 1920 and 20 <= duration <= 60.5
+        checks["passed"] = checks["width"] == 1080 and checks["height"] == 1920 and minimum <= duration <= maximum + 0.5
     return checks
 
 
@@ -1447,6 +1537,50 @@ def short_duration_bounds(config: dict[str, Any]) -> tuple[float, float]:
         minimum = 20.0
         maximum = float(configured)
     return max(12.0, minimum), min(60.0, max(minimum, maximum))
+
+
+def short_video_threshold(config: dict[str, Any]) -> float:
+    return max(45.0, min(90.0, float(config.get("edit", {}).get("short_video_threshold_sec", 75))))
+
+
+def source_duration_limit(config: dict[str, Any]) -> float:
+    return max(60.0, float(config.get("selection", {}).get("max_source_duration_sec", 1800)))
+
+
+def candidate_too_long(config: dict[str, Any], duration: float | int | None) -> bool:
+    try:
+        return bool(duration and float(duration) > source_duration_limit(config))
+    except (TypeError, ValueError):
+        return False
+
+
+def edge_rate_from_config(config: dict[str, Any]) -> str:
+    raw = config.get("localization", {}).get("tts_rate", 1.08)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return str(raw)
+    percent = int(round((value - 1.0) * 100))
+    return f"{percent:+d}%"
+
+
+def whole_source_segment(source_duration: float, strategy: str) -> dict[str, Any]:
+    return {
+        "start": 0.0,
+        "duration": round(source_duration, 3),
+        "highlight_score": 50.0,
+        "highlight_reasons": ["short_source_no_smart_slice"],
+        "signal_scores": {
+            "audio_peak": 0.0, "audio_surge": 0.0, "motion_peak": 0.0,
+            "scene_change": 0.0, "keyword": 0.0, "replay": 0.0,
+        },
+        "strategy": strategy,
+        "fallback": False,
+        "index": 1,
+        "total": 1,
+        "source_start": 0.0,
+        "source_end": round(source_duration, 3),
+    }
 
 
 def short_segments(config: dict[str, Any], source_duration: float, preferred_duration: float) -> list[dict[str, Any]]:
@@ -1499,6 +1633,11 @@ def produce_candidate(
         candidate_metadata = json.loads(row["metadata_json"] or "{}")
     except (json.JSONDecodeError, KeyError):
         candidate_metadata = {}
+    source_duration = media_duration(media)
+    if candidate_too_long(config, source_duration):
+        raise RuntimeError(
+            f"source duration {source_duration:.1f}s exceeds max_source_duration_sec={source_duration_limit(config):.0f}"
+        )
     candidate_payload = {**dict(row), "metadata": candidate_metadata}
     strategy = resolve_production_strategy(
         candidate_payload,
@@ -1514,8 +1653,13 @@ def produce_candidate(
     )
     hook_version, hook_text = active_hook(config)
     audio_mode = render_audio_mode(strategy.audio_policy)
+    localization_profile = localization_profile_for_candidate(row, candidate_metadata, work, media)
+    audio_override = str(options.get("audio_policy") or "auto").strip().lower() != "auto"
+    if not audio_override:
+        audio_mode = str(localization_profile["audio_mode"])
     transcript = ""
     audio_reason = f"content_policy:{strategy.content_type}->{strategy.audio_policy}"
+    audio_reason += f":localization_class_{localization_profile['class']}:{localization_profile['reason']}"
     if audio_mode == "localized":
         transcript = source_text(
             work,
@@ -1542,6 +1686,7 @@ def produce_candidate(
             voice,
             provider=str(config.get("localization", {}).get("tts_provider", "auto")),
             edge_voice=str(config.get("localization", {}).get("edge_tts_voice", "pt-BR-AntonioNeural")),
+            edge_rate=edge_rate_from_config(config),
         )
         progress(48, "葡语配音已生成")
         if bool(config.get("localization", {}).get("preserve_backing_track", False)):
@@ -1568,13 +1713,15 @@ def produce_candidate(
         "audio_reason": audio_reason,
     }
     (work / "script_ptbr.json").write_text(json.dumps(script_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    source_duration = media_duration(media)
     subtitles: Path | None = None
-    if audio_mode == "localized" and voice:
+    if audio_mode == "localized" and voice and localization_profile.get("subtitle_mode") == "ptbr_subtitles":
         voice_duration = media_duration(voice)
         preferred_duration = min(60.0, source_duration, max(20.0, voice_duration + 3.0))
         subtitles = work / "subtitles_ptbr.srt"
         write_srt(script, max(1.0, voice_duration), subtitles)
+    elif audio_mode == "localized" and voice:
+        voice_duration = media_duration(voice)
+        preferred_duration = min(60.0, source_duration, max(20.0, voice_duration + 3.0))
     else:
         preferred_duration = min(60.0, source_duration)
         for stale in (work / "voice_ptbr.aiff", work / "subtitles_ptbr.srt"):
@@ -1590,14 +1737,18 @@ def produce_candidate(
         bgm, bgm_source = select_bgm(config, row["id"])
         progress(58, "已准备源音下的轻量 Funk BGM")
     transcript_file = next(iter(sorted([*work.glob("source*.srt"), *work.glob("source*.vtt")])), None)
-    segments = analyze_video(
-        media,
-        source_duration=source_duration,
-        max_segments=strategy.max_segments,
-        max_duration=min(strategy.max_duration, preferred_duration),
-        strategy=strategy.segment_strategy,
-        transcript_path=transcript_file,
-    )
+    if source_duration <= short_video_threshold(config):
+        segment_duration = min(source_duration, max(float(short_duration_bounds(config)[1]), preferred_duration))
+        segments = [whole_source_segment(segment_duration, strategy.segment_strategy)]
+    else:
+        segments = analyze_video(
+            media,
+            source_duration=source_duration,
+            max_segments=strategy.max_segments,
+            max_duration=min(strategy.max_duration, preferred_duration),
+            strategy=strategy.segment_strategy,
+            transcript_path=transcript_file,
+        )
     (work / "analysis.json").write_text(
         json.dumps({"strategy": strategy.to_dict(), "segments": segments}, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -1633,7 +1784,11 @@ def produce_candidate(
             "reason": "not_requested",
             "media": str(media),
         }
-        if audio_mode == "localized" and cleanup_mode == "ocr_blur":
+        if (
+            audio_mode == "localized"
+            and localization_profile.get("subtitle_mode") == "ptbr_subtitles"
+            and cleanup_mode == "ocr_blur"
+        ):
             preprocessed = work / f"ocr_blurred_part{segment_index:02d}.mp4"
             ocr_cleanup = prepare_ocr_blurred_segment(
                 media,
@@ -1742,12 +1897,13 @@ def produce_candidate(
                 "bgm": str(bgm) if bgm else "",
                 "bgm_source": bgm_source,
             },
-        "visual_cleanup": {
-            "layout_mode": str(config.get("edit", {}).get("layout_mode", "vertical")),
-            "source_subtitle_mode": cleanup_mode,
-            "source_subtitle_crop_bottom_ratio": crop_ratio,
-            "ocr": ocr_cleanup,
-        },
+            "localization_profile": localization_profile,
+            "visual_cleanup": {
+                "layout_mode": str(config.get("edit", {}).get("layout_mode", "vertical")),
+                "source_subtitle_mode": cleanup_mode,
+                "source_subtitle_crop_bottom_ratio": crop_ratio,
+                "ocr": ocr_cleanup,
+            },
             "qa": qa,
         }
         (review / "metadata.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1811,15 +1967,22 @@ def analyze_candidate(
         default_max_duration=float(short_duration_bounds(config)[1]),
     )
     source_duration = media_duration(media)
+    if candidate_too_long(config, source_duration):
+        raise RuntimeError(
+            f"source duration {source_duration:.1f}s exceeds max_source_duration_sec={source_duration_limit(config):.0f}"
+        )
     transcript_file = next(iter(sorted([*work.glob("source*.srt"), *work.glob("source*.vtt")])), None)
-    segments = analyze_video(
-        media,
-        source_duration=source_duration,
-        max_segments=strategy.max_segments,
-        max_duration=strategy.max_duration,
-        strategy=strategy.segment_strategy,
-        transcript_path=transcript_file,
-    )
+    if source_duration <= short_video_threshold(config):
+        segments = [whole_source_segment(min(source_duration, strategy.max_duration), strategy.segment_strategy)]
+    else:
+        segments = analyze_video(
+            media,
+            source_duration=source_duration,
+            max_segments=strategy.max_segments,
+            max_duration=strategy.max_duration,
+            strategy=strategy.segment_strategy,
+            transcript_path=transcript_file,
+        )
     result = {
         "candidate_id": row["id"],
         "media": str(media),

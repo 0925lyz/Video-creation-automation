@@ -4,7 +4,7 @@ run:
   workspace: workspace
 
 sources:
-  enabled: [youtube, bilibili]      # add douyin / xiaohongshu once their services run
+  enabled: [youtube, bilibili, douyin, xiaohongshu, tiktok, facebook]
   exclude_languages: [pt, pt-BR, pt-PT]
   keywords_file: config/keywords.demo.yaml
   creators_file: config/creators.example.yaml
@@ -14,9 +14,15 @@ sources:
     bilibili: [zh-CN, zh]
     douyin: [zh-CN, zh]
     xiaohongshu: [zh-CN, zh]
+    tiktok: [en, es, pt]
+    facebook: [en, es, pt]
   adapters:
     bilibili:
       cookies_file: ""              # optional Netscape cookies.txt to improve reliability
+    tiktok:
+      cookies_file: ""              # optional TikTok cookies.txt for age/region-limited videos
+    facebook:
+      cookies_file: ""              # Facebook keyword search is not supported; direct URLs can use cookies
     douyin:
       api_base: http://127.0.0.1:8000   # self-hosted Douyin_TikTok_Download_API
     xiaohongshu:
@@ -27,13 +33,14 @@ discovery:
 
 selection:
   min_score: 45
-  max_source_duration_sec: 600
+  max_source_duration_sec: 1800
   min_height: 360
   duplicate_threshold: 0.90
 
 edit:
-  render_engine: remotion             # ffmpeg | remotion
-  output_duration_sec: [12, 30]
+  render_engine: ffmpeg             # ffmpeg | remotion
+  output_duration_sec: [12, 60]
+  short_video_threshold_sec: 75       # <= about 1 minute: keep full video, no smart slicing
   max_segments_per_source: 3
   segment_overlap_sec: 3
   layout_mode: original            # original | vertical
@@ -49,10 +56,11 @@ localization:
   asr_enabled: false
   whisper_model: tiny
   tts_provider: auto                 # edge -> local system voice fallback
-  edge_tts_voice: pt-BR-AntonioNeural
+  edge_tts_voice: pt-BR-AntonioNeural # energetic Brazilian Portuguese male voice
+  speech_style: excited_sports_male
   preserve_backing_track: false     # true requires optional Demucs install
-  tts_voice: Luciana
-  tts_rate: 185
+  tts_voice: energetic_male
+  tts_rate: 1.08
   # Hook variants for A/B testing; tracking.hook_version selects the active one
   # and is embedded in every UTM link as utm_content=<candidate-id>_<hook-version>.
   hooks:
@@ -92,12 +100,14 @@ brand:
         mode: frame            # frame | image
         image: ""              # mode=image: server path or project-relative image
       endcard:
-        mode: generated        # generated | image
+        mode: orientation_image        # generated | image | orientation_image
         image: ""              # mode=image: full-frame 1080x1920 PNG
+        portrait_image: assets/brand/endcard_portrait_green.png
+        landscape_image: assets/brand/endcard_landscape_blue.png
         title: "Jaguar TV"
         tagline: "O melhor app de TV ao vivo e esportes"
         site: "Jarg.top"
-        duration_sec: 3
+        duration_sec: 2
         background: "#04220E"
         accent: "#8CE522"
         features:
@@ -110,6 +120,10 @@ storage:
   provider: factory_server
   root: workspace/server_media
   public_base_url: https://factory.jarg.top/media
+  remote_review_host: 43.134.128.197
+  remote_review_user: ubuntu
+  remote_review_key: ~/.ssh/jarg_tencent.pem
+  remote_review_root: /opt/jaguartv-content-factory-vnext/workspace/server_media/review
   max_upload_bytes: 2147483648
 
 compliance:

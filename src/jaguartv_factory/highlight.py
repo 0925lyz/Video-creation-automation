@@ -13,8 +13,10 @@ from typing import Any, Iterable, Sequence
 
 HIGHLIGHT_KEYWORDS = (
     "goal", "gol", "score", "scores", "penalty", "pênalti", "shoot", "chute",
-    "save", "goleiro", "red card", "cartão vermelho", "进球", "破门", "射门", "点球",
-    "绝杀", "扑救", "红牌", "帽子戏法", "倒钩",
+    "save", "goleiro", "red card", "cartão vermelho", "defense", "defence",
+    "defend", "tackle", "interception", "pressing", "pass", "through ball",
+    "assist", "dribble", "skill", "进球", "破门", "射门", "点球", "绝杀", "扑救",
+    "红牌", "帽子戏法", "倒钩", "防守", "抢断", "拦截", "传球", "直塞", "助攻", "过人",
 )
 
 REPLAY_KEYWORDS = ("replay", "slow motion", "again", "回放", "慢镜头", "再看")
@@ -176,6 +178,14 @@ def _window_stat(points: Sequence[SignalPoint], start: float, end: float) -> flo
     return sum(values[:keep]) / keep
 
 
+def _surge_stat(points: Sequence[SignalPoint], start: float, end: float) -> float:
+    values = [point.value for point in points if start <= point.time <= end]
+    if len(values) < 2:
+        return 0.0
+    surges = [max(0.0, right - left) for left, right in zip(values, values[1:])]
+    return max(surges, default=0.0)
+
+
 def _keyword_score(cues: Sequence[TranscriptCue], start: float, end: float, words: Iterable[str]) -> float:
     text = " ".join(cue.text.lower() for cue in cues if cue.end >= start and cue.start <= end)
     hits = sum(1 for word in words if word.lower() in text)
@@ -236,17 +246,19 @@ def rank_highlight_windows(
         start = max(0.0, min(source_duration - segment_duration, center - segment_duration * 0.42))
         end = start + segment_duration
         audio_score = _window_stat(audio_points, start, end)
+        surge_score = _surge_stat(audio_points, start, end)
         motion_score = _window_stat(motion_points, start, end)
         scene_count = sum(1 for value in scene_times if start <= value <= end)
         scene_score = min(1.0, scene_count / 4.0)
         keyword_score = _keyword_score(transcript_cues, start, end, HIGHLIGHT_KEYWORDS)
         replay_score = _keyword_score(transcript_cues, start, end, REPLAY_KEYWORDS)
         score = 100 * (
-            audio_score * 0.35 + motion_score * 0.25 + scene_score * 0.20
+            audio_score * 0.30 + surge_score * 0.05 + motion_score * 0.25 + scene_score * 0.20
             + keyword_score * 0.15 + replay_score * 0.05
         )
         component_scores = {
             "audio_peak": round(audio_score, 4),
+            "audio_surge": round(surge_score, 4),
             "motion_peak": round(motion_score, 4),
             "scene_change": round(scene_score, 4),
             "keyword": round(keyword_score, 4),

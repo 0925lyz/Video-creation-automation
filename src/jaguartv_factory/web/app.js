@@ -31,6 +31,7 @@ const statusLabels = {
   APPROVED: "审核通过",
   REVISION_REQUIRED: "需返工",
   LANGUAGE_REJECTED: "语言排除",
+  TOO_LONG: "超30分钟",
   DOWNLOAD_FAILED: "下载失败",
   PRODUCTION_FAILED: "制作失败",
   BLOCKED_RIGHTS: "版权阻断",
@@ -539,6 +540,8 @@ function updateDiscoverMode() {
     bilibili: "Bilibili 建议配置 cookies；网络不稳定时可能超时。",
     douyin: "抖音需要先启动本机 8000 端口的采集服务并配置有效 cookies。",
     xiaohongshu: "小红书当前通过作品 URL 导入，需要先启动本机 5556 端口的 XHS 服务。",
+    tiktok: "TikTok 会先用 yt-dlp 搜索尝试；地区/年龄限制内容建议配置 cookies。",
+    facebook: "Facebook 关键词搜索不稳定，建议优先粘贴具体视频 URL 或后续接入 Apify。",
   };
   document.querySelector("#discoverPlatformNote").textContent = notes[platform];
 }

@@ -31,7 +31,7 @@ from .core import (
     workspace_dir,
 )
 from .sessions import check_session, delete_session, list_sessions, save_session
-from .server_store import save_upload, storage_root
+from .server_store import public_url, save_upload, storage_root
 
 
 WEB_ROOT = Path(__file__).resolve().parent / "web"
@@ -83,6 +83,18 @@ def dashboard_overview(config: dict[str, Any]) -> dict[str, Any]:
     total = sum(status_counts.values())
     ready = status_counts.get("READY_FOR_REVIEW", 0)
     approved = status_counts.get("APPROVED", 0)
+    orphan_reviews = server_review_rows(config, exclude={
+        row["id"] for row in connection.execute("SELECT id FROM candidates")
+    })
+    orphan_status_counts: dict[str, int] = {}
+    for item in orphan_reviews:
+        orphan_status_counts[item["status"]] = orphan_status_counts.get(item["status"], 0) + 1
+    total += len(orphan_reviews)
+    ready += orphan_status_counts.get("READY_FOR_REVIEW", 0)
+    approved += orphan_status_counts.get("APPROVED", 0)
+    merged_status_counts = dict(status_counts)
+    for key, value in orphan_status_counts.items():
+        merged_status_counts[key] = merged_status_counts.get(key, 0) + value
     published = connection.execute(
         "SELECT COUNT(DISTINCT candidate_id) count FROM publications WHERE status='PUBLISHED'"
     ).fetchone()["count"]
@@ -124,7 +136,7 @@ def dashboard_overview(config: dict[str, Any]) -> dict[str, Any]:
             {"label": "注册", "value": registrations},
             {"label": "首次观看", "value": first_watch},
         ],
-        "candidate_statuses": status_counts,
+        "candidate_statuses": merged_status_counts,
         "publication_statuses": publication_counts,
         "platforms": platform_performance(connection),
         "keywords": keyword_performance(connection),
@@ -287,7 +299,83 @@ def candidate_rows(config: dict[str, Any], status: str | None = None, limit: int
             item["failure_detail"] = detail[-4000:]
             item["failure_at"] = failure["created_at"]
         result.append(item)
+    existing = {str(item.get("id") or "") for item in result}
+    if status in {None, "", "READY_FOR_REVIEW", "APPROVED", "REVISION_REQUIRED"}:
+        for item in server_review_rows(config, exclude=existing):
+            if status and item["status"] != status:
+                continue
+            result.append(item)
+            if len(result) >= limit:
+                break
     return result
+
+
+def server_review_rows(config: dict[str, Any], exclude: set[str] | None = None) -> list[dict[str, Any]]:
+    exclude = exclude or set()
+    review_root = storage_root(config) / "review"
+    if not review_root.exists():
+        return []
+    items: list[dict[str, Any]] = []
+    for metadata_path in sorted(review_root.glob("*/metadata.json"), key=lambda path: path.stat().st_mtime, reverse=True):
+        package_dir = metadata_path.parent
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        candidate = str(metadata.get("job_id") or package_dir.name)
+        if candidate in exclude:
+            continue
+        review_state = "READY_FOR_REVIEW"
+        review_file = package_dir / "review.json"
+        if review_file.exists():
+            try:
+                decision = str(json.loads(review_file.read_text(encoding="utf-8")).get("decision") or "").lower()
+                if decision == "approved":
+                    review_state = "APPROVED"
+                elif decision in {"revision_required", "revision", "rejected"}:
+                    review_state = "REVISION_REQUIRED"
+            except (json.JSONDecodeError, OSError):
+                pass
+        source = metadata.get("source") or {}
+        segment = metadata.get("segment") or {}
+        strategy = {
+            "content_type": metadata.get("content_type") or "unknown",
+            "segment_strategy": metadata.get("segment_strategy") or "",
+            "audio_policy": metadata.get("audio_policy") or "",
+        }
+        media_prefix = f"review/{package_dir.name}"
+        video = package_dir / "video.mp4"
+        cover = package_dir / "cover.jpg"
+        updated_at = datetime.fromtimestamp(metadata_path.stat().st_mtime, tz=timezone.utc).isoformat()
+        items.append({
+            "id": candidate,
+            "platform": str(source.get("platform") or "server"),
+            "source_id": str(metadata.get("source_job_id") or ""),
+            "url": str(source.get("url") or ""),
+            "title": str(source.get("title") or candidate),
+            "description": "",
+            "duration": float(segment.get("duration_sec") or 0),
+            "view_count": 0,
+            "detected_language": "",
+            "score": 0,
+            "status": review_state,
+            "created_at": updated_at,
+            "updated_at": updated_at,
+            "keyword": "",
+            "score_breakdown": {},
+            "content_type": str(strategy["content_type"]),
+            "segment_strategy": str(strategy["segment_strategy"]),
+            "audio_policy": str(strategy["audio_policy"]),
+            "highlight_score": float(segment.get("highlight_score") or 0),
+            "thumbnail_url": "",
+            "cover_url": f"/media/{media_prefix}/cover.jpg?v={int(cover.stat().st_mtime)}" if cover.exists() else "",
+            "video_url": f"/media/{media_prefix}/video.mp4?v={int(video.stat().st_mtime)}" if video.exists() else "",
+            "server_url": public_url(config, f"{media_prefix}/video.mp4") if video.exists() else "",
+            "failure_event": "",
+            "failure_detail": "",
+            "failure_at": "",
+        })
+    return items
 
 
 def publication_rows(config: dict[str, Any]) -> list[dict[str, Any]]:
@@ -507,7 +595,20 @@ def save_review(config: dict[str, Any], payload: dict[str, Any]) -> dict[str, An
     connection = connect_db(config)
     row = connection.execute("SELECT id,status FROM candidates WHERE id=?", (candidate,)).fetchone()
     if not row:
-        raise ValueError("candidate does not exist")
+        review_file = storage_root(config) / "review" / candidate / "review.json"
+        if not review_file.parent.exists():
+            raise ValueError("candidate does not exist")
+        timestamp = now_iso()
+        review_file.write_text(
+            json.dumps({
+                "decision": decision.lower(),
+                "note": str(payload.get("note") or ""),
+                "reviewer": str(payload.get("reviewer") or ""),
+                "reviewed_at": timestamp,
+            }, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return {"candidate_id": candidate, "status": decision, "source": "server_review_package"}
     if row["status"] not in {"READY_FOR_REVIEW", "APPROVED", "REVISION_REQUIRED"}:
         raise ValueError(f"candidate status {row['status']} cannot be reviewed")
     timestamp = now_iso()
