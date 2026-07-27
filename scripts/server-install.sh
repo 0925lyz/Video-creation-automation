@@ -6,8 +6,8 @@ set -euo pipefail
 # Usage on server:
 #   REPO_URL=git@github-jaguartv-l4:0925lyz/jaguartv-content-factory-vnext-l4.git \
 #   APP_DIR=/opt/jaguartv-content-factory-vnext \
-#   JAGUARTV_HOST=0.0.0.0 \
-#   JAGUARTV_PORT=8787 \
+#   JAGUARTV_HOST=127.0.0.1 \
+#   JAGUARTV_PORT=8788 \
 #   bash scripts/server-install.sh
 #
 # Notes:
@@ -18,7 +18,7 @@ APP_DIR="${APP_DIR:-/opt/jaguartv-content-factory-vnext}"
 REPO_URL="${REPO_URL:-https://github.com/0925lyz/jaguartv-content-factory-vnext-l4.git}"
 BRANCH="${BRANCH:-main}"
 SERVICE_NAME="${SERVICE_NAME:-jaguartv-content-factory-vnext}"
-JAGUARTV_HOST="${JAGUARTV_HOST:-0.0.0.0}"
+JAGUARTV_HOST="${JAGUARTV_HOST:-127.0.0.1}"
 JAGUARTV_PORT="${JAGUARTV_PORT:-8787}"
 SERVICE_USER="${SERVICE_USER:-$(id -un)}"
 PYTHON_BIN="${PYTHON_BIN:-python3.12}"

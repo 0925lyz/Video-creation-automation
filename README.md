@@ -91,6 +91,7 @@ X-Upload-Token: <JAGUARTV_UPLOAD_TOKEN>
 - 后续同步：`scripts/server-sync.sh`
 - systemd 默认服务：`jaguartv-content-factory-vnext`
 - 默认目录：`/opt/jaguartv-content-factory-vnext`
+- 当前服务器内部监听：`127.0.0.1:8788`，由 Nginx 对外提供 HTTPS
 - 线上入口：[factory.jarg.top](https://factory.jarg.top/)
 
 首次安装会生成 `JAGUARTV_EVENTS_TOKEN` 和 `JAGUARTV_UPLOAD_TOKEN`，只写入服务器 `.env`，不进入 Git。
