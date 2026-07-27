@@ -4,7 +4,7 @@ set -euo pipefail
 # Tencent Cloud Lighthouse / Ubuntu-Debian server installer for JaguarTV Content Factory.
 #
 # Usage on server:
-#   REPO_URL=git@github.com:0925lyz/jaguartv-content-factory-vnext-l4.git \
+#   REPO_URL=git@github-jaguartv-l4:0925lyz/jaguartv-content-factory-vnext-l4.git \
 #   APP_DIR=/opt/jaguartv-content-factory-vnext \
 #   JAGUARTV_HOST=0.0.0.0 \
 #   JAGUARTV_PORT=8787 \
