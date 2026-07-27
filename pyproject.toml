@@ -3,17 +3,20 @@ requires = ["setuptools>=69"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "jaguartv-content-factory"
-version = "0.1.0"
-description = "Local batch discovery and pt-BR video localization pipeline for JaguarTV"
+name = "jaguartv-content-factory-vnext"
+version = "0.2.0"
+description = "Smart long-video slicing, Reaction rendering and server review pipeline for JaguarTV"
 requires-python = ">=3.12"
 dependencies = [
+  "edge-tts>=7.2.0",
   "Pillow>=11.0",
   "PyYAML>=6.0.2",
+  "yt-dlp",
 ]
 
 [project.optional-dependencies]
 asr = ["faster-whisper>=1.1.1"]
+workbuddy = ["demucs>=4.0.1", "faster-whisper>=1.1.1"]
 test = ["pytest>=8.3"]
 
 [project.scripts]

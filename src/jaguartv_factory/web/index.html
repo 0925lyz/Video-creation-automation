@@ -76,7 +76,7 @@
         <span id="selectionCount">已选 0 条</span>
         <div class="batch-actions"><button class="secondary-button" id="batchDownload" type="button" disabled>批量下载</button><button class="secondary-button" id="batchProduce" type="button" disabled>批量制作</button><button class="secondary-button danger-button" id="batchSkip" type="button" disabled>批量忽略</button></div>
       </div>
-      <div class="table-wrap inventory-table"><table><thead><tr><th class="check-column"></th><th>内容</th><th>平台</th><th>语言</th><th>评分</th><th>状态</th><th>更新时间</th><th></th></tr></thead><tbody id="inventoryTable"></tbody></table></div>
+      <div class="table-wrap inventory-table"><table><thead><tr><th class="check-column"></th><th>内容</th><th>平台</th><th>类型 / 策略</th><th>精彩度</th><th>评分</th><th>状态</th><th>更新时间</th><th></th></tr></thead><tbody id="inventoryTable"></tbody></table></div>
     </section>
 
     <section class="view" id="view-publishing">
@@ -220,6 +220,28 @@
       </form>
     </section>
   </main>
+
+  <dialog id="productionDialog">
+    <form method="dialog" id="productionForm">
+      <div class="dialog-heading"><div><p class="eyebrow">PRODUCTION STRATEGY</p><h2>制作策略与 Reaction</h2></div><button class="icon-button" id="closeProductionDialog" type="button" title="关闭" aria-label="关闭">×</button></div>
+      <div class="settings-grid three">
+        <label>内容类型<select id="productionContentType"><option value="auto">自动识别</option><option value="football">足球赛事</option><option value="sports_highlight">体育集锦</option><option value="dance_music">舞蹈音乐</option><option value="comedy_life">搞笑生活</option><option value="cartoon_kids">动画少儿</option><option value="soap_opera">肥皂剧 / 短剧</option><option value="commentary">解说知识</option><option value="unknown">未知</option></select></label>
+        <label>切片策略<select id="productionSegmentStrategy"><option value="auto">自动选择</option><option value="sports_highlight">体育精彩</option><option value="visual_peak">视觉峰值</option><option value="rhythm_cut">节奏切片</option><option value="uniform">均匀切片</option><option value="story_safe">剧情安全</option><option value="dialogue_scene">对白场景</option><option value="summary_cut">摘要切片</option></select></label>
+        <label>音频策略<select id="productionAudioPolicy"><option value="auto">自动选择</option><option value="source_plus_funk">源音 + Funk</option><option value="funk_or_source_music">源音乐优先</option><option value="funk_only">仅 Funk</option><option value="preserve_ptbr_voice_light_bgm">保留葡语 + 轻 BGM</option><option value="localize_ptbr">葡语配音字幕</option><option value="bgm_only">静音源 + BGM</option></select></label>
+        <label>最大切片数<input id="productionMaxSegments" type="number" min="1" max="10" value="3"></label>
+        <label>单片最长秒数<input id="productionMaxDuration" type="number" min="12" max="60" value="30"></label>
+        <label>Reaction 布局<select id="productionReactionMode"><option value="none">不使用</option><option value="picture_in_picture">画中画</option><option value="split_vertical">上下分屏</option><option value="side_by_side">左右分屏</option></select></label>
+        <label>服务器 Reaction 路径<input id="productionReactionSource" placeholder="/path/on/server/reaction.mp4"></label>
+        <label>或上传 Reaction 文件<input id="productionReactionFile" type="file" accept="video/mp4,video/quicktime,video/webm,.mkv"></label>
+        <label>上传令牌<input id="productionUploadToken" type="password" autocomplete="off" placeholder="JAGUARTV_UPLOAD_TOKEN"></label>
+        <label>源视频音量<input id="productionSourceVolume" type="number" min="0" max="2" step="0.05" value="0.72"></label>
+        <label>Reaction 音量<input id="productionReactionVolume" type="number" min="0" max="2" step="0.05" value="1"></label>
+        <label>素材权利状态<select id="productionRightsStatus" required><option value="">请选择并确认</option><option value="OWNED">自有素材</option><option value="LICENSED">已获授权</option><option value="PUBLIC_DOMAIN">公共领域</option><option value="CC_BY">CC BY 许可</option><option value="VERIFIED">已由法务 / 负责人核验</option></select></label>
+      </div>
+      <p class="dialog-note">体育赛事、影视和平台用户原创内容默认高风险。只有自有、已授权、公共领域或许可允许商业改编的素材可以制作；Reaction 不能用于规避版权检测。</p>
+      <div class="dialog-actions"><button class="secondary-button" id="cancelProductionDialog" type="button">取消</button><button class="primary-button" type="submit">开始分析并制作</button></div>
+    </form>
+  </dialog>
 
   <dialog id="discoverDialog">
     <form method="dialog" id="discoverForm">

@@ -4,11 +4,11 @@ set -euo pipefail
 # Pull latest GitHub code on the server and restart the Content Factory service.
 #
 # Usage on server:
-#   APP_DIR=/opt/jaguartv-content-factory bash scripts/server-sync.sh
+#   APP_DIR=/opt/jaguartv-content-factory-vnext bash scripts/server-sync.sh
 
-APP_DIR="${APP_DIR:-/opt/jaguartv-content-factory}"
+APP_DIR="${APP_DIR:-/opt/jaguartv-content-factory-vnext}"
 BRANCH="${BRANCH:-main}"
-SERVICE_NAME="${SERVICE_NAME:-jaguartv-content-factory}"
+SERVICE_NAME="${SERVICE_NAME:-jaguartv-content-factory-vnext}"
 
 if [[ ! -d "$APP_DIR/.git" ]]; then
   echo "Not a git checkout: $APP_DIR" >&2
@@ -29,4 +29,3 @@ sudo systemctl restart "$SERVICE_NAME"
 sudo systemctl status "$SERVICE_NAME" --no-pager
 
 echo "Synced: $APP_DIR@$BRANCH"
-

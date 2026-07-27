@@ -38,7 +38,7 @@ def test_demo_config_loads():
     assert config["brand"]["kits"]["jaguartv"]["endcard"]["site"] == "Jarg.top"
     assert config["edit"]["render_engine"] == "remotion"
     assert config["edit"]["layout_mode"] == "original"
-    assert config["edit"]["source_subtitle_cleanup"] == "off"
+    assert config["edit"]["source_subtitle_cleanup"] == "ocr_blur"
 
 
 def test_generate_funk_bgm(tmp_path: Path):

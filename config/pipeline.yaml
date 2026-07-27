@@ -39,13 +39,18 @@ edit:
   layout_mode: original            # original | vertical
   aspect_ratio: "source"
   resolution: [1080, 1920]         # used only when layout_mode=vertical
-  source_subtitle_cleanup: "off"
+  source_subtitle_cleanup: "ocr_blur"  # localized clips only; protected corners are excluded
   source_subtitle_crop_bottom_ratio: 0.18
+  ocr_blur_sigma: 28
+  default_segment_strategy: auto
 
 localization:
   target: pt-BR
   asr_enabled: false
   whisper_model: tiny
+  tts_provider: auto                 # edge -> local system voice fallback
+  edge_tts_voice: pt-BR-AntonioNeural
+  preserve_backing_track: false     # true requires optional Demucs install
   tts_voice: Luciana
   tts_rate: 185
   # Hook variants for A/B testing; tracking.hook_version selects the active one
@@ -101,13 +106,21 @@ brand:
           - ["Futebol Total", "Canais premium 100% liberados"]
           - ["Sinal Raiz", "Servidores dedicados, sem intermediários"]
 
-lark:
-  enabled: false                 # flip to true after filling app_id/folder_token
-  domain: https://open.feishu.cn # or https://open.larksuite.com
-  app_id: ""
-  app_secret_env: LARK_APP_SECRET
-  folder_token: ""
-  upload: [video, cover, metadata]   # finished packages only, never source videos
+storage:
+  provider: factory_server
+  root: workspace/server_media
+  public_base_url: https://factory.jarg.top/media
+  max_upload_bytes: 2147483648
+
+compliance:
+  require_verified_rights: true
+  blocked_content_risk: [football, sports_highlight, soap_opera, cartoon_kids]
+
+reaction:
+  modes: [none, picture_in_picture, split_vertical, side_by_side]
+  default_mode: none
+  source_volume: 0.72
+  reaction_volume: 1.0
 
 tracking:
   # Every rendered video gets one unique link per publish platform:

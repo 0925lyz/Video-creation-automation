@@ -15,8 +15,8 @@ from jaguartv_factory.core import (
     write_srt,
 )
 from jaguartv_factory.dashboard import candidate_rows, skip_candidate
-from jaguartv_factory.lark_store import LarkError, lark_enabled, upload_review_package
 from jaguartv_factory.scoring import score_candidate_v2
+from jaguartv_factory.server_store import archive_review_package
 from jaguartv_factory.sources import SourceError, XhsApiAdapter, get_adapter
 
 
@@ -98,13 +98,23 @@ def test_brand_kit_and_endcard_render(tmp_path: Path):
     assert Image.open(endcard).size == (1080, 1920)
 
 
-def test_lark_disabled_and_missing_secret(tmp_path: Path):
-    assert not lark_enabled({"lark": {"enabled": False}})
-    config = {"lark": {"enabled": True, "app_id": "cli_x", "folder_token": "fld_x",
-                       "app_secret_env": "MISSING_SECRET_FOR_TEST"}}
-    assert lark_enabled(config)
-    with pytest.raises(LarkError, match="MISSING_SECRET_FOR_TEST"):
-        upload_review_package(config, "c1", tmp_path)
+def test_review_package_archives_to_factory_server_storage(tmp_path: Path):
+    config = {
+        "_root": str(tmp_path),
+        "storage": {
+            "root": "workspace/server_media",
+            "public_base_url": "https://factory.jarg.top/media",
+        },
+    }
+    review = tmp_path / "review"
+    review.mkdir()
+    (review / "video.mp4").write_bytes(b"video")
+    (review / "metadata.json").write_text('{"job_id":"c1"}', encoding="utf-8")
+    result = archive_review_package(config, "c1", review)
+    assert result["provider"] == "factory_server"
+    assert result["files"]["video.mp4"]["url"] == "https://factory.jarg.top/media/review/c1/video.mp4"
+    metadata = json.loads((review / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["server_storage"]["package_id"] == "c1"
 
 
 def test_skip_candidate_and_inventory_fields(tmp_path: Path):

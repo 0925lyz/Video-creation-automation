@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import secrets
 import socket
 import threading
 import uuid
@@ -30,6 +31,7 @@ from .core import (
     workspace_dir,
 )
 from .sessions import check_session, delete_session, list_sessions, save_session
+from .server_store import save_upload, storage_root
 
 
 WEB_ROOT = Path(__file__).resolve().parent / "web"
@@ -220,7 +222,7 @@ def candidate_rows(config: dict[str, Any], status: str | None = None, limit: int
             FROM events e
             INNER JOIN (
               SELECT candidate_id,MAX(id) id FROM events
-              WHERE event_type IN ('DOWNLOAD_FAILED','PRODUCTION_FAILED','QA_FAILED')
+              WHERE event_type IN ('DOWNLOAD_FAILED','PRODUCTION_FAILED','QA_FAILED','BLOCKED_RIGHTS')
               GROUP BY candidate_id
             ) latest ON latest.id=e.id
             """
@@ -236,6 +238,13 @@ def candidate_rows(config: dict[str, Any], status: str | None = None, limit: int
         item.pop("metadata_json", None)
         item["keyword"] = str(metadata.get("keyword") or "")
         item["score_breakdown"] = metadata.get("score_breakdown") or {}
+        analysis = metadata.get("analysis") or {}
+        strategy = analysis.get("strategy") or {}
+        item["content_type"] = str(strategy.get("content_type") or "unknown")
+        item["segment_strategy"] = str(strategy.get("segment_strategy") or "")
+        item["audio_policy"] = str(strategy.get("audio_policy") or "")
+        segments = analysis.get("segments") or []
+        item["highlight_score"] = max((float(segment.get("highlight_score") or 0) for segment in segments), default=0.0)
         thumbnail = metadata.get("thumbnail") or ""
         if not thumbnail and isinstance(metadata.get("thumbnails"), list) and metadata["thumbnails"]:
             last = metadata["thumbnails"][-1]
@@ -248,18 +257,27 @@ def candidate_rows(config: dict[str, Any], status: str | None = None, limit: int
         else:
             item["cover_url"] = ""
             item["video_url"] = ""
-        item["lark_url"] = ""
+        item["server_url"] = ""
         metadata_path = review / "metadata.json"
         if metadata_path.exists():
             try:
-                item["lark_url"] = str(json.loads(metadata_path.read_text(encoding="utf-8")).get("lark", {}).get("video_url") or "")
+                review_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                item["server_url"] = str(
+                    review_metadata.get("server_storage", {}).get("files", {}).get("video.mp4", {}).get("url") or ""
+                )
+                item["content_type"] = str(review_metadata.get("content_type") or item["content_type"])
+                item["segment_strategy"] = str(review_metadata.get("segment_strategy") or item["segment_strategy"])
+                item["audio_policy"] = str(review_metadata.get("audio_policy") or item["audio_policy"])
+                item["highlight_score"] = float(
+                    review_metadata.get("segment", {}).get("highlight_score") or item["highlight_score"]
+                )
             except (json.JSONDecodeError, OSError):
                 pass
         failure = failures.get(item["id"])
         item["failure_event"] = ""
         item["failure_detail"] = ""
         item["failure_at"] = ""
-        if failure and item["status"] in {"DOWNLOAD_FAILED", "PRODUCTION_FAILED", "QA_FAILED"}:
+        if failure and item["status"] in {"DOWNLOAD_FAILED", "PRODUCTION_FAILED", "QA_FAILED", "BLOCKED_RIGHTS"}:
             try:
                 failure_payload = json.loads(failure["payload_json"] or "{}")
             except json.JSONDecodeError:
@@ -731,7 +749,9 @@ class DashboardApplication(ThreadingHTTPServer):
         with self.tasks_lock:
             self.tasks[task_id].update(values)
 
-    def run_candidate_batch(self, task_id: str, action: str, candidate_ids: list[str]) -> dict[str, Any]:
+    def run_candidate_batch(
+        self, task_id: str, action: str, candidate_ids: list[str], options: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         if not candidate_ids:
             raise ValueError("select at least one candidate")
         items = []
@@ -757,7 +777,9 @@ class DashboardApplication(ThreadingHTTPServer):
 
                 self.update_task(task_id, message=f"等待制作资源 · {index + 1}/{total}")
                 with self.production_lock:
-                    result = produce_top(self.config, 1, candidate, progress_callback=production_progress)
+                    result = produce_top(
+                        self.config, 1, candidate, progress_callback=production_progress, options=options
+                    )
                 item_failed = int(result.get("failed", 0)) or int(result.get("selected", 0) == 0)
             else:
                 try:
@@ -784,7 +806,9 @@ class DashboardApplication(ThreadingHTTPServer):
                 self.update_task(task_id, progress=15, message="正在读取小红书作品信息")
                 result = {"candidate_id": inspect_url(self.config, url)}
             elif action in {"download", "produce", "skip"}:
-                result = self.run_candidate_batch(task_id, action, payload.get("candidate_ids") or [])
+                result = self.run_candidate_batch(
+                    task_id, action, payload.get("candidate_ids") or [], payload.get("options") or {}
+                )
             elif action == "review":
                 result = {"index": str(generate_review_index(self.config))}
             else:
@@ -853,6 +877,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         try:
+            if parsed.path == "/api/uploads":
+                if not self.authorized_for_uploads():
+                    return self.send_json(
+                        {"error": "missing or invalid upload token"}, HTTPStatus.UNAUTHORIZED
+                    )
+                query = parse_qs(parsed.query)
+                filename = str((query.get("filename") or [""])[0]).strip()
+                kind = str((query.get("kind") or [""])[0]).strip().lower()
+                length = int(self.headers.get("Content-Length") or 0)
+                result = save_upload(
+                    self.server.config,
+                    self.rfile,
+                    filename=filename,
+                    kind=kind,
+                    content_length=length,
+                )
+                return self.send_json(result, HTTPStatus.CREATED)
             payload = self.read_json()
             if parsed.path == "/api/actions":
                 task_id = self.server.start_action(payload)
@@ -914,6 +955,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         header = self.headers.get("Authorization", "")
         return header.removeprefix("Bearer ").strip() == token
 
+    def authorized_for_uploads(self) -> bool:
+        token = os.environ.get("JAGUARTV_UPLOAD_TOKEN", "").strip()
+        if not token:
+            return self.client_address[0] in {"127.0.0.1", "::1"}
+        provided = self.headers.get("X-Upload-Token", "").strip()
+        return secrets.compare_digest(provided, token)
+
     def read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length") or 0)
         if length > 1_000_000:
@@ -938,9 +986,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_file(path, cache="no-cache")
 
     def send_media(self, relative: str) -> None:
-        root = (workspace_dir(self.server.config) / "ready_for_review").resolve()
-        path = (root / relative).resolve()
-        if root not in path.parents or not path.is_file():
+        if relative.startswith("review/"):
+            root = storage_root(self.server.config)
+            path = (root / relative).resolve()
+        else:
+            root = (workspace_dir(self.server.config) / "ready_for_review").resolve()
+            path = (root / relative).resolve()
+        if root not in path.parents or not path.is_file() or "uploads" in path.parts:
             return self.send_error(HTTPStatus.NOT_FOUND)
         self.send_file(path, cache="private, max-age=60")
 

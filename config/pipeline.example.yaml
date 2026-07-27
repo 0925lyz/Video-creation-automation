@@ -24,9 +24,14 @@ edit:
   resolution: [1080, 1920]
   variants_per_source: 1
   original_subtitle_strategy: [inpaint, blur, preserve_and_flag]
+  source_subtitle_cleanup: ocr_blur
+  ocr_blur_sigma: 28
 
 localization:
   target: pt-BR
+  tts_provider: auto
+  edge_tts_voice: pt-BR-AntonioNeural
+  preserve_backing_track: false
   tts_voice: energetic_male
   tts_rate: 1.05
   max_subtitle_chars_per_line: 36
@@ -35,6 +40,21 @@ brand:
   logo: assets/brand/logo.png
   end_card: assets/brand/end-card.mp4
   default_cta: https://copa.jarg.top/
+
+storage:
+  provider: factory_server
+  root: workspace/server_media
+  public_base_url: https://factory.jarg.top/media
+  max_upload_bytes: 2147483648
+
+compliance:
+  require_verified_rights: true
+
+reaction:
+  default_mode: none
+  modes: [none, picture_in_picture, split_vertical, side_by_side]
+  source_volume: 0.72
+  reaction_volume: 1.0
 
 workers:
   discovery: 6

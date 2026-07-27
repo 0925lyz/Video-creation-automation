@@ -4,8 +4,8 @@ set -euo pipefail
 # Tencent Cloud Lighthouse / Ubuntu-Debian server installer for JaguarTV Content Factory.
 #
 # Usage on server:
-#   REPO_URL=git@github.com:igpmanagerzoppas08-cyber/jaguartv-content-factory.git \
-#   APP_DIR=/opt/jaguartv-content-factory \
+#   REPO_URL=git@github.com:0925lyz/jaguartv-content-factory-vnext-l4.git \
+#   APP_DIR=/opt/jaguartv-content-factory-vnext \
 #   JAGUARTV_HOST=0.0.0.0 \
 #   JAGUARTV_PORT=8787 \
 #   bash scripts/server-install.sh
@@ -14,10 +14,10 @@ set -euo pipefail
 # - For the private GitHub repo, configure an SSH deploy key or use an HTTPS token URL before running.
 # - This script intentionally keeps runtime media in APP_DIR/workspace, not in git.
 
-APP_DIR="${APP_DIR:-/opt/jaguartv-content-factory}"
-REPO_URL="${REPO_URL:-https://github.com/igpmanagerzoppas08-cyber/jaguartv-content-factory.git}"
+APP_DIR="${APP_DIR:-/opt/jaguartv-content-factory-vnext}"
+REPO_URL="${REPO_URL:-https://github.com/0925lyz/jaguartv-content-factory-vnext-l4.git}"
 BRANCH="${BRANCH:-main}"
-SERVICE_NAME="${SERVICE_NAME:-jaguartv-content-factory}"
+SERVICE_NAME="${SERVICE_NAME:-jaguartv-content-factory-vnext}"
 JAGUARTV_HOST="${JAGUARTV_HOST:-0.0.0.0}"
 JAGUARTV_PORT="${JAGUARTV_PORT:-8787}"
 SERVICE_USER="${SERVICE_USER:-$(id -un)}"
@@ -37,7 +37,8 @@ echo "==> Installing system dependencies"
 sudo apt-get update
 sudo apt-get install -y \
   ca-certificates curl git gnupg lsb-release software-properties-common \
-  ffmpeg build-essential pkg-config
+  ffmpeg tesseract-ocr tesseract-ocr-chi-sim tesseract-ocr-chi-tra \
+  build-essential pkg-config
 
 if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
   echo "==> Installing Python 3.12"
@@ -78,10 +79,16 @@ echo "==> Creating Python virtual environment"
 .venv/bin/python -m pip install --upgrade pip setuptools wheel
 .venv/bin/pip install -e ".[test]"
 
-mkdir -p workspace assets/bgm
+mkdir -p workspace/server_media/review workspace/server_media/uploads/source \
+  workspace/server_media/uploads/reaction assets/bgm
 
 if [[ ! -f .env ]]; then
-  TOKEN="$(.venv/bin/python - <<'PY'
+  EVENTS_TOKEN="$(.venv/bin/python - <<'PY'
+import secrets
+print(secrets.token_urlsafe(32))
+PY
+)"
+  UPLOAD_TOKEN="$(.venv/bin/python - <<'PY'
 import secrets
 print(secrets.token_urlsafe(32))
 PY
@@ -89,15 +96,21 @@ PY
   {
     echo "JAGUARTV_HOST=$JAGUARTV_HOST"
     echo "JAGUARTV_PORT=$JAGUARTV_PORT"
-    echo "JAGUARTV_EVENTS_TOKEN=$TOKEN"
+    echo "JAGUARTV_EVENTS_TOKEN=$EVENTS_TOKEN"
+    echo "JAGUARTV_UPLOAD_TOKEN=$UPLOAD_TOKEN"
   } > .env
   chmod 600 .env
+fi
+
+if ! grep -q '^JAGUARTV_UPLOAD_TOKEN=' .env; then
+  UPLOAD_TOKEN="$(.venv/bin/python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+  echo "JAGUARTV_UPLOAD_TOKEN=$UPLOAD_TOKEN" >> .env
 fi
 
 echo "==> Installing systemd service: $SERVICE_NAME"
 sudo tee "/etc/systemd/system/$SERVICE_NAME.service" >/dev/null <<EOF
 [Unit]
-Description=JaguarTV Content Factory
+Description=JaguarTV Content Factory vNEXT
 After=network-online.target
 Wants=network-online.target
 
@@ -126,4 +139,4 @@ echo
 echo "Deployment complete."
 echo "Local service status: sudo systemctl status $SERVICE_NAME --no-pager"
 echo "Open in browser: http://<SERVER_PUBLIC_IP>:$JAGUARTV_PORT/"
-
+echo "Reaction upload token is stored in $APP_DIR/.env (mode 600)."

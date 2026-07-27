@@ -22,7 +22,13 @@ from typing import Any, Callable, Iterable
 import yaml
 from PIL import Image, ImageDraw, ImageFont
 
+from .compliance import assert_render_allowed
+from .highlight import analyze_video
+from .reaction import compose_reaction, reaction_spec
 from .scoring import score_candidate_v2
+from .server_store import archive_review_package
+from .strategy import render_audio_mode, resolve_production_strategy
+from .workbuddy_adapter import demucs_backing_track, edge_tts_ptbr, prepare_ocr_blurred_segment
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -429,11 +435,30 @@ def download_candidate(config: dict[str, Any], row: sqlite3.Row) -> Path:
     output = work / "source.%(ext)s"
     connection = connect_db(config)
     try:
-        adapter = get_adapter(row["platform"], config)
-        adapter.download(row["url"], str(output))
+        metadata = json.loads(row["metadata_json"] or "{}")
+    except json.JSONDecodeError:
+        metadata = {}
+    direct_url = str(metadata.get("direct_media_url") or "").strip()
+    direct_error = ""
+    try:
+        if direct_url:
+            direct_output = work / "source.mp4"
+            request = urllib.request.Request(direct_url, headers={"User-Agent": "Mozilla/5.0"})
+            try:
+                with urllib.request.urlopen(request, timeout=120) as response, direct_output.open("wb") as handle:
+                    shutil.copyfileobj(response, handle, length=1024 * 1024)
+                if direct_output.stat().st_size <= 0:
+                    raise RuntimeError("direct media response was empty")
+            except Exception as error:
+                direct_output.unlink(missing_ok=True)
+                direct_error = str(error)
+        if not next(work.glob("source.*"), None):
+            adapter = get_adapter(row["platform"], config)
+            adapter.download(row["url"], str(output))
     except (SourceError, RuntimeError) as error:
         connection.execute("UPDATE candidates SET status='DOWNLOAD_FAILED',updated_at=? WHERE id=?", (now_iso(), row["id"]))
-        append_event(connection, row["id"], "DOWNLOAD_FAILED", {"stderr": str(error)[-4000:]})
+        detail = f"direct={direct_error}; adapter={error}" if direct_error else str(error)
+        append_event(connection, row["id"], "DOWNLOAD_FAILED", {"stderr": detail[-4000:]})
         raise RuntimeError(str(error)) from error
     media = next((path for path in work.glob("source.*") if path.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov"}), None)
     if not media:
@@ -713,10 +738,28 @@ def format_srt_time(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
 
-def tts_ptbr(text: str, destination: Path) -> None:
-    """pt-BR narration. macOS `say` (Luciana) preferred; espeak-ng as a
-    cross-platform fallback so the pipeline also runs in Linux sandboxes
-    (Codex/CI). Fallback quality is lower — fine for tests, not release."""
+def tts_ptbr(
+    text: str,
+    destination: Path,
+    *,
+    provider: str = "auto",
+    edge_voice: str = "pt-BR-AntonioNeural",
+) -> None:
+    """Generate pt-BR narration with WorkBuddy's edge-tts path first.
+
+    Local system voices remain the offline fallback for tests and degraded
+    server operation.
+    """
+    provider = provider.strip().lower()
+    if provider not in {"auto", "edge", "system"}:
+        raise ValueError("localization.tts_provider must be auto, edge or system")
+    if provider in {"auto", "edge"}:
+        try:
+            edge_tts_ptbr(text, destination, voice=edge_voice)
+            return
+        except RuntimeError:
+            if provider == "edge":
+                raise
     if shutil.which("say"):
         run_command(["say", "-v", "Luciana", "-r", "185", "-o", str(destination), text])
         return
@@ -730,7 +773,7 @@ def tts_ptbr(text: str, destination: Path) -> None:
                 else:
                     wav.replace(destination)
             return
-    raise RuntimeError("No TTS backend found: install macOS `say` (Luciana) or espeak-ng")
+    raise RuntimeError("No TTS backend found: install edge-tts, macOS `say`, or espeak-ng")
 
 
 def generate_funk_bgm(destination: Path, duration: float = 32.0, bpm: int = 150) -> Path:
@@ -1080,7 +1123,11 @@ def render_video_ffmpeg(
         args.extend(["-i", str(voice), "-stream_loop", "-1", "-i", str(bgm)])
         image_input_start = 3
     elif audio_mode == "preserve_source":
-        image_input_start = 1
+        if bgm:
+            args.extend(["-stream_loop", "-1", "-i", str(bgm)])
+            image_input_start = 2
+        else:
+            image_input_start = 1
     elif audio_mode == "bgm_only":
         if not bgm:
             raise RuntimeError("BGM-only render requires a BGM track")
@@ -1144,10 +1191,19 @@ def render_video_ffmpeg(
         chains.append("[bgm_ducked][voice_mix]amix=inputs=2:duration=first:dropout_transition=1:normalize=0[a]")
     elif audio_mode == "preserve_source":
         source_volume = float(config.get("audio", {}).get("source_music_volume", 1.0))
-        chains.append(
-            f"[0:a]volume={source_volume},atrim=0:{duration:.3f},"
-            f"afade=t=out:st={fade_out_start:.3f}:d=1[a]"
-        )
+        if bgm:
+            light_bgm_volume = float(config.get("remotion", {}).get("content_bgm_volume", 0.16))
+            chains.append(f"[0:a]volume={source_volume},atrim=0:{duration:.3f}[source_audio]")
+            chains.append(
+                f"[1:a]volume={light_bgm_volume},atrim=0:{duration:.3f},"
+                f"afade=t=in:st=0:d=0.35,afade=t=out:st={fade_out_start:.3f}:d=1[light_bgm]"
+            )
+            chains.append("[source_audio][light_bgm]amix=inputs=2:duration=first:normalize=0[a]")
+        else:
+            chains.append(
+                f"[0:a]volume={source_volume},atrim=0:{duration:.3f},"
+                f"afade=t=out:st={fade_out_start:.3f}:d=1[a]"
+            )
     else:
         chains.append(
             f"[1:a]volume={bgm_volume},atrim=0:{duration:.3f},"
@@ -1425,6 +1481,7 @@ def short_segments(config: dict[str, Any], source_duration: float, preferred_dur
 def produce_candidate(
     config: dict[str, Any], row: sqlite3.Row,
     progress_callback: Callable[[int, str], None] | None = None,
+    options: dict[str, Any] | None = None,
 ) -> Path:
     def progress(value: int, message: str) -> None:
         if progress_callback:
@@ -1437,11 +1494,38 @@ def produce_candidate(
     media = next((path for path in work.glob("source.*") if path.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov"}), None)
     if not media:
         raise RuntimeError(f"No downloaded media for {row['id']}")
+    options = options or {}
+    try:
+        candidate_metadata = json.loads(row["metadata_json"] or "{}")
+    except (json.JSONDecodeError, KeyError):
+        candidate_metadata = {}
+    candidate_payload = {**dict(row), "metadata": candidate_metadata}
+    strategy = resolve_production_strategy(
+        candidate_payload,
+        options,
+        default_max_segments=int(config.get("edit", {}).get("max_segments_per_source", 3)),
+        default_max_duration=float(short_duration_bounds(config)[1]),
+    )
+    compliance = assert_render_allowed(config, strategy.content_type, candidate_metadata, options)
+    reaction = reaction_spec(options)
+    progress(10, f"内容类型：{strategy.content_type} · 切片：{strategy.segment_strategy}")
     os.environ.setdefault(
         "JAGUARTV_WHISPER_MODEL", str(config.get("localization", {}).get("whisper_model", "tiny"))
     )
     hook_version, hook_text = active_hook(config)
-    audio_mode, transcript, audio_reason = choose_audio_strategy(config, work, media)
+    audio_mode = render_audio_mode(strategy.audio_policy)
+    transcript = ""
+    audio_reason = f"content_policy:{strategy.content_type}->{strategy.audio_policy}"
+    if audio_mode == "localized":
+        transcript = source_text(
+            work,
+            media,
+            f"{row['title']}. {row['description']}".strip(),
+            enable_asr=bool(config.get("localization", {}).get("asr_enabled", False)),
+        )
+    elif audio_mode == "preserve_source" and not media_has_audio(media):
+        audio_mode = "bgm_only"
+        audio_reason += ":source_has_no_audio"
     progress(18, f"音轨策略：{audio_mode}")
     script = ""
     voice: Path | None = None
@@ -1453,9 +1537,22 @@ def produce_candidate(
         assert_script_is_portuguese(script)
         progress(32, "葡语脚本检查通过")
         voice = work / "voice_ptbr.aiff"
-        tts_ptbr(script, voice)
+        tts_ptbr(
+            script,
+            voice,
+            provider=str(config.get("localization", {}).get("tts_provider", "auto")),
+            edge_voice=str(config.get("localization", {}).get("edge_tts_voice", "pt-BR-AntonioNeural")),
+        )
         progress(48, "葡语配音已生成")
-        bgm, bgm_source = select_bgm(config, row["id"])
+        if bool(config.get("localization", {}).get("preserve_backing_track", False)):
+            try:
+                bgm = demucs_backing_track(media, work)
+                bgm_source = "demucs_no_vocals"
+            except RuntimeError:
+                bgm, bgm_source = select_bgm(config, row["id"])
+                bgm_source = f"{bgm_source}:demucs_fallback"
+        else:
+            bgm, bgm_source = select_bgm(config, row["id"])
         progress(55, "Funk BGM 已准备")
     elif audio_mode == "bgm_only":
         bgm, bgm_source = select_bgm(config, row["id"])
@@ -1484,14 +1581,28 @@ def produce_candidate(
             stale.unlink(missing_ok=True)
     render_engine = str(config.get("edit", {}).get("render_engine", "ffmpeg")).strip().lower()
     if (
-        render_engine == "remotion"
-        and audio_mode == "preserve_source"
+        audio_mode == "preserve_source"
+        and strategy.audio_policy in {
+            "source_plus_funk", "funk_or_source_music", "preserve_ptbr_voice_light_bgm"
+        }
         and config.get("remotion", {}).get("add_bgm_under_source", True) is not False
     ):
         bgm, bgm_source = select_bgm(config, row["id"])
-        progress(58, "Remotion 品牌模式已准备轻量 Funk BGM")
-    segments = short_segments(config, source_duration, preferred_duration)
-    progress(60, f"Short 切片：{len(segments)} 段")
+        progress(58, "已准备源音下的轻量 Funk BGM")
+    transcript_file = next(iter(sorted([*work.glob("source*.srt"), *work.glob("source*.vtt")])), None)
+    segments = analyze_video(
+        media,
+        source_duration=source_duration,
+        max_segments=strategy.max_segments,
+        max_duration=min(strategy.max_duration, preferred_duration),
+        strategy=strategy.segment_strategy,
+        transcript_path=transcript_file,
+    )
+    (work / "analysis.json").write_text(
+        json.dumps({"strategy": strategy.to_dict(), "segments": segments}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    progress(60, f"智能切片：{len(segments)} 段 · {strategy.segment_strategy}")
     cleanup_mode = str(config.get("edit", {}).get("source_subtitle_cleanup", "crop"))
     crop_ratio = max(
         0.0, min(0.35, float(config.get("edit", {}).get("source_subtitle_crop_bottom_ratio", 0.18)))
@@ -1514,12 +1625,53 @@ def produce_candidate(
         package_id = row["id"] if segment_total == 1 else f"{row['id']}_part{segment_index:02d}"
         output = work / ("master_9x16.mp4" if segment_total == 1 else f"master_9x16_part{segment_index:02d}.mp4")
         progress(62 + int((segment_index - 1) * 24 / max(1, segment_total)), f"正在渲染第 {segment_index}/{segment_total} 个 Short")
+        render_media = media
+        render_start = float(segment["start"])
+        ocr_cleanup: dict[str, Any] = {
+            "used": False,
+            "regions": [],
+            "reason": "not_requested",
+            "media": str(media),
+        }
+        if audio_mode == "localized" and cleanup_mode == "ocr_blur":
+            preprocessed = work / f"ocr_blurred_part{segment_index:02d}.mp4"
+            ocr_cleanup = prepare_ocr_blurred_segment(
+                media,
+                preprocessed,
+                start=render_start,
+                duration=float(segment["duration"]),
+                sigma=int(config.get("edit", {}).get("ocr_blur_sigma", 28)),
+            )
+            render_media = preprocessed
+            render_start = 0.0
         render_video(
-            config, media, voice, bgm, subtitles, output, float(segment["duration"]),
-            audio_mode=audio_mode, start_time=float(segment["start"]),
+            config, render_media, voice, bgm, subtitles, output, float(segment["duration"]),
+            audio_mode=audio_mode, start_time=render_start,
         )
+        if reaction.mode != "none":
+            endcard_seconds = max(
+                1.0,
+                min(
+                    6.0,
+                    float(brand_kit(config).get("endcard", {}).get("duration_sec", 3)),
+                    max(1.0, float(segment["duration"]) - 1.0),
+                ),
+            )
+            compose_reaction(
+                output,
+                output,
+                reaction,
+                content_duration=max(1.0, float(segment["duration"]) - endcard_seconds),
+            )
         qa = qa_video(output, config)
-        qa["segment"] = {"index": segment_index, "total": segment_total, "start": segment["start"], "duration": segment["duration"]}
+        qa["segment"] = {
+            "index": segment_index,
+            "total": segment_total,
+            "start": segment["start"],
+            "duration": segment["duration"],
+            "highlight_score": segment.get("highlight_score", 0),
+            "highlight_reasons": segment.get("highlight_reasons", []),
+        }
         qa_results.append(qa)
         (work / ("qa.json" if segment_total == 1 else f"qa_part{segment_index:02d}.json")).write_text(
             json.dumps(qa, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -1538,7 +1690,23 @@ def produce_candidate(
             "job_id": package_id,
             "source_job_id": row["id"],
             "source": {"platform": row["platform"], "url": row["url"], "title": row["title"]},
-            "segment": {"index": segment_index, "total": segment_total, "start_sec": segment["start"], "duration_sec": segment["duration"]},
+            "content_type": strategy.content_type,
+            "content_type_confidence": strategy.content_type_confidence,
+            "matched_rules": list(strategy.matched_rules),
+            "segment_strategy": strategy.segment_strategy,
+            "audio_policy": strategy.audio_policy,
+            "operator_override": strategy.operator_override,
+            "segment": {
+                "index": segment_index,
+                "total": segment_total,
+                "start_sec": segment["start"],
+                "end_sec": float(segment["start"]) + float(segment["duration"]),
+                "duration_sec": segment["duration"],
+                "highlight_score": segment.get("highlight_score", 0),
+                "highlight_reasons": segment.get("highlight_reasons", []),
+                "signal_scores": segment.get("signal_scores", {}),
+                "fallback": bool(segment.get("fallback", False)),
+            },
             "ptbr_script": script,
             "hook_version": hook_version,
             "youtube": {
@@ -1562,6 +1730,8 @@ def produce_candidate(
                 "endcard": str(brand_kit(config).get("endcard", {}).get("image") or ""),
             },
             "render_engine": render_engine,
+            "reaction": reaction.to_dict(),
+            "compliance": compliance,
             "tracking_links": links,
             "audio": {
                 "mode": audio_mode,
@@ -1576,6 +1746,7 @@ def produce_candidate(
             "layout_mode": str(config.get("edit", {}).get("layout_mode", "vertical")),
             "source_subtitle_mode": cleanup_mode,
             "source_subtitle_crop_bottom_ratio": crop_ratio,
+            "ocr": ocr_cleanup,
         },
             "qa": qa,
         }
@@ -1583,6 +1754,8 @@ def produce_candidate(
         (review / "review.json").write_text(
             json.dumps({"decision": "pending", "note": "", "reviewed_at": ""}, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+        storage_result = archive_review_package(config, package_id, review)
+        append_event(connect_db(config), row["id"], "SERVER_ARCHIVED", storage_result)
         reviews.append(review)
 
     progress(94, "质量检查通过，正在打包")
@@ -1593,6 +1766,9 @@ def produce_candidate(
             "reviews": [str(path) for path in reviews],
         },
         "segments": segments,
+        "strategy": strategy.to_dict(),
+        "reaction": reaction.to_dict(),
+        "compliance": compliance,
         "render_engine": render_engine,
         "audio_policy": {
             "mode": audio_mode,
@@ -1606,39 +1782,65 @@ def produce_candidate(
     connection = connect_db(config)
     connection.execute("UPDATE candidates SET status='READY_FOR_REVIEW',updated_at=? WHERE id=?", (now_iso(), row["id"]))
     append_event(connection, row["id"], "READY_FOR_REVIEW", manifest)
-    for review in reviews:
-        upload_to_lark(config, review.name, review, connection)
     progress(100, "审核包已生成")
     return reviews[0]
 
 
-def upload_to_lark(config: dict[str, Any], candidate: str, review_dir: Path, connection: sqlite3.Connection) -> None:
-    """Best-effort Lark upload; failure never blocks production."""
-    from .lark_store import LarkError, lark_enabled, upload_review_package
-
-    if not lark_enabled(config):
-        return
+def analyze_candidate(
+    config: dict[str, Any], candidate: str, options: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    connection = connect_db(config)
+    row = connection.execute("SELECT * FROM candidates WHERE id=?", (candidate,)).fetchone()
+    if not row:
+        raise ValueError("candidate does not exist")
+    work = workspace_dir(config) / "jobs" / row["id"]
+    media = next(
+        (path for path in work.glob("source.*") if path.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov"}),
+        None,
+    )
+    if not media:
+        raise RuntimeError(f"No downloaded media for {row['id']}")
     try:
-        result = upload_review_package(config, candidate, review_dir)
-    except (LarkError, Exception) as error:  # noqa: BLE001 - network side effect
-        append_event(connection, candidate, "LARK_UPLOAD_FAILED", {"error": str(error)[:1000]})
-        print(f"WARN lark upload {candidate}: {error}")
-        return
-    video_url = (result.get("files", {}).get("video.mp4") or {}).get("url", "")
-    append_event(connection, candidate, "LARK_UPLOADED", result)
-    metadata_path = review_dir / "metadata.json"
-    if metadata_path.exists() and video_url:
-        try:
-            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-            metadata["lark"] = {"video_url": video_url, "folder_token": result.get("folder_token", "")}
-            metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
-        except json.JSONDecodeError:
-            pass
+        metadata = json.loads(row["metadata_json"] or "{}")
+    except json.JSONDecodeError:
+        metadata = {}
+    strategy = resolve_production_strategy(
+        {**dict(row), "metadata": metadata},
+        options,
+        default_max_segments=int(config.get("edit", {}).get("max_segments_per_source", 3)),
+        default_max_duration=float(short_duration_bounds(config)[1]),
+    )
+    source_duration = media_duration(media)
+    transcript_file = next(iter(sorted([*work.glob("source*.srt"), *work.glob("source*.vtt")])), None)
+    segments = analyze_video(
+        media,
+        source_duration=source_duration,
+        max_segments=strategy.max_segments,
+        max_duration=strategy.max_duration,
+        strategy=strategy.segment_strategy,
+        transcript_path=transcript_file,
+    )
+    result = {
+        "candidate_id": row["id"],
+        "media": str(media),
+        "source_duration": source_duration,
+        "strategy": strategy.to_dict(),
+        "segments": segments,
+    }
+    (work / "analysis.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    metadata["analysis"] = result
+    connection.execute(
+        "UPDATE candidates SET metadata_json=?,updated_at=? WHERE id=?",
+        (json.dumps(metadata, ensure_ascii=False), now_iso(), row["id"]),
+    )
+    append_event(connection, row["id"], "ANALYZED", result)
+    return result
 
 
 def produce_top(
     config: dict[str, Any], limit: int, candidate: str | None = None,
     progress_callback: Callable[[int, str], None] | None = None,
+    options: dict[str, Any] | None = None,
 ) -> dict[str, int]:
     connection = connect_db(config)
     if candidate:
@@ -1650,12 +1852,14 @@ def produce_top(
     stats = {"selected": len(rows), "produced": 0, "failed": 0}
     for row in rows:
         try:
-            produce_candidate(config, row, progress_callback=progress_callback)
+            produce_candidate(config, row, progress_callback=progress_callback, options=options)
             stats["produced"] += 1
         except Exception as error:
             stats["failed"] += 1
-            connection.execute("UPDATE candidates SET status='PRODUCTION_FAILED',updated_at=? WHERE id=?", (now_iso(), row["id"]))
-            append_event(connection, row["id"], "PRODUCTION_FAILED", {"error": str(error)})
+            blocked = isinstance(error, PermissionError) and str(error).startswith("BLOCKED_RIGHTS")
+            status = "BLOCKED_RIGHTS" if blocked else "PRODUCTION_FAILED"
+            connection.execute("UPDATE candidates SET status=?,updated_at=? WHERE id=?", (status, now_iso(), row["id"]))
+            append_event(connection, row["id"], status, {"error": str(error)})
             print(f"WARN produce {row['id']}: {error}")
     return stats
 

@@ -11,6 +11,7 @@ const state = {
   selectedCandidates: new Set(),
   status: "",
   search: "",
+  pendingProductionIds: [],
 };
 
 const views = {
@@ -32,6 +33,7 @@ const statusLabels = {
   LANGUAGE_REJECTED: "语言排除",
   DOWNLOAD_FAILED: "下载失败",
   PRODUCTION_FAILED: "制作失败",
+  BLOCKED_RIGHTS: "版权阻断",
   QUEUED: "排队中",
   SCHEDULED: "已计划",
   PUBLISHED: "已发布",
@@ -175,12 +177,14 @@ function renderInventory() {
     <tr>
       <td class="check-column"><input class="candidate-checkbox" type="checkbox" data-candidate-select="${item.id}" ${state.selectedCandidates.has(item.id) ? "checked" : ""} aria-label="选择 ${escapeHtml(item.title || item.id)}"></td>
       <td><div class="content-cell">${thumb ? `<img class="mini-cover" src="${thumb}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<div class="mini-cover"></div>`}<div><strong title="${escapeHtml(item.title)}">${escapeHtml(item.title || "未命名内容")}</strong><small>${item.id}${item.keyword ? ` · ${escapeHtml(item.keyword)}` : ""}</small></div></div></td>
-      <td>${escapeHtml(item.platform)}</td><td>${escapeHtml(item.detected_language || "unknown")}</td>
+      <td>${escapeHtml(item.platform)}</td>
+      <td><strong>${escapeHtml(item.content_type || "unknown")}</strong><small>${escapeHtml(item.segment_strategy || "未分析")} · ${escapeHtml(item.audio_policy || "自动")}</small></td>
+      <td>${Number(item.highlight_score || 0).toFixed(1)}</td>
       <td><span title="${escapeHtml(scoreTooltip(item.score_breakdown))}">${Number(item.score || 0).toFixed(1)}</span></td>
       <td><span class="status-pill ${task ? "running" : statusClass(item.status)}">${status}</span>${failure}</td><td>${dateText(item.updated_at)}</td>
       <td>${task ? `<span class="row-progress">${task.progress || 0}%</span>` : candidateAction(item)}</td>
     </tr>`;
-  }).join("") : `<tr><td colspan="8"><div class="empty-state">没有符合条件的内容</div></td></tr>`;
+  }).join("") : `<tr><td colspan="9"><div class="empty-state">没有符合条件的内容</div></td></tr>`;
   document.querySelectorAll("[data-candidate-select]").forEach((checkbox) => checkbox.addEventListener("change", () => {
     if (checkbox.checked) state.selectedCandidates.add(checkbox.dataset.candidateSelect);
     else state.selectedCandidates.delete(checkbox.dataset.candidateSelect);
@@ -198,6 +202,7 @@ function failureReason(detail) {
   if (text.includes("HTTP Error 403")) return "源站拒绝下载（403）：建议配置 cookies 或更换素材";
   if (text.includes("Language gate")) return "葡语脚本被错误识别为英文：检测逻辑已修复，可重新制作";
   if (text.includes("exit status 69")) return "并发渲染导致成片文件不完整：已改为排队制作，可重新制作";
+  if (text.includes("BLOCKED_RIGHTS")) return "素材权利状态未核验，确认自有或授权后才能制作";
   return text.length > 150 ? `${text.slice(0, 147)}...` : text;
 }
 
@@ -213,7 +218,7 @@ function updateBatchToolbar() {
   const rows = selectedRows();
   document.querySelector("#selectionCount").textContent = `已选 ${rows.length} 条`;
   document.querySelector("#batchDownload").disabled = !rows.some((item) => ["DISCOVERED", "DOWNLOAD_FAILED"].includes(item.status));
-  document.querySelector("#batchProduce").disabled = !rows.some((item) => ["DOWNLOADED", "PRODUCTION_FAILED", "REVISION_REQUIRED"].includes(item.status));
+  document.querySelector("#batchProduce").disabled = !rows.some((item) => ["DOWNLOADED", "PRODUCTION_FAILED", "REVISION_REQUIRED", "BLOCKED_RIGHTS"].includes(item.status));
   document.querySelector("#batchSkip").disabled = !rows.some((item) => item.status === "DISCOVERED");
   const visible = filteredCandidates();
   const selectVisible = document.querySelector("#selectVisible");
@@ -233,7 +238,7 @@ function renderTasks() {
 
 function statusClass(status) {
   if (status === "READY_FOR_REVIEW" || status === "PUBLISHED" || status === "APPROVED") return "ready";
-  if (status.includes("FAILED") || status === "REVISION_REQUIRED") return "failed";
+  if (status.includes("FAILED") || status === "REVISION_REQUIRED" || status === "BLOCKED_RIGHTS") return "failed";
   return "";
 }
 
@@ -241,14 +246,14 @@ function candidateAction(item) {
   const sourceLink = item.url ? `<button class="table-action" onclick="window.open('${escapeHtml(item.url)}','_blank')">源页</button>` : "";
   if (item.status === "DISCOVERED") return `${sourceLink}<button class="table-action" data-candidate-action="download" data-candidate-id="${item.id}">下载</button><button class="table-action" data-skip-id="${item.id}">忽略</button>`;
   if (item.status === "DOWNLOAD_FAILED") return `${sourceLink}<button class="table-action" data-candidate-action="download" data-candidate-id="${item.id}">重试下载</button>`;
-  if (item.status === "DOWNLOADED" || item.status === "PRODUCTION_FAILED" || item.status === "REVISION_REQUIRED") return `<button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">制作</button>`;
+  if (["DOWNLOADED", "PRODUCTION_FAILED", "REVISION_REQUIRED", "BLOCKED_RIGHTS"].includes(item.status)) return `<button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">制作</button>`;
   if (item.status === "READY_FOR_REVIEW") {
     const preview = item.video_url ? `<button class="table-action" onclick="window.open('${item.video_url}','_blank')">预览</button>` : "";
     return `${preview}<button class="table-action" data-review-decision="APPROVED" data-candidate-id="${item.id}">通过</button><button class="table-action" data-review-decision="REVISION_REQUIRED" data-candidate-id="${item.id}">返工</button>`;
   }
   if (item.status === "APPROVED" && item.video_url) {
-    const lark = item.lark_url ? `<button class="table-action" onclick="window.open('${escapeHtml(item.lark_url)}','_blank')">Lark</button>` : "";
-    return `<button class="table-action" onclick="window.open('${item.video_url}','_blank')">预览</button>${lark}`;
+    const server = item.server_url ? `<button class="table-action" onclick="window.open('${escapeHtml(item.server_url)}','_blank')">服务器成片</button>` : "";
+    return `<button class="table-action" onclick="window.open('${item.video_url}','_blank')">预览</button>${server}`;
   }
   return "";
 }
@@ -270,6 +275,10 @@ async function skipCandidate(candidateId) {
 }
 
 async function runCandidateAction(action, candidateId) {
+  if (action === "produce") {
+    openProductionDialog([candidateId]);
+    return;
+  }
   try {
     const result = await api("/api/actions", { method: "POST", body: JSON.stringify({ action, candidate_id: candidateId }) });
     toast(`任务 ${result.task_id} 已启动`);
@@ -277,11 +286,11 @@ async function runCandidateAction(action, candidateId) {
   } catch (error) { toast(error.message, "error"); }
 }
 
-async function runBatchAction(action, allowedStatuses) {
-  const candidateIds = selectedRows().filter((item) => allowedStatuses.includes(item.status)).map((item) => item.id);
+async function runBatchAction(action, allowedStatuses, options = {}, explicitIds = null) {
+  const candidateIds = explicitIds || selectedRows().filter((item) => allowedStatuses.includes(item.status)).map((item) => item.id);
   if (!candidateIds.length) return toast("所选内容中没有可执行项目", "error");
   try {
-    const result = await api("/api/actions", { method: "POST", body: JSON.stringify({ action, candidate_ids: candidateIds }) });
+    const result = await api("/api/actions", { method: "POST", body: JSON.stringify({ action, candidate_ids: candidateIds, options }) });
     toast(`批量任务 ${result.task_id} 已启动，共 ${candidateIds.length} 条`);
     pollTask(result.task_id);
     await refreshAll();
@@ -478,6 +487,23 @@ function openView(name) {
   document.querySelector("#viewTitle").textContent = views[name][1];
 }
 
+function openProductionDialog(candidateIds) {
+  state.pendingProductionIds = [...new Set(candidateIds)];
+  document.querySelector("#productionDialog").showModal();
+}
+
+async function uploadReactionFile(file, token) {
+  const query = new URLSearchParams({ kind: "reaction", filename: file.name });
+  const response = await fetch(`/api/uploads?${query}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/octet-stream", "X-Upload-Token": token },
+    body: file,
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+  return payload;
+}
+
 document.querySelectorAll(".nav-item").forEach((button) => button.addEventListener("click", () => openView(button.dataset.view)));
 document.querySelectorAll("[data-open-view]").forEach((button) => button.addEventListener("click", () => openView(button.dataset.openView)));
 document.querySelector("#refreshButton").addEventListener("click", () => refreshAll(true));
@@ -490,7 +516,11 @@ document.querySelector("#selectVisible").addEventListener("change", (event) => {
   renderInventory();
 });
 document.querySelector("#batchDownload").addEventListener("click", () => runBatchAction("download", ["DISCOVERED", "DOWNLOAD_FAILED"]));
-document.querySelector("#batchProduce").addEventListener("click", () => runBatchAction("produce", ["DOWNLOADED", "PRODUCTION_FAILED", "REVISION_REQUIRED"]));
+document.querySelector("#batchProduce").addEventListener("click", () => {
+  const ids = selectedRows().filter((item) => ["DOWNLOADED", "PRODUCTION_FAILED", "REVISION_REQUIRED", "BLOCKED_RIGHTS"].includes(item.status)).map((item) => item.id);
+  if (!ids.length) return toast("所选内容中没有可制作项目", "error");
+  openProductionDialog(ids);
+});
 document.querySelector("#batchSkip").addEventListener("click", () => runBatchAction("skip", ["DISCOVERED"]));
 document.querySelectorAll("#statusFilters button").forEach((button) => button.addEventListener("click", () => {
   document.querySelectorAll("#statusFilters button").forEach((item) => item.classList.toggle("active", item === button));
@@ -515,6 +545,36 @@ function updateDiscoverMode() {
 
 document.querySelector("#discoverPlatform").addEventListener("change", updateDiscoverMode);
 updateDiscoverMode();
+
+document.querySelector("#closeProductionDialog").addEventListener("click", () => document.querySelector("#productionDialog").close());
+document.querySelector("#cancelProductionDialog").addEventListener("click", () => document.querySelector("#productionDialog").close());
+document.querySelector("#productionForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const mode = document.querySelector("#productionReactionMode").value;
+  const file = document.querySelector("#productionReactionFile").files[0];
+  let reactionSource = document.querySelector("#productionReactionSource").value.trim();
+  try {
+    if (mode !== "none" && file) {
+      const uploaded = await uploadReactionFile(file, document.querySelector("#productionUploadToken").value);
+      reactionSource = uploaded.path;
+    }
+    if (mode !== "none" && !reactionSource) throw new Error("启用 Reaction 时必须填写服务器路径或上传视频");
+    const options = {
+      content_type: document.querySelector("#productionContentType").value,
+      segment_strategy: document.querySelector("#productionSegmentStrategy").value,
+      audio_policy: document.querySelector("#productionAudioPolicy").value,
+      max_segments: Number(document.querySelector("#productionMaxSegments").value || 3),
+      max_duration: Number(document.querySelector("#productionMaxDuration").value || 30),
+      reaction_mode: mode,
+      reaction_source: reactionSource,
+      source_volume: Number(document.querySelector("#productionSourceVolume").value || 0.72),
+      reaction_volume: Number(document.querySelector("#productionReactionVolume").value || 1),
+      rights_status: document.querySelector("#productionRightsStatus").value,
+    };
+    document.querySelector("#productionDialog").close();
+    await runBatchAction("produce", [], options, state.pendingProductionIds);
+  } catch (error) { toast(error.message, "error"); }
+});
 
 document.querySelector("#discoverForm").addEventListener("submit", async (event) => {
   event.preventDefault();

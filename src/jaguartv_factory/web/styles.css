@@ -190,6 +190,9 @@ input:focus, select:focus { border-color: var(--green); box-shadow: 0 0 0 2px rg
 .command-snippet { display: block; max-width: 380px; padding: 7px 8px; overflow: hidden; border: 1px solid #dfe3e5; background: #f7f8f7; color: #33413c; border-radius: 4px; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 
 dialog { width: min(470px, calc(100vw - 32px)); padding: 0; border: 1px solid var(--line); border-radius: 7px; box-shadow: 0 24px 70px rgba(0,0,0,.22); }
+#productionDialog { width: min(980px, calc(100vw - 32px)); max-height: calc(100vh - 32px); }
+#productionDialog form { max-height: calc(100vh - 76px); overflow: auto; }
+#productionDialog .settings-grid.three { grid-template-columns: repeat(3, minmax(180px, 1fr)); }
 dialog::backdrop { background: rgba(19,25,23,.46); }
 dialog form { padding: 22px; }
 .dialog-heading { display: flex; align-items: start; justify-content: space-between; margin-bottom: 22px; }
@@ -223,7 +226,7 @@ dialog label { display: grid; gap: 7px; margin-top: 14px; color: var(--muted); f
   .two-column { grid-template-columns: 1fr; }
   .content-strip { grid-template-columns: 1fr; }
   .operation-band form { grid-template-columns: 1fr; }
-  .deploy-steps, .settings-grid, .settings-grid.three { grid-template-columns: 1fr; }
+  .deploy-steps, .settings-grid, .settings-grid.three, #productionDialog .settings-grid.three { grid-template-columns: 1fr; }
   .session-help, .session-form { grid-template-columns: 1fr; }
   .session-form textarea { grid-column: span 1; }
   .settings-actions { align-items: flex-start; flex-direction: column; }

@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from .core import (
+    analyze_candidate,
     discover,
     download_top,
     generate_review_index,
@@ -15,6 +16,10 @@ from .core import (
     load_config,
     produce_top,
 )
+from .mediacrawler import ingest_mediacrawler_jsonl
+from .reaction import REACTION_MODES
+from .server_store import save_upload
+from .strategy import AUDIO_POLICIES, CONTENT_TYPES, SEGMENT_STRATEGIES
 
 
 def print_json(value: object) -> None:
@@ -22,13 +27,48 @@ def print_json(value: object) -> None:
 
 
 def doctor() -> int:
-    checks = {name: shutil.which(name) for name in ("python3", "yt-dlp", "ffmpeg", "ffprobe")}
+    environment_bin = Path(sys.executable).parent
+    checks = {
+        name: shutil.which(name) or (str(environment_bin / name) if (environment_bin / name).is_file() else None)
+        for name in ("python3", "yt-dlp", "ffmpeg", "ffprobe")
+    }
+    checks["tesseract"] = shutil.which("tesseract")
+    try:
+        import edge_tts  # noqa: F401
+        checks["edge_tts"] = True
+    except ImportError:
+        checks["edge_tts"] = False
     tts = shutil.which("say") or shutil.which("espeak-ng") or shutil.which("espeak")
     checks["tts"] = tts
     checks["ptbr_voice"] = "Luciana (macOS)" if shutil.which("say") else ("espeak pt-br (fallback)" if tts else None)
-    checks["ready"] = all(checks[name] for name in ("python3", "yt-dlp", "ffmpeg", "ffprobe")) and bool(tts)
+    checks["ready"] = all(checks[name] for name in ("python3", "yt-dlp", "ffmpeg", "ffprobe")) and (
+        bool(checks["edge_tts"]) or bool(tts)
+    )
     print_json(checks)
     return 0 if checks["ready"] else 1
+
+
+def add_strategy_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--content-type", default="auto", choices=("auto", *CONTENT_TYPES))
+    parser.add_argument("--segment-strategy", default="auto", choices=("auto", *SEGMENT_STRATEGIES))
+    parser.add_argument("--audio-policy", default="auto", choices=("auto", *AUDIO_POLICIES))
+    parser.add_argument("--max-segments", type=int)
+    parser.add_argument("--max-duration", type=float)
+    parser.add_argument("--reaction-mode", default="none", choices=REACTION_MODES)
+    parser.add_argument("--reaction-source")
+    parser.add_argument("--source-volume", type=float, default=0.72)
+    parser.add_argument("--reaction-volume", type=float, default=1.0)
+    parser.add_argument("--reaction-position", default="bottom_right", choices=("top_left", "top_right", "bottom_left", "bottom_right"))
+    parser.add_argument("--rights-status", choices=("OWNED", "LICENSED", "PUBLIC_DOMAIN", "CC_BY", "VERIFIED"))
+
+
+def strategy_options(args: argparse.Namespace) -> dict[str, object]:
+    fields = (
+        "content_type", "segment_strategy", "audio_policy", "max_segments", "max_duration",
+        "reaction_mode", "reaction_source", "source_volume", "reaction_volume", "reaction_position",
+        "rights_status",
+    )
+    return {field: getattr(args, field) for field in fields if getattr(args, field, None) is not None}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -45,6 +85,12 @@ def build_parser() -> argparse.ArgumentParser:
     ingest_parser = subparsers.add_parser("ingest")
     ingest_parser.add_argument("url")
 
+    crawler_parser = subparsers.add_parser("ingest-mediacrawler")
+    crawler_parser.add_argument("path", type=Path)
+    crawler_parser.add_argument("--platform", choices=("douyin", "bilibili", "xiaohongshu"))
+    crawler_parser.add_argument("--min-likes", type=int, default=0)
+    crawler_parser.add_argument("--min-views", type=int, default=0)
+
     list_parser = subparsers.add_parser("list")
     list_parser.add_argument("--status")
     list_parser.add_argument("--limit", type=int, default=50)
@@ -56,6 +102,15 @@ def build_parser() -> argparse.ArgumentParser:
     produce_parser = subparsers.add_parser("produce")
     produce_parser.add_argument("--limit", type=int, default=1)
     produce_parser.add_argument("--candidate")
+    add_strategy_arguments(produce_parser)
+
+    analyze_parser = subparsers.add_parser("analyze")
+    analyze_parser.add_argument("--candidate", required=True)
+    add_strategy_arguments(analyze_parser)
+
+    upload_parser = subparsers.add_parser("upload")
+    upload_parser.add_argument("path", type=Path)
+    upload_parser.add_argument("--kind", choices=("source", "reaction"), required=True)
 
     run_parser = subparsers.add_parser("run")
     run_parser.add_argument("--discover", type=int, default=5)
@@ -79,12 +134,28 @@ def main(argv: list[str] | None = None) -> int:
         print_json(discover(config, platforms=args.platform, limit=args.limit))
     elif args.command == "ingest":
         print(inspect_url(config, args.url))
+    elif args.command == "ingest-mediacrawler":
+        print_json(ingest_mediacrawler_jsonl(
+            config,
+            args.path,
+            platform=args.platform,
+            min_likes=args.min_likes,
+            min_views=args.min_views,
+        ))
     elif args.command == "list":
         print_json([dict(row) for row in list_candidates(config, args.status, args.limit)])
     elif args.command == "download":
         print_json(download_top(config, args.limit, args.candidate))
     elif args.command == "produce":
-        print_json(produce_top(config, args.limit, args.candidate))
+        print_json(produce_top(config, args.limit, args.candidate, options=strategy_options(args)))
+    elif args.command == "analyze":
+        print_json(analyze_candidate(config, args.candidate, strategy_options(args)))
+    elif args.command == "upload":
+        path = args.path.expanduser().resolve()
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        with path.open("rb") as handle:
+            print_json(save_upload(config, handle, filename=path.name, kind=args.kind, content_length=path.stat().st_size))
     elif args.command == "run":
         print_json({
             "discover": discover(config, limit=args.discover),
