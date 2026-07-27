@@ -10,6 +10,7 @@ import shutil
 import sqlite3
 import struct
 import subprocess
+import sys
 import threading
 import urllib.parse
 import urllib.request
@@ -51,9 +52,42 @@ def run_command(args: list[str], *, cwd: Path | None = None, check: bool = True)
 
 def require_binary(name: str) -> str:
     path = shutil.which(name)
-    if not path:
-        raise RuntimeError(f"Missing required binary: {name}")
-    return path
+    if path:
+        return path
+    sibling = Path(sys.executable).parent / name
+    if sibling.exists():
+        return str(sibling)
+    raise RuntimeError(f"Missing required binary: {name}")
+
+
+def platform_from_url(url: str) -> str:
+    lowered = url.lower()
+    if "youtu.be" in lowered or "youtube.com" in lowered:
+        return "youtube"
+    if "bilibili.com" in lowered or "b23.tv" in lowered:
+        return "bilibili"
+    if "douyin.com" in lowered:
+        return "douyin"
+    if "xiaohongshu.com" in lowered or "xhslink.com" in lowered:
+        return "xiaohongshu"
+    if "facebook.com" in lowered or "fb.watch" in lowered:
+        return "facebook"
+    if "tiktok.com" in lowered:
+        return "tiktok"
+    return ""
+
+
+def yt_dlp_extra_args(config: dict[str, Any], url: str = "") -> list[str]:
+    platform = platform_from_url(url)
+    options = (config.get("sources", {}).get("adapters") or {}).get(platform) or {}
+    platform_runtime = os.environ.get(f"JAGUARTV_{platform.upper()}_YTDLP_JS_RUNTIME") if platform else ""
+    runtime = str(
+        platform_runtime
+        or os.environ.get("JAGUARTV_YTDLP_JS_RUNTIME")
+        or options.get("js_runtime")
+        or ""
+    ).strip()
+    return ["--js-runtimes", runtime] if runtime else []
 
 
 def load_config(path: Path | str | None = None) -> dict[str, Any]:
@@ -226,11 +260,11 @@ def likely_language(text: str) -> tuple[str, float]:
 
 
 def yt_dlp_search(query: str, platform: str, limit: int) -> list[dict[str, Any]]:
-    require_binary("yt-dlp")
+    yt_dlp = require_binary("yt-dlp")
     prefix = "ytsearch" if platform == "youtube" else "bilisearch"
     target = f"{prefix}{limit}:{query}"
     result = run_command(
-        ["yt-dlp", "--force-ipv4", "--flat-playlist", "--dump-single-json", "--no-warnings", target],
+        [yt_dlp, "--force-ipv4", "--flat-playlist", "--dump-single-json", "--no-warnings", target],
         check=False,
     )
     if result.returncode != 0:
@@ -377,7 +411,11 @@ def list_candidates(config: dict[str, Any], status: str | None = None, limit: in
 def inspect_url(config: dict[str, Any], url: str) -> str:
     if "xiaohongshu.com" in url or "xhslink.com" in url:
         return inspect_xhs_url(config, url)
-    result = run_command(["yt-dlp", "--force-ipv4", "--dump-single-json", "--skip-download", "--no-warnings", url], check=False)
+    yt_dlp = require_binary("yt-dlp")
+    result = run_command([
+        yt_dlp, "--force-ipv4", "--dump-single-json", "--skip-download",
+        "--no-warnings", *yt_dlp_extra_args(config, url), url,
+    ], check=False)
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "Unable to inspect URL")
     info = json.loads(result.stdout)
@@ -503,9 +541,9 @@ def download_candidate(config: dict[str, Any], row: sqlite3.Row) -> Path:
     if not media:
         raise RuntimeError("download completed but no media file was found")
     subtitle_result = run_command([
-        "yt-dlp", "--force-ipv4", "--skip-download", "--write-auto-subs", "--write-subs",
+        require_binary("yt-dlp"), "--force-ipv4", "--skip-download", "--write-auto-subs", "--write-subs",
         "--sub-langs", "en,zh-Hans,zh-Hant,es,fr,de,ja,ko", "--convert-subs", "srt",
-        "-o", str(output), row["url"],
+        *yt_dlp_extra_args(config, row["url"]), "-o", str(output), row["url"],
     ], check=False)
     connection.execute("UPDATE candidates SET status='DOWNLOADED',updated_at=? WHERE id=?", (now_iso(), row["id"]))
     append_event(connection, row["id"], "DOWNLOADED", {

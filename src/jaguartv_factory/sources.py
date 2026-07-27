@@ -78,6 +78,15 @@ class YtDlpAdapter:
         ).strip()
         return ["--cookies-from-browser", browser] if browser else []
 
+    def _js_runtime_args(self) -> list[str]:
+        runtime = str(
+            os.environ.get(f"JAGUARTV_{self.platform.upper()}_YTDLP_JS_RUNTIME")
+            or os.environ.get("JAGUARTV_YTDLP_JS_RUNTIME")
+            or self.options.get("js_runtime")
+            or ""
+        ).strip()
+        return ["--js-runtimes", runtime] if runtime else []
+
     def search(self, term: str, limit: int) -> list[dict[str, Any]]:
         yt_dlp = yt_dlp_binary()
         prefix = self.search_prefixes.get(self.platform)
@@ -85,7 +94,7 @@ class YtDlpAdapter:
             raise SourceError(f"{self.platform} has no yt-dlp search support")
         result = run([
             yt_dlp, "--force-ipv4", "--flat-playlist", "--dump-single-json",
-            "--no-warnings", *self._cookie_args(), f"{prefix}{limit}:{term}",
+            "--no-warnings", *self._cookie_args(), *self._js_runtime_args(), f"{prefix}{limit}:{term}",
         ])
         if result.returncode != 0:
             raise SourceError(result.stderr.strip()[-500:] or f"{self.platform} search failed")
@@ -95,7 +104,7 @@ class YtDlpAdapter:
     def download(self, url: str, output_template: str) -> None:
         args = [
             yt_dlp_binary(), "--force-ipv4", "--no-playlist", "--write-info-json",
-            *self._cookie_args(),
+            *self._cookie_args(), *self._js_runtime_args(),
             "-f", "bv*[height<=1080]+ba/b[height<=1080]/b", "--merge-output-format", "mp4",
             "-o", output_template, url,
         ]

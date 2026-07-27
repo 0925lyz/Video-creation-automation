@@ -93,6 +93,12 @@ def test_yt_dlp_adapter_supports_browser_cookie_env(monkeypatch):
     assert adapter._cookie_args() == ["--cookies-from-browser", "chrome"]
 
 
+def test_yt_dlp_adapter_supports_js_runtime_env(monkeypatch):
+    monkeypatch.setenv("JAGUARTV_YTDLP_JS_RUNTIME", "node:/tmp/node")
+    adapter = YtDlpAdapter("youtube", {})
+    assert adapter._js_runtime_args() == ["--js-runtimes", "node:/tmp/node"]
+
+
 def test_yt_dlp_binary_can_resolve_from_virtualenv():
     assert Path(yt_dlp_binary()).name == "yt-dlp"
 
