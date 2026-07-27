@@ -57,6 +57,7 @@ def doctor() -> int:
             str(path) for path in (
                 Path.cwd().parent / "MediaCrawler",
                 Path.cwd() / "MediaCrawler",
+                Path.home() / "MediaCrawler",
                 Path("/opt/MediaCrawler"),
             )
             if (path / ".git").exists()
