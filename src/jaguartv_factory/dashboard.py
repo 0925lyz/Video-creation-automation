@@ -5,6 +5,7 @@ import hmac
 import json
 import mimetypes
 import os
+import re
 import secrets
 import shutil
 import socket
@@ -53,6 +54,7 @@ WEB_ROOT = Path(__file__).resolve().parent / "web"
 PLATFORMS = ("youtube", "facebook", "tiktok", "kwai")
 EVENT_TYPES = ("landing_click", "download_started", "install", "registration", "first_watch")
 REVIEW_DECISIONS = ("APPROVED", "REVISION_REQUIRED")
+PART_PACKAGE_PATTERN = re.compile(r"^(?P<parent>.+)_part(?P<number>\d+)$")
 
 
 def utc_now() -> datetime:
@@ -289,11 +291,95 @@ def keyword_performance(connection: Any) -> list[dict[str, Any]]:
     return sorted(values, key=lambda item: (item["score"], item["candidates"]), reverse=True)[:12]
 
 
+def review_output_index(config: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    workspace_root = workspace_dir(config) / "ready_for_review"
+    server_root = storage_root(config) / "review"
+    package_ids: set[str] = set()
+    for root in (workspace_root, server_root):
+        if root.exists():
+            package_ids.update(
+                path.name for path in root.iterdir()
+                if path.is_dir() and (path / "video.mp4").is_file()
+            )
+
+    index: dict[str, list[dict[str, Any]]] = {}
+    for package_id in sorted(package_ids):
+        local_dir = workspace_root / package_id
+        server_dir = server_root / package_id
+        local_video = local_dir / "video.mp4"
+        server_video = server_dir / "video.mp4"
+        if local_video.is_file():
+            media_dir = local_dir
+            media_relative = f"{package_id}/video.mp4"
+        elif server_video.is_file():
+            media_dir = server_dir
+            media_relative = f"review/{package_id}/video.mp4"
+        else:
+            continue
+
+        video = media_dir / "video.mp4"
+        version = int(video.stat().st_mtime)
+        video_url = f"/media/{media_relative}?v={version}"
+        server_url = ""
+        metadata_path = local_dir / "metadata.json"
+        if not metadata_path.is_file():
+            metadata_path = server_dir / "metadata.json"
+        if metadata_path.is_file():
+            try:
+                review_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                server_url = str(
+                    review_metadata.get("server_storage", {}).get("files", {}).get("video.mp4", {}).get("url") or ""
+                )
+            except (json.JSONDecodeError, OSError):
+                pass
+        if not server_url and server_video.is_file():
+            server_url = public_url(config, f"review/{package_id}/video.mp4")
+
+        cover = media_dir / "cover.jpg"
+        cover_url = ""
+        if cover.is_file():
+            cover_relative = media_relative.rsplit("/", 1)[0] + "/cover.jpg"
+            cover_url = f"/media/{cover_relative}?v={int(cover.stat().st_mtime)}"
+
+        part_match = PART_PACKAGE_PATTERN.match(package_id)
+        part_number = int(part_match.group("number")) if part_match else None
+        asset = {
+            "id": package_id,
+            "label": f"片段 {part_number:02d}" if part_number is not None else "成片",
+            "part_number": part_number,
+            "video_url": video_url,
+            "download_url": f"{video_url}&download=1",
+            "server_url": server_url,
+            "cover_url": cover_url,
+            "filename": f"{package_id}.mp4",
+            "_metadata_path": str(metadata_path) if metadata_path.is_file() else "",
+        }
+        index.setdefault(package_id, []).append(asset)
+        if part_match:
+            index.setdefault(part_match.group("parent"), []).append(asset)
+
+    for assets in index.values():
+        unique = {asset["id"]: asset for asset in assets}
+        assets[:] = sorted(
+            unique.values(),
+            key=lambda asset: (
+                asset["part_number"] is not None,
+                asset["part_number"] if asset["part_number"] is not None else 0,
+                asset["id"],
+            ),
+        )
+    return index
+
+
+def public_output_asset(asset: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in asset.items() if not key.startswith("_")}
+
+
 def candidate_rows(config: dict[str, Any], status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
     rows = list_candidates(config, status, limit)
     result = []
-    root = workspace_dir(config)
     connection = connect_db(config)
+    outputs_by_candidate = review_output_index(config)
     failures = {
         row["candidate_id"]: dict(row)
         for row in connection.execute(
@@ -330,16 +416,16 @@ def candidate_rows(config: dict[str, Any], status: str | None = None, limit: int
             last = metadata["thumbnails"][-1]
             thumbnail = last.get("url", "") if isinstance(last, dict) else ""
         item["thumbnail_url"] = str(thumbnail)
-        review = root / "ready_for_review" / item["id"]
-        if (review / "cover.jpg").exists():
-            item["cover_url"] = f"/media/{item['id']}/cover.jpg?v={int((review / 'cover.jpg').stat().st_mtime)}"
-            item["video_url"] = f"/media/{item['id']}/video.mp4?v={int((review / 'video.mp4').stat().st_mtime)}"
-        else:
-            item["cover_url"] = ""
-            item["video_url"] = ""
-        item["server_url"] = ""
-        metadata_path = review / "metadata.json"
-        if metadata_path.exists():
+        outputs = outputs_by_candidate.get(str(item["id"]), [])
+        primary_output = outputs[0] if outputs else {}
+        item["output_assets"] = [public_output_asset(asset) for asset in outputs]
+        item["output_count"] = len(outputs)
+        item["cover_url"] = str(primary_output.get("cover_url") or "")
+        item["video_url"] = str(primary_output.get("video_url") or "")
+        item["download_url"] = str(primary_output.get("download_url") or "")
+        item["server_url"] = str(primary_output.get("server_url") or "")
+        metadata_path = Path(str(primary_output.get("_metadata_path") or ""))
+        if metadata_path.is_file():
             try:
                 review_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
                 item["server_url"] = str(
@@ -383,6 +469,7 @@ def server_review_rows(config: dict[str, Any], exclude: set[str] | None = None) 
     review_root = storage_root(config) / "review"
     if not review_root.exists():
         return []
+    outputs_by_candidate = review_output_index(config)
     items: list[dict[str, Any]] = []
     for metadata_path in sorted(review_root.glob("*/metadata.json"), key=lambda path: path.stat().st_mtime, reverse=True):
         package_dir = metadata_path.parent
@@ -414,6 +501,8 @@ def server_review_rows(config: dict[str, Any], exclude: set[str] | None = None) 
         media_prefix = f"review/{package_dir.name}"
         video = package_dir / "video.mp4"
         cover = package_dir / "cover.jpg"
+        outputs = outputs_by_candidate.get(package_dir.name, [])
+        primary_output = outputs[0] if outputs else {}
         updated_at = datetime.fromtimestamp(metadata_path.stat().st_mtime, tz=timezone.utc).isoformat()
         items.append({
             "id": candidate,
@@ -436,9 +525,18 @@ def server_review_rows(config: dict[str, Any], exclude: set[str] | None = None) 
             "audio_policy": str(strategy["audio_policy"]),
             "highlight_score": float(segment.get("highlight_score") or 0),
             "thumbnail_url": "",
-            "cover_url": f"/media/{media_prefix}/cover.jpg?v={int(cover.stat().st_mtime)}" if cover.exists() else "",
-            "video_url": f"/media/{media_prefix}/video.mp4?v={int(video.stat().st_mtime)}" if video.exists() else "",
-            "server_url": public_url(config, f"{media_prefix}/video.mp4") if video.exists() else "",
+            "cover_url": str(primary_output.get("cover_url") or (
+                f"/media/{media_prefix}/cover.jpg?v={int(cover.stat().st_mtime)}" if cover.exists() else ""
+            )),
+            "video_url": str(primary_output.get("video_url") or (
+                f"/media/{media_prefix}/video.mp4?v={int(video.stat().st_mtime)}" if video.exists() else ""
+            )),
+            "download_url": str(primary_output.get("download_url") or ""),
+            "server_url": str(primary_output.get("server_url") or (
+                public_url(config, f"{media_prefix}/video.mp4") if video.exists() else ""
+            )),
+            "output_assets": [public_output_asset(asset) for asset in outputs],
+            "output_count": len(outputs),
             "failure_event": "",
             "failure_detail": "",
             "failure_at": "",
@@ -1050,17 +1148,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     tasks = list(self.server.tasks.values())[-50:]
                 return self.send_json(tasks)
             if parsed.path.startswith("/media/"):
-                return self.send_media(parsed.path.removeprefix("/media/"))
+                download = str((query.get("download") or [""])[0]).lower() in {"1", "true", "yes"}
+                return self.send_media(parsed.path.removeprefix("/media/"), download=download)
             return self.send_static(parsed.path)
         except Exception as error:
             self.send_json({"error": str(error)}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def do_HEAD(self) -> None:
         parsed = urlparse(self.path)
+        query = parse_qs(parsed.query)
         if parsed.path.startswith("/api/uploads/") and parsed.path.endswith("/download"):
             return self.send_private_upload(parsed, head_only=True)
         if parsed.path.startswith("/media/"):
-            return self.send_media(parsed.path.removeprefix("/media/"))
+            download = str((query.get("download") or [""])[0]).lower() in {"1", "true", "yes"}
+            return self.send_media(parsed.path.removeprefix("/media/"), download=download)
         return self.send_static(parsed.path)
 
     def do_POST(self) -> None:
@@ -1248,7 +1349,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return self.send_error(HTTPStatus.NOT_FOUND)
         self.send_file(path, cache="no-cache")
 
-    def send_media(self, relative: str) -> None:
+    def send_media(self, relative: str, download: bool = False) -> None:
         if relative.startswith("review/"):
             root = storage_root(self.server.config)
             path = (root / relative).resolve()
@@ -1257,7 +1358,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             path = (root / relative).resolve()
         if root not in path.parents or not path.is_file() or "uploads" in path.parts:
             return self.send_error(HTTPStatus.NOT_FOUND)
-        self.send_file(path, cache="private, max-age=60")
+        disposition = ""
+        if download:
+            filename = f"{path.parent.name}{path.suffix}"
+            disposition = f"attachment; filename*=UTF-8''{quote(filename)}"
+        self.send_file(path, cache="private, max-age=60", disposition=disposition)
 
     def send_file(
         self,

@@ -2,6 +2,8 @@ import json
 from io import BytesIO
 import time
 from pathlib import Path
+from threading import Thread
+from urllib.request import urlopen
 
 import pytest
 
@@ -16,7 +18,7 @@ from jaguartv_factory.core import (
     terms_for_platform,
     write_srt,
 )
-from jaguartv_factory.dashboard import candidate_rows, skip_candidate
+from jaguartv_factory.dashboard import DashboardApplication, candidate_rows, skip_candidate
 from jaguartv_factory.scoring import score_candidate_v2
 from jaguartv_factory.server_store import (
     archive_review_package,
@@ -244,6 +246,72 @@ def test_inventory_scans_server_review_packages_without_db_row(tmp_path: Path):
     assert rows[0]["id"] == "pkg1"
     assert rows[0]["status"] == "READY_FOR_REVIEW"
     assert rows[0]["server_url"] == "https://factory.jarg.top/media/review/pkg1/video.mp4"
+    assert rows[0]["download_url"].endswith("&download=1")
+    assert rows[0]["output_count"] == 1
+
+
+def test_inventory_parent_candidate_exposes_all_segment_outputs(tmp_path: Path):
+    config = {
+        "_root": str(tmp_path),
+        "run": {"workspace": "workspace"},
+        "storage": {
+            "root": "workspace/server_media",
+            "public_base_url": "https://factory.jarg.top/media",
+        },
+    }
+    insert_candidate(config, candidate_id="source1", status="APPROVED")
+    review_root = tmp_path / "workspace" / "ready_for_review"
+    for number in (1, 2):
+        package_id = f"source1_part{number:02d}"
+        package = review_root / package_id
+        package.mkdir(parents=True)
+        (package / "video.mp4").write_bytes(f"video-{number}".encode())
+        if number == 1:
+            (package / "cover.jpg").write_bytes(b"cover")
+        (package / "metadata.json").write_text(
+            json.dumps({
+                "server_storage": {
+                    "files": {
+                        "video.mp4": {
+                            "url": f"https://factory.jarg.top/media/review/{package_id}/video.mp4"
+                        }
+                    }
+                }
+            }),
+            encoding="utf-8",
+        )
+
+    row = next(item for item in candidate_rows(config) if item["id"] == "source1")
+    assert row["output_count"] == 2
+    assert [asset["id"] for asset in row["output_assets"]] == ["source1_part01", "source1_part02"]
+    assert row["video_url"].startswith("/media/source1_part01/video.mp4")
+    assert row["download_url"].endswith("&download=1")
+    assert row["server_url"].endswith("/review/source1_part01/video.mp4")
+    assert row["output_assets"][1]["filename"] == "source1_part02.mp4"
+
+
+def test_media_download_forces_candidate_filename(tmp_path: Path):
+    config = make_config(tmp_path)
+    package = tmp_path / "workspace" / "ready_for_review" / "candidate_part01"
+    package.mkdir(parents=True)
+    (package / "video.mp4").write_bytes(b"finished-video")
+    server = DashboardApplication(("127.0.0.1", 0), config)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        with urlopen(
+            f"http://127.0.0.1:{port}/media/candidate_part01/video.mp4?download=1",
+            timeout=5,
+        ) as response:
+            assert response.read() == b"finished-video"
+            assert response.headers["Content-Disposition"] == (
+                "attachment; filename*=UTF-8''candidate_part01.mp4"
+            )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
 
 
 def test_skip_candidate_and_inventory_fields(tmp_path: Path):

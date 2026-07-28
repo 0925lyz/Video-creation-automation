@@ -237,7 +237,7 @@ function updateBatchToolbar() {
   const rows = selectedRows();
   document.querySelector("#selectionCount").textContent = `已选 ${rows.length} 条`;
   document.querySelector("#batchDownload").disabled = !rows.some((item) => ["DISCOVERED", "DOWNLOAD_FAILED"].includes(item.status));
-  document.querySelector("#batchProduce").disabled = !rows.some((item) => ["DOWNLOADED", "PRODUCTION_FAILED", "REVISION_REQUIRED", "BLOCKED_RIGHTS"].includes(item.status));
+  document.querySelector("#batchProduce").disabled = !rows.some((item) => ["DOWNLOADED", "PRODUCTION_FAILED", "REVISION_REQUIRED", "BLOCKED_RIGHTS"].includes(item.status) || (item.status === "APPROVED" && !outputAssetsFor(item).length));
   document.querySelector("#batchSkip").disabled = !rows.some((item) => item.status === "DISCOVERED");
   const visible = filteredCandidates();
   const selectVisible = document.querySelector("#selectVisible");
@@ -261,6 +261,38 @@ function statusClass(status) {
   return "";
 }
 
+function outputAssetsFor(item) {
+  if (Array.isArray(item.output_assets) && item.output_assets.length) return item.output_assets;
+  if (!item.video_url) return [];
+  const filename = `${String(item.id || "jaguartv-video").replace(/[^0-9A-Za-z_-]+/g, "_")}.mp4`;
+  return [{
+    id: item.id,
+    label: "成片",
+    video_url: item.video_url,
+    download_url: item.download_url || `${item.video_url}${item.video_url.includes("?") ? "&" : "?"}download=1`,
+    server_url: item.server_url || item.video_url,
+    filename,
+  }];
+}
+
+function outputActionLinks(asset) {
+  const videoUrl = String(asset.video_url || "");
+  if (!videoUrl) return "";
+  const downloadUrl = String(asset.download_url || `${videoUrl}${videoUrl.includes("?") ? "&" : "?"}download=1`);
+  const serverUrl = String(asset.server_url || videoUrl);
+  const filename = String(asset.filename || `${asset.id || "jaguartv-video"}.mp4`).replace(/[^0-9A-Za-z_.-]+/g, "_");
+  return `<a class="table-action" href="${escapeHtml(videoUrl)}" target="_blank" rel="noopener">预览</a><a class="table-action" href="${escapeHtml(downloadUrl)}" download="${escapeHtml(filename)}">下载成片</a><a class="table-action" href="${escapeHtml(serverUrl)}" target="_blank" rel="noopener">服务器成片</a>`;
+}
+
+function approvedOutputActions(item) {
+  const assets = outputAssetsFor(item);
+  if (!assets.length) {
+    return `<button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">生成成片</button>`;
+  }
+  const allOutputs = assets.length > 1 ? `<details class="output-menu"><summary class="table-action">全部 ${assets.length} 条</summary><div class="output-menu-panel">${assets.map((asset) => `<div class="output-menu-row"><strong>${escapeHtml(asset.label || asset.id || "成片")}</strong><div class="row-actions">${outputActionLinks(asset)}</div></div>`).join("")}</div></details>` : "";
+  return `<div class="row-actions">${outputActionLinks(assets[0])}${allOutputs}</div>`;
+}
+
 function candidateAction(item) {
   const sourceLink = item.url ? `<button class="table-action" onclick="window.open('${escapeHtml(item.url)}','_blank')">源页</button>` : "";
   if (item.status === "DISCOVERED") return `${sourceLink}<button class="table-action" data-candidate-action="download" data-candidate-id="${item.id}">下载</button><button class="table-action" data-skip-id="${item.id}">忽略</button>`;
@@ -270,11 +302,7 @@ function candidateAction(item) {
     const preview = item.video_url ? `<button class="table-action" onclick="window.open('${item.video_url}','_blank')">预览</button>` : "";
     return `${preview}<button class="table-action" data-review-decision="APPROVED" data-candidate-id="${item.id}">通过</button><button class="table-action" data-review-decision="REVISION_REQUIRED" data-candidate-id="${item.id}">返工</button>`;
   }
-  if (item.status === "APPROVED" && item.video_url) {
-    const server = item.server_url ? `<button class="table-action" onclick="window.open('${escapeHtml(item.server_url)}','_blank')">服务器成片</button>` : "";
-    const filename = `${String(item.id || "jaguartv-video").replace(/[^0-9A-Za-z_-]+/g, "_")}.mp4`;
-    return `<button class="table-action" onclick="window.open('${item.video_url}','_blank')">预览</button><a class="table-action" href="${escapeHtml(item.video_url)}" download="${escapeHtml(filename)}">下载成片</a>${server}`;
-  }
+  if (item.status === "APPROVED") return approvedOutputActions(item);
   return "";
 }
 
@@ -666,7 +694,7 @@ document.querySelector("#selectVisible").addEventListener("change", (event) => {
 });
 document.querySelector("#batchDownload").addEventListener("click", () => runBatchAction("download", ["DISCOVERED", "DOWNLOAD_FAILED"]));
 document.querySelector("#batchProduce").addEventListener("click", () => {
-  const ids = selectedRows().filter((item) => ["DOWNLOADED", "PRODUCTION_FAILED", "REVISION_REQUIRED", "BLOCKED_RIGHTS"].includes(item.status)).map((item) => item.id);
+  const ids = selectedRows().filter((item) => ["DOWNLOADED", "PRODUCTION_FAILED", "REVISION_REQUIRED", "BLOCKED_RIGHTS"].includes(item.status) || (item.status === "APPROVED" && !outputAssetsFor(item).length)).map((item) => item.id);
   if (!ids.length) return toast("所选内容中没有可制作项目", "error");
   openProductionDialog(ids);
 });
