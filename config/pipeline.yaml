@@ -135,6 +135,7 @@ storage:
   remote_review_key: ~/.ssh/jarg_tencent.pem
   remote_review_root: /opt/jaguartv-content-factory-vnext/workspace/server_media/review
   max_upload_bytes: 2147483648
+  upload_chunk_bytes: 8388608
 
 compliance:
   require_verified_rights: true

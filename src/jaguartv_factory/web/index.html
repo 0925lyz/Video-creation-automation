@@ -151,6 +151,21 @@
         <div class="deploy-steps"><span>01 爬取候选</span><span>02 下载源视频</span><span>03 30 秒切片</span><span>04 输出成片</span></div>
       </div>
 
+      <section class="settings-panel asset-panel">
+        <div class="section-heading compact">
+          <div><p class="eyebrow">SERVER ASSETS</p><h2>服务器素材</h2></div>
+          <span class="muted" id="serverHealth">正在检测服务器</span>
+        </div>
+        <form id="assetUploadForm" class="asset-upload-form">
+          <label>管理令牌<input id="assetUploadToken" type="password" autocomplete="off" placeholder="JAGUARTV_UPLOAD_TOKEN" required></label>
+          <label>素材类型<select id="assetUploadKind"><option value="source">源视频</option><option value="reaction">Reaction 视频</option></select></label>
+          <label class="asset-file-field">选择视频<input id="assetUploadFile" type="file" accept="video/mp4,video/quicktime,video/webm,.mkv,.m4v" required></label>
+          <button class="primary-button" id="assetUploadButton" type="submit">上传到服务器</button>
+        </form>
+        <div class="upload-progress" id="assetUploadProgress" hidden><div><span id="assetUploadMessage">准备上传</span><strong id="assetUploadPercent">0%</strong></div><div class="progress-track"><span id="assetUploadBar" style="width:0%"></span></div></div>
+        <div class="table-wrap asset-table-wrap"><table><thead><tr><th>文件</th><th>类型</th><th>大小</th><th>上传时间</th><th></th></tr></thead><tbody id="assetTable"><tr><td colspan="5"><div class="empty-state">输入管理令牌后加载服务器素材</div></td></tr></tbody></table></div>
+      </section>
+
       <section class="settings-panel session-panel">
         <div class="section-heading compact">
           <div><p class="eyebrow">SESSION MANAGER</p><h2>登录态管理（Phase 1）</h2></div>
@@ -248,7 +263,7 @@
       <div class="dialog-heading"><div><p class="eyebrow">DISCOVERY JOB</p><h2>启动素材发现</h2></div><button class="icon-button" id="closeDiscoverDialog" type="button" title="关闭" aria-label="关闭">×</button></div>
       <label>来源平台<select id="discoverPlatform"><option value="youtube">YouTube</option><option value="bilibili">Bilibili</option><option value="douyin">抖音（关键词发现）</option><option value="xiaohongshu">小红书（作品 URL 导入）</option><option value="tiktok">TikTok</option><option value="facebook">Facebook（URL 优先）</option></select></label>
       <label id="discoverLimitField">每个关键词数量<input id="discoverLimit" type="number" min="1" max="20" value="3"></label>
-      <label id="discoverUrlField" hidden>小红书作品 URL<input id="discoverUrl" type="url" placeholder="https://www.xiaohongshu.com/explore/..."></label>
+      <label id="discoverUrlField">具体视频 URL（填写后直接导入）<input id="discoverUrl" type="url" placeholder="https://..."></label>
       <p class="dialog-note" id="discoverPlatformNote">YouTube 可直接使用；Bilibili 建议配置 cookies。</p>
       <div class="dialog-actions"><button class="secondary-button" id="cancelDiscoverDialog" type="button">取消</button><button class="primary-button" id="submitDiscovery" type="submit">开始运行</button></div>
     </form>

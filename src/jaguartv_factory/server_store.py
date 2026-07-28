@@ -6,11 +6,14 @@ import re
 import shutil
 import subprocess
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, BinaryIO
 
 
 ALLOWED_MEDIA_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".m4v"}
+DEFAULT_UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024
+UPLOAD_ID_PATTERN = re.compile(r"^[a-f0-9]{32}$")
 
 
 def storage_root(config: dict[str, Any]) -> Path:
@@ -163,14 +166,185 @@ def save_upload(
     except Exception:
         temporary.unlink(missing_ok=True)
         raise
+    return write_upload_manifest(config, identifier, destination, kind=kind, original_filename=filename)
+
+
+def validate_upload(config: dict[str, Any], *, filename: str, kind: str, content_length: int) -> str:
+    if kind not in {"source", "reaction"}:
+        raise ValueError("upload kind must be source or reaction")
+    extension = Path(filename).suffix.lower()
+    if extension not in ALLOWED_MEDIA_EXTENSIONS:
+        raise ValueError(f"unsupported media extension: {extension or 'missing'}")
+    max_bytes = int((config.get("storage", {}) or {}).get("max_upload_bytes", 2 * 1024 * 1024 * 1024))
+    if content_length <= 0:
+        raise ValueError("empty upload")
+    if content_length > max_bytes:
+        raise ValueError(f"upload exceeds configured limit of {max_bytes} bytes")
+    return extension
+
+
+def upload_manifest_path(media_path: Path) -> Path:
+    return media_path.with_suffix(media_path.suffix + ".json")
+
+
+def write_upload_manifest(
+    config: dict[str, Any],
+    identifier: str,
+    destination: Path,
+    *,
+    kind: str,
+    original_filename: str,
+) -> dict[str, Any]:
     relative = destination.relative_to(storage_root(config))
-    return {
+    result = {
         "id": identifier,
         "kind": kind,
-        "original_filename": Path(filename).name,
+        "original_filename": Path(original_filename).name,
         "path": str(destination),
         "relative_path": str(relative),
         "url": "",
         "storage_uri": f"server://{str(relative).replace(os.sep, '/')}",
         "size": destination.stat().st_size,
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
     }
+    upload_manifest_path(destination).write_text(
+        json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return result
+
+
+def pending_upload_dir(config: dict[str, Any], upload_id: str) -> Path:
+    if not UPLOAD_ID_PATTERN.fullmatch(upload_id):
+        raise ValueError("invalid upload id")
+    return storage_root(config) / "uploads" / ".pending" / upload_id
+
+
+def init_chunked_upload(
+    config: dict[str, Any], *, filename: str, kind: str, content_length: int
+) -> dict[str, Any]:
+    extension = validate_upload(config, filename=filename, kind=kind, content_length=content_length)
+    upload_id = uuid.uuid4().hex
+    base = pending_upload_dir(config, upload_id)
+    base.mkdir(parents=True, exist_ok=False)
+    chunk_bytes = int((config.get("storage", {}) or {}).get("upload_chunk_bytes", DEFAULT_UPLOAD_CHUNK_BYTES))
+    chunk_bytes = max(1024 * 1024, min(chunk_bytes, 16 * 1024 * 1024))
+    chunk_count = (content_length + chunk_bytes - 1) // chunk_bytes
+    manifest = {
+        "id": upload_id,
+        "filename": Path(filename).name,
+        "kind": kind,
+        "extension": extension,
+        "size": content_length,
+        "chunk_bytes": chunk_bytes,
+        "chunk_count": chunk_count,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    (base / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    return manifest
+
+
+def load_pending_manifest(config: dict[str, Any], upload_id: str) -> tuple[Path, dict[str, Any]]:
+    base = pending_upload_dir(config, upload_id)
+    path = base / "manifest.json"
+    if not path.is_file():
+        raise ValueError("upload session does not exist or has expired")
+    return base, json.loads(path.read_text(encoding="utf-8"))
+
+
+def save_upload_chunk(
+    config: dict[str, Any], upload_id: str, index: int, stream: BinaryIO, content_length: int
+) -> dict[str, Any]:
+    base, manifest = load_pending_manifest(config, upload_id)
+    chunk_count = int(manifest["chunk_count"])
+    chunk_bytes = int(manifest["chunk_bytes"])
+    if index < 0 or index >= chunk_count:
+        raise ValueError("chunk index is out of range")
+    expected = chunk_bytes if index < chunk_count - 1 else int(manifest["size"]) - index * chunk_bytes
+    if content_length != expected:
+        raise ValueError(f"chunk {index} expected {expected} bytes, received {content_length}")
+    parts = base / "parts"
+    parts.mkdir(exist_ok=True)
+    destination = parts / f"{index:08d}.part"
+    if destination.is_file() and destination.stat().st_size == expected:
+        return {"id": upload_id, "index": index, "size": expected, "duplicate": True}
+    temporary = parts / f".{index:08d}.uploading"
+    written = 0
+    try:
+        with temporary.open("wb") as handle:
+            while written < content_length:
+                chunk = stream.read(min(1024 * 1024, content_length - written))
+                if not chunk:
+                    break
+                handle.write(chunk)
+                written += len(chunk)
+        if written != content_length:
+            raise ValueError(f"incomplete chunk: expected {content_length} bytes, received {written}")
+        temporary.replace(destination)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+    return {"id": upload_id, "index": index, "size": written, "duplicate": False}
+
+
+def complete_chunked_upload(config: dict[str, Any], upload_id: str) -> dict[str, Any]:
+    base, manifest = load_pending_manifest(config, upload_id)
+    parts = base / "parts"
+    expected_parts = [parts / f"{index:08d}.part" for index in range(int(manifest["chunk_count"]))]
+    missing = [path.name for path in expected_parts if not path.is_file()]
+    if missing:
+        raise ValueError(f"upload is incomplete; missing {len(missing)} chunks")
+    directory = storage_root(config) / "uploads" / str(manifest["kind"])
+    directory.mkdir(parents=True, exist_ok=True)
+    destination = directory / f"{upload_id}{manifest['extension']}"
+    temporary = directory / f".{upload_id}.assembling"
+    written = 0
+    try:
+        with temporary.open("wb") as output:
+            for part in expected_parts:
+                with part.open("rb") as handle:
+                    shutil.copyfileobj(handle, output, length=1024 * 1024)
+                written += part.stat().st_size
+        if written != int(manifest["size"]):
+            raise ValueError(f"assembled upload expected {manifest['size']} bytes, received {written}")
+        temporary.replace(destination)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+    result = write_upload_manifest(
+        config,
+        upload_id,
+        destination,
+        kind=str(manifest["kind"]),
+        original_filename=str(manifest["filename"]),
+    )
+    shutil.rmtree(base)
+    return result
+
+
+def list_uploads(config: dict[str, Any]) -> list[dict[str, Any]]:
+    root = storage_root(config) / "uploads"
+    items: list[dict[str, Any]] = []
+    for kind in ("source", "reaction"):
+        directory = root / kind
+        if not directory.exists():
+            continue
+        for manifest_path in directory.glob("*.json"):
+            try:
+                item = json.loads(manifest_path.read_text(encoding="utf-8"))
+                media_path = Path(str(item.get("path") or ""))
+                if not media_path.is_file():
+                    continue
+                item["size"] = media_path.stat().st_size
+                items.append(item)
+            except (OSError, json.JSONDecodeError):
+                continue
+    return sorted(items, key=lambda item: str(item.get("uploaded_at") or ""), reverse=True)
+
+
+def find_upload(config: dict[str, Any], upload_id: str) -> dict[str, Any]:
+    if not UPLOAD_ID_PATTERN.fullmatch(upload_id):
+        raise ValueError("invalid upload id")
+    for item in list_uploads(config):
+        if item.get("id") == upload_id:
+            return item
+    raise ValueError("upload does not exist")

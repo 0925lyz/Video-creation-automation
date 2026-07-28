@@ -1,4 +1,5 @@
 import json
+from io import BytesIO
 import time
 from pathlib import Path
 
@@ -8,6 +9,7 @@ from jaguartv_factory.core import (
     assert_script_is_portuguese,
     brand_kit,
     connect_db,
+    ingest_uploaded_media,
     load_config,
     now_iso,
     render_overlay_assets,
@@ -16,7 +18,14 @@ from jaguartv_factory.core import (
 )
 from jaguartv_factory.dashboard import candidate_rows, skip_candidate
 from jaguartv_factory.scoring import score_candidate_v2
-from jaguartv_factory.server_store import archive_review_package
+from jaguartv_factory.server_store import (
+    archive_review_package,
+    complete_chunked_upload,
+    find_upload,
+    init_chunked_upload,
+    list_uploads,
+    save_upload_chunk,
+)
 from jaguartv_factory.sources import SourceError, XhsApiAdapter, YtDlpAdapter, get_adapter, yt_dlp_binary
 
 
@@ -99,6 +108,22 @@ def test_yt_dlp_adapter_supports_js_runtime_env(monkeypatch):
     assert adapter._js_runtime_args() == ["--js-runtimes", "node:/tmp/node"]
 
 
+def test_yt_dlp_adapter_uses_latest_managed_session_cookie(tmp_path: Path):
+    session = tmp_path / "workspace" / "sessions" / "youtube" / "account"
+    session.mkdir(parents=True)
+    cookie = session / "cookies.txt"
+    cookie.write_text("# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\t" + "x" * 80, encoding="utf-8")
+    (session / "manifest.json").write_text(
+        json.dumps({
+            "status": "READY",
+            "cookie_file_path": "workspace/sessions/youtube/account/cookies.txt",
+        }),
+        encoding="utf-8",
+    )
+    adapter = get_adapter("youtube", {"_root": str(tmp_path), "run": {"workspace": "workspace"}, "sources": {}})
+    assert adapter._cookie_args() == ["--cookies", str(cookie.resolve())]
+
+
 def test_yt_dlp_binary_can_resolve_from_virtualenv():
     assert Path(yt_dlp_binary()).name == "yt-dlp"
 
@@ -135,6 +160,53 @@ def test_review_package_archives_to_factory_server_storage(tmp_path: Path):
     metadata = json.loads((review / "metadata.json").read_text(encoding="utf-8"))
     assert metadata["server_storage"]["package_id"] == "c1"
     assert metadata["server_storage"]["remote_sync"]["enabled"] is False
+
+
+def test_chunked_upload_assembles_and_lists_private_asset(tmp_path: Path):
+    config = {
+        "_root": str(tmp_path),
+        "storage": {
+            "root": "workspace/server_media",
+            "max_upload_bytes": 3 * 1024 * 1024,
+            "upload_chunk_bytes": 1024 * 1024,
+        },
+    }
+    payload = b"a" * (1024 * 1024) + b"b" * 12345
+    started = init_chunked_upload(
+        config, filename="reaction.mp4", kind="reaction", content_length=len(payload)
+    )
+    chunk_size = started["chunk_bytes"]
+    for index in range(started["chunk_count"]):
+        part = payload[index * chunk_size:(index + 1) * chunk_size]
+        saved = save_upload_chunk(config, started["id"], index, BytesIO(part), len(part))
+        assert saved["size"] == len(part)
+    completed = complete_chunked_upload(config, started["id"])
+    assert Path(completed["path"]).read_bytes() == payload
+    assert list_uploads(config)[0]["original_filename"] == "reaction.mp4"
+    assert find_upload(config, started["id"])["size"] == len(payload)
+
+
+def test_source_upload_becomes_downloaded_candidate(tmp_path: Path, monkeypatch):
+    config = {
+        "_root": str(tmp_path),
+        "run": {"workspace": "workspace"},
+        "storage": {"root": "workspace/server_media"},
+        "selection": {"max_source_duration_sec": 1800},
+    }
+    source = tmp_path / "workspace" / "server_media" / "uploads" / "source" / ("a" * 32 + ".mp4")
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"video")
+    monkeypatch.setattr("jaguartv_factory.core.media_duration", lambda _: 61.0)
+    candidate = ingest_uploaded_media(config, {
+        "id": "a" * 32,
+        "path": str(source),
+        "original_filename": "owned-source.mp4",
+        "storage_uri": "server://uploads/source/demo.mp4",
+    })
+    row = connect_db(config).execute("SELECT * FROM candidates WHERE id=?", (candidate,)).fetchone()
+    assert row["status"] == "DOWNLOADED"
+    assert row["platform"] == "server_upload"
+    assert (tmp_path / "workspace" / "jobs" / candidate / "source.mp4").is_file()
 
 
 def test_inventory_scans_server_review_packages_without_db_row(tmp_path: Path):

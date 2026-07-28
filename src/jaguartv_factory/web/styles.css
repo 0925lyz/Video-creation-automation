@@ -171,6 +171,15 @@ input:focus, select:focus { border-color: var(--green); box-shadow: 0 0 0 2px rg
 .deploy-steps span { min-height: 66px; padding: 14px; display: flex; align-items: center; border: 1px solid var(--line); background: var(--paper); border-radius: var(--radius); color: var(--green); font-weight: 800; }
 .settings-form { display: grid; gap: 18px; }
 .settings-panel { padding: 18px; border: 1px solid var(--line); background: var(--paper); border-radius: var(--radius); }
+.asset-panel { margin-bottom: 18px; }
+.asset-upload-form { margin: 16px 0 12px; display: grid; grid-template-columns: minmax(180px, .8fr) minmax(130px, .45fr) minmax(260px, 1.2fr) auto; gap: 9px; align-items: end; }
+.asset-upload-form label { display: grid; gap: 7px; color: var(--muted); font-size: 11px; font-weight: 800; }
+.asset-upload-form button { height: 38px; }
+.upload-progress { margin: 12px 0; padding: 12px; border: 1px solid #d7c27c; background: #fffaf0; border-radius: var(--radius); }
+.upload-progress > div:first-child { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 8px; color: #655a38; font-size: 11px; }
+.asset-table-wrap td:first-child strong, .asset-table-wrap td:first-child small { display: block; }
+.asset-table-wrap td:first-child small { margin-top: 4px; color: var(--muted); font-size: 10px; }
+.asset-download { display: inline-flex; align-items: center; text-decoration: none; }
 .settings-grid { margin-top: 16px; display: grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap: 12px; }
 .settings-grid.three { grid-template-columns: repeat(4, minmax(150px, 1fr)); }
 .settings-grid label { display: grid; gap: 7px; color: var(--muted); font-size: 11px; font-weight: 800; }
@@ -228,6 +237,7 @@ dialog label { display: grid; gap: 7px; margin-top: 14px; color: var(--muted); f
   .operation-band form { grid-template-columns: 1fr; }
   .deploy-steps, .settings-grid, .settings-grid.three, #productionDialog .settings-grid.three { grid-template-columns: 1fr; }
   .session-help, .session-form { grid-template-columns: 1fr; }
+  .asset-upload-form { grid-template-columns: 1fr; }
   .session-form textarea { grid-column: span 1; }
   .settings-actions { align-items: flex-start; flex-direction: column; }
   .node-topology { grid-template-columns: 1fr; gap: 10px; }

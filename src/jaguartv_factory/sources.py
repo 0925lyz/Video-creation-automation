@@ -68,15 +68,49 @@ class YtDlpAdapter:
 
     def _cookie_args(self) -> list[str]:
         cookies = str(self.options.get("cookies_file") or "").strip()
-        if cookies and Path(cookies).expanduser().exists():
-            return ["--cookies", str(Path(cookies).expanduser())]
+        if cookies:
+            configured = Path(cookies).expanduser()
+            if not configured.is_absolute() and self.options.get("_root"):
+                configured = Path(str(self.options["_root"])) / configured
+            if configured.exists():
+                return ["--cookies", str(configured.resolve())]
         browser = str(
             os.environ.get(f"JAGUARTV_{self.platform.upper()}_COOKIES_FROM_BROWSER")
             or os.environ.get("JAGUARTV_COOKIES_FROM_BROWSER")
             or self.options.get("cookies_from_browser")
             or ""
         ).strip()
-        return ["--cookies-from-browser", browser] if browser else []
+        if browser:
+            return ["--cookies-from-browser", browser]
+        session_cookie = self._session_cookie_file()
+        return ["--cookies", str(session_cookie)] if session_cookie else []
+
+    def _session_cookie_file(self) -> Path | None:
+        root_value = str(self.options.get("_root") or "").strip()
+        if not root_value:
+            return None
+        root = Path(root_value).expanduser().resolve()
+        workspace = Path(str(self.options.get("_workspace") or "workspace"))
+        if not workspace.is_absolute():
+            workspace = root / workspace
+        session_root = workspace / "sessions" / self.platform
+        if not session_root.exists():
+            return None
+        manifests = sorted(session_root.glob("*/manifest.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+        for manifest_path in manifests:
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if str(manifest.get("status") or "") not in {"READY", ""}:
+                continue
+            value = str(manifest.get("cookie_file_path") or "").strip()
+            candidate = Path(value).expanduser() if value else manifest_path.parent / "cookies.txt"
+            if not candidate.is_absolute():
+                candidate = root / candidate
+            if candidate.is_file() and candidate.stat().st_size > 80:
+                return candidate.resolve()
+        return None
 
     def _js_runtime_args(self) -> list[str]:
         runtime = str(
@@ -85,7 +119,21 @@ class YtDlpAdapter:
             or self.options.get("js_runtime")
             or ""
         ).strip()
-        return ["--js-runtimes", runtime] if runtime else []
+        if runtime:
+            return ["--js-runtimes", runtime]
+        deno = shutil.which("deno")
+        if deno:
+            return ["--js-runtimes", f"deno:{deno}"]
+        node = shutil.which("node")
+        if node:
+            result = run([node, "--version"])
+            try:
+                major = int((result.stdout or "").strip().lstrip("v").split(".", 1)[0])
+            except ValueError:
+                major = 0
+            if major >= 22:
+                return ["--js-runtimes", f"node:{node}"]
+        return []
 
     def search(self, term: str, limit: int) -> list[dict[str, Any]]:
         yt_dlp = yt_dlp_binary()
@@ -233,5 +281,7 @@ def get_adapter(platform: str, config: dict[str, Any]) -> Any:
     factory = ADAPTERS.get(platform)
     if not factory:
         raise SourceError(f"unsupported platform: {platform}")
-    options = (config.get("sources", {}).get("adapters") or {}).get(platform) or {}
+    options = dict((config.get("sources", {}).get("adapters") or {}).get(platform) or {})
+    options["_root"] = str(config.get("_root") or "")
+    options["_workspace"] = str((config.get("run", {}) or {}).get("workspace") or "workspace")
     return factory(platform, options)

@@ -46,6 +46,7 @@ storage:
   root: workspace/server_media
   public_base_url: https://factory.jarg.top/media
   max_upload_bytes: 2147483648
+  upload_chunk_bytes: 8388608
 
 compliance:
   require_verified_rights: true

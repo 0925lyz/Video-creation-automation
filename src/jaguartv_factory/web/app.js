@@ -7,6 +7,8 @@ const state = {
   keywordGroups: [],
   settings: null,
   sessions: [],
+  uploads: [],
+  health: null,
   tasks: [],
   selectedCandidates: new Set(),
   status: "",
@@ -58,11 +60,19 @@ const number = (value) => new Intl.NumberFormat("zh-CN", { notation: Number(valu
 const percent = (value) => `${(Number(value || 0) * 100).toFixed(2)}%`;
 const dateText = (value) => value ? new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value)) : "未设置";
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[character]));
+const storedUploadToken = () => sessionStorage.getItem("jaguartvUploadToken") || "";
+
+function rememberUploadToken(token) {
+  const value = String(token || "").trim();
+  if (value) sessionStorage.setItem("jaguartvUploadToken", value);
+  return value;
+}
 
 async function api(path, options = {}) {
+  const { headers = {}, ...requestOptions } = options;
   const response = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    ...options,
+    ...requestOptions,
+    headers: { "Content-Type": "application/json", ...headers },
   });
   const payload = await response.json();
   if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
@@ -81,10 +91,12 @@ async function refreshAll(showToast = false) {
   const button = document.querySelector("#refreshButton");
   button.disabled = true;
   try {
-    const [overview, candidates, publications, workers, feedback, keywordGroups, tasks, settings, sessions] = await Promise.all([
-      api("/api/overview"), api("/api/candidates?limit=200"), api("/api/publications"), api("/api/workers"), api("/api/feedback"), api("/api/keywords"), api("/api/tasks"), api("/api/settings"), api("/api/sessions"),
+    const token = storedUploadToken();
+    const [overview, candidates, publications, workers, feedback, keywordGroups, tasks, settings, sessions, health, uploads] = await Promise.all([
+      api("/api/overview"), api("/api/candidates?limit=200"), api("/api/publications"), api("/api/workers"), api("/api/feedback"), api("/api/keywords"), api("/api/tasks"), api("/api/settings"), api("/api/sessions"), api("/api/health"),
+      token ? api("/api/uploads", { headers: { "X-Upload-Token": token } }).catch(() => []) : Promise.resolve([]),
     ]);
-    Object.assign(state, { overview, candidates, publications, workers, feedback, keywordGroups, tasks, settings, sessions });
+    Object.assign(state, { overview, candidates, publications, workers, feedback, keywordGroups, tasks, settings, sessions, health, uploads });
     renderAll();
     document.querySelector("#serviceTime").textContent = `更新于 ${dateText(overview.generated_at)}`;
     if (showToast) toast("数据已刷新");
@@ -108,6 +120,8 @@ function renderAll() {
   renderWorkers();
   renderSettings();
   renderSessions();
+  renderUploads();
+  renderServerHealth();
   renderTasks();
   fillCandidateSelects();
   document.querySelector("#navInventory").textContent = state.overview.kpis.inventory;
@@ -199,6 +213,10 @@ function renderInventory() {
 
 function failureReason(detail) {
   const text = String(detail || "");
+  if (text.includes("Sign in to confirm you’re not a bot") || text.includes("Sign in to confirm you're not a bot")) return "YouTube 要求登录：在系统管理保存 YouTube 登录态后重试";
+  if (text.includes("No supported JavaScript runtime")) return "YouTube 解析运行时未就绪：服务器需要 Deno 或 Node 22+";
+  if (text.includes("service unreachable")) return "平台采集服务未启动或不可访问，请检查对应采集节点";
+  if (text.includes("HTTP Error 412")) return "Bilibili 拒绝当前请求：保存 B站登录态后重试";
   if (text.includes("Video unavailable")) return "源视频已删除、设为私密或当前地区不可用";
   if (text.includes("HTTP Error 403")) return "源站拒绝下载（403）：建议配置 cookies 或更换素材";
   if (text.includes("Language gate")) return "葡语脚本被错误识别为英文：检测逻辑已修复，可重新制作";
@@ -443,6 +461,81 @@ function renderSessions() {
   table.querySelectorAll("[data-session-delete]").forEach((button) => button.addEventListener("click", () => deleteSession(button.dataset.sessionDelete)));
 }
 
+function formatBytes(value) {
+  const bytes = Number(value || 0);
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
+}
+
+function renderServerHealth() {
+  const element = document.querySelector("#serverHealth");
+  if (!element || !state.health) return;
+  const free = formatBytes(state.health.storage?.free_bytes || 0);
+  const runtime = state.health.youtube_runtime ? `YouTube 运行时 ${state.health.youtube_runtime}` : "YouTube 运行时未就绪";
+  const sessions = (state.health.ready_sessions || []).length;
+  element.textContent = `${free} 可用 · ${runtime} · ${sessions} 个可用登录态`;
+}
+
+function renderUploads() {
+  const table = document.querySelector("#assetTable");
+  if (!table) return;
+  if (!storedUploadToken()) {
+    table.innerHTML = `<tr><td colspan="5"><div class="empty-state">输入管理令牌后加载服务器素材</div></td></tr>`;
+    return;
+  }
+  table.innerHTML = state.uploads.length ? state.uploads.map((item) => `
+    <tr>
+      <td><strong>${escapeHtml(item.original_filename || item.id)}</strong><small>${escapeHtml(item.id)}</small></td>
+      <td><span class="status-pill ${item.kind === "source" ? "ready" : ""}">${item.kind === "source" ? "源视频" : "Reaction"}</span></td>
+      <td>${formatBytes(item.size)}</td>
+      <td>${dateText(item.uploaded_at)}</td>
+      <td>${item.download_url ? `<a class="table-action asset-download" href="${escapeHtml(item.download_url)}" download>下载</a>` : ""}</td>
+    </tr>
+  `).join("") : `<tr><td colspan="5"><div class="empty-state">服务器还没有上传素材</div></td></tr>`;
+}
+
+async function parseUploadResponse(response) {
+  const text = await response.text();
+  let payload = {};
+  try { payload = text ? JSON.parse(text) : {}; }
+  catch { payload = { error: `服务器返回了非 JSON 响应（HTTP ${response.status}）` }; }
+  if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+  return payload;
+}
+
+async function uploadServerFile(file, kind, token, onProgress = () => {}) {
+  const authToken = rememberUploadToken(token);
+  if (!authToken) throw new Error("请输入服务器管理令牌");
+  const init = await api("/api/uploads/init", {
+    method: "POST",
+    headers: { "X-Upload-Token": authToken },
+    body: JSON.stringify({ filename: file.name, kind, size: file.size }),
+  });
+  const chunkSize = Number(init.chunk_bytes);
+  const total = Number(init.chunk_count);
+  for (let index = 0; index < total; index += 1) {
+    const start = index * chunkSize;
+    const end = Math.min(file.size, start + chunkSize);
+    const response = await fetch(`/api/uploads/chunk?upload_id=${encodeURIComponent(init.id)}&index=${index}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream", "X-Upload-Token": authToken },
+      body: file.slice(start, end),
+    });
+    await parseUploadResponse(response);
+    onProgress(Math.round(((index + 1) / total) * 94), `正在上传 ${index + 1}/${total}`);
+  }
+  onProgress(97, "服务器正在合并文件");
+  const completed = await api("/api/uploads/complete", {
+    method: "POST",
+    headers: { "X-Upload-Token": authToken },
+    body: JSON.stringify({ upload_id: init.id }),
+  });
+  onProgress(100, kind === "source" ? "上传完成，已进入待制作库存" : "Reaction 上传完成");
+  return completed;
+}
+
 async function copyText(value) {
   if (!value) return toast("还没有可复制的命令", "error");
   try {
@@ -494,16 +587,53 @@ function openProductionDialog(candidateIds) {
 }
 
 async function uploadReactionFile(file, token) {
-  const query = new URLSearchParams({ kind: "reaction", filename: file.name });
-  const response = await fetch(`/api/uploads?${query}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/octet-stream", "X-Upload-Token": token },
-    body: file,
-  });
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
-  return payload;
+  return uploadServerFile(file, "reaction", token, (percent, message) => toast(`${message} · ${percent}%`));
 }
+
+function setUploadProgress(percent, message) {
+  const panel = document.querySelector("#assetUploadProgress");
+  panel.hidden = false;
+  document.querySelector("#assetUploadMessage").textContent = message;
+  document.querySelector("#assetUploadPercent").textContent = `${percent}%`;
+  document.querySelector("#assetUploadBar").style.width = `${Math.max(0, Math.min(100, percent))}%`;
+}
+
+document.querySelector("#assetUploadForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = document.querySelector("#assetUploadButton");
+  const file = document.querySelector("#assetUploadFile").files[0];
+  const kind = document.querySelector("#assetUploadKind").value;
+  const token = document.querySelector("#assetUploadToken").value;
+  if (!file) return toast("请选择要上传的视频", "error");
+  button.disabled = true;
+  try {
+    const uploaded = await uploadServerFile(file, kind, token, setUploadProgress);
+    document.querySelector("#productionUploadToken").value = rememberUploadToken(token);
+    document.querySelector("#assetUploadFile").value = "";
+    toast(kind === "source" ? `源视频已入库：${uploaded.candidate_id}` : "Reaction 已保存到服务器");
+    await refreshAll();
+  } catch (error) {
+    setUploadProgress(0, `上传失败：${error.message}`);
+    toast(`上传失败：${error.message}`, "error");
+  } finally {
+    button.disabled = false;
+  }
+});
+
+document.querySelector("#assetUploadToken").addEventListener("change", async (event) => {
+  const token = rememberUploadToken(event.target.value);
+  document.querySelector("#productionUploadToken").value = token;
+  if (!token) return;
+  try {
+    state.uploads = await api("/api/uploads", { headers: { "X-Upload-Token": token } });
+    renderUploads();
+    toast("服务器资产已连接");
+  } catch (error) {
+    state.uploads = [];
+    renderUploads();
+    toast(`连接失败：${error.message}`, "error");
+  }
+});
 
 document.querySelectorAll(".nav-item").forEach((button) => button.addEventListener("click", () => openView(button.dataset.view)));
 document.querySelectorAll("[data-open-view]").forEach((button) => button.addEventListener("click", () => openView(button.dataset.openView)));
@@ -531,17 +661,15 @@ document.querySelectorAll("#statusFilters button").forEach((button) => button.ad
 
 function updateDiscoverMode() {
   const platform = document.querySelector("#discoverPlatform").value;
-  const isXhs = platform === "xiaohongshu";
-  document.querySelector("#discoverLimitField").hidden = isXhs;
-  document.querySelector("#discoverUrlField").hidden = !isXhs;
-  document.querySelector("#discoverUrl").required = isXhs;
+  document.querySelector("#discoverLimitField").hidden = platform === "xiaohongshu";
+  document.querySelector("#discoverUrl").required = platform === "xiaohongshu";
   const notes = {
-    youtube: "YouTube 可直接使用。",
-    bilibili: "Bilibili 建议配置 cookies；网络不稳定时可能超时。",
-    douyin: "抖音需要先启动本机 8000 端口的采集服务并配置有效 cookies。",
+    youtube: "可按关键词发现；遇到登录验证时，在系统管理中保存 YouTube 登录态。",
+    bilibili: "可按关键词发现或粘贴视频 URL；登录态可提高稳定性和画质。",
+    douyin: "可按关键词发现或粘贴作品 URL；服务器采集服务和登录态必须可用。",
     xiaohongshu: "小红书当前通过作品 URL 导入，需要先启动本机 5556 端口的 XHS 服务。",
-    tiktok: "TikTok 会先用 yt-dlp 搜索尝试；地区/年龄限制内容建议配置 cookies。",
-    facebook: "Facebook 关键词搜索不稳定，建议优先粘贴具体视频 URL 或后续接入 Apify。",
+    tiktok: "请优先粘贴具体视频 URL；地区或年龄限制内容需要登录态。",
+    facebook: "请粘贴具体视频或 Reels URL；服务器登录态必须有权访问该视频。",
   };
   document.querySelector("#discoverPlatformNote").textContent = notes[platform];
 }
@@ -584,8 +712,9 @@ document.querySelector("#discoverForm").addEventListener("submit", async (event)
   document.querySelector("#discoverDialog").close();
   try {
     const platform = document.querySelector("#discoverPlatform").value;
-    const payload = platform === "xiaohongshu"
-      ? { action: "ingest", url: document.querySelector("#discoverUrl").value.trim() }
+    const url = document.querySelector("#discoverUrl").value.trim();
+    const payload = url
+      ? { action: "ingest", url }
       : { action: "discover", platform, limit: Number(document.querySelector("#discoverLimit").value) };
     const result = await api("/api/actions", { method: "POST", body: JSON.stringify(payload) });
     toast(`发现任务 ${result.task_id} 已启动`);
@@ -695,4 +824,7 @@ document.querySelector("#settingsForm").addEventListener("submit", async (event)
   } catch (error) { toast(error.message, "error"); }
 });
 
+const initialUploadToken = storedUploadToken();
+document.querySelector("#assetUploadToken").value = initialUploadToken;
+document.querySelector("#productionUploadToken").value = initialUploadToken;
 refreshAll();

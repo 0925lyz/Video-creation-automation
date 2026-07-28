@@ -1,18 +1,23 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import mimetypes
 import os
 import secrets
+import shutil
 import socket
+import subprocess
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 import yaml
 
@@ -23,6 +28,7 @@ from .core import (
     download_top,
     generate_review_index,
     inspect_url,
+    ingest_uploaded_media,
     list_candidates,
     now_iso,
     produce_top,
@@ -31,7 +37,16 @@ from .core import (
     workspace_dir,
 )
 from .sessions import check_session, delete_session, list_sessions, save_session
-from .server_store import public_url, save_upload, storage_root
+from .server_store import (
+    complete_chunked_upload,
+    find_upload,
+    init_chunked_upload,
+    list_uploads,
+    public_url,
+    save_upload,
+    save_upload_chunk,
+    storage_root,
+)
 
 
 WEB_ROOT = Path(__file__).resolve().parent / "web"
@@ -49,6 +64,59 @@ def int_value(value: Any, default: int = 0) -> int:
         return max(0, int(value))
     except (TypeError, ValueError):
         return default
+
+
+def signed_upload_url(upload_id: str, lifetime_sec: int = 3600) -> str:
+    token = os.environ.get("JAGUARTV_UPLOAD_TOKEN", "").strip()
+    if not token:
+        return ""
+    expires = int(time.time()) + lifetime_sec
+    signature = hmac.new(
+        token.encode("utf-8"), f"{upload_id}:{expires}".encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    return f"/api/uploads/{upload_id}/download?exp={expires}&sig={signature}"
+
+
+def upload_rows(config: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = []
+    for item in list_uploads(config):
+        row = dict(item)
+        row["path"] = ""
+        row["download_url"] = signed_upload_url(str(item.get("id") or ""))
+        rows.append(row)
+    return rows
+
+
+def system_health(config: dict[str, Any]) -> dict[str, Any]:
+    disk = shutil.disk_usage(storage_root(config))
+    runtimes = {}
+    for name in ("ffmpeg", "ffprobe", "yt-dlp", "deno", "node", "tesseract"):
+        path = shutil.which(name)
+        runtimes[name] = {"ok": bool(path), "path": path or ""}
+    node_major = 0
+    if runtimes["node"]["ok"]:
+        result = subprocess.run([str(runtimes["node"]["path"]), "--version"], text=True, capture_output=True, check=False)
+        try:
+            node_major = int((result.stdout or "").strip().lstrip("v").split(".", 1)[0])
+        except ValueError:
+            node_major = 0
+    runtime = "deno" if runtimes["deno"]["ok"] else "node" if node_major >= 22 else ""
+    runtimes["node"]["version_major"] = node_major
+    sessions = list_sessions(config)
+    ready_sessions = sorted({str(item.get("platform") or "") for item in sessions if item.get("status") == "READY"})
+    return {
+        "status": "ok",
+        "generated_at": now_iso(),
+        "storage": {"free_bytes": disk.free, "total_bytes": disk.total},
+        "runtimes": runtimes,
+        "youtube_runtime": runtime,
+        "ready_sessions": ready_sessions,
+        "upload": {
+            "enabled": bool(os.environ.get("JAGUARTV_UPLOAD_TOKEN", "").strip()),
+            "chunk_bytes": int((config.get("storage", {}) or {}).get("upload_chunk_bytes", 8 * 1024 * 1024)),
+            "max_bytes": int((config.get("storage", {}) or {}).get("max_upload_bytes", 2 * 1024 * 1024 * 1024)),
+        },
+    }
 
 
 def dashboard_overview(config: dict[str, Any]) -> dict[str, Any]:
@@ -904,7 +972,7 @@ class DashboardApplication(ThreadingHTTPServer):
                 url = str(payload.get("url") or "").strip()
                 if not url:
                     raise ValueError("url is required")
-                self.update_task(task_id, progress=15, message="正在读取小红书作品信息")
+                self.update_task(task_id, progress=15, message="正在读取视频信息")
                 result = {"candidate_id": inspect_url(self.config, url)}
             elif action in {"download", "produce", "skip"}:
                 result = self.run_candidate_batch(
@@ -954,6 +1022,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return self.send_json(system_settings(self.server.config))
             if parsed.path == "/api/sessions":
                 return self.send_json(list_sessions(self.server.config))
+            if parsed.path == "/api/health":
+                return self.send_json(system_health(self.server.config))
+            if parsed.path == "/api/uploads":
+                if not self.authorized_for_uploads():
+                    return self.send_json(
+                        {"error": "missing or invalid upload token"}, HTTPStatus.UNAUTHORIZED
+                    )
+                return self.send_json(upload_rows(self.server.config))
+            if parsed.path.startswith("/api/uploads/") and parsed.path.endswith("/download"):
+                return self.send_private_upload(parsed, head_only=False)
             if parsed.path == "/api/attribution":
                 candidate = (query.get("candidate_id") or [""])[0].strip()
                 if not candidate:
@@ -971,6 +1049,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_HEAD(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/uploads/") and parsed.path.endswith("/download"):
+            return self.send_private_upload(parsed, head_only=True)
         if parsed.path.startswith("/media/"):
             return self.send_media(parsed.path.removeprefix("/media/"))
         return self.send_static(parsed.path)
@@ -978,6 +1058,41 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         try:
+            if parsed.path == "/api/uploads/init":
+                if not self.authorized_for_uploads():
+                    return self.send_json(
+                        {"error": "missing or invalid upload token"}, HTTPStatus.UNAUTHORIZED
+                    )
+                payload = self.read_json()
+                result = init_chunked_upload(
+                    self.server.config,
+                    filename=str(payload.get("filename") or ""),
+                    kind=str(payload.get("kind") or "").lower(),
+                    content_length=int(payload.get("size") or 0),
+                )
+                return self.send_json(result, HTTPStatus.CREATED)
+            if parsed.path == "/api/uploads/chunk":
+                if not self.authorized_for_uploads():
+                    return self.send_json(
+                        {"error": "missing or invalid upload token"}, HTTPStatus.UNAUTHORIZED
+                    )
+                query = parse_qs(parsed.query)
+                upload_id = str((query.get("upload_id") or [""])[0])
+                index = int((query.get("index") or ["-1"])[0])
+                length = int(self.headers.get("Content-Length") or 0)
+                result = save_upload_chunk(self.server.config, upload_id, index, self.rfile, length)
+                return self.send_json(result, HTTPStatus.CREATED)
+            if parsed.path == "/api/uploads/complete":
+                if not self.authorized_for_uploads():
+                    return self.send_json(
+                        {"error": "missing or invalid upload token"}, HTTPStatus.UNAUTHORIZED
+                    )
+                payload = self.read_json()
+                result = complete_chunked_upload(self.server.config, str(payload.get("upload_id") or ""))
+                if result["kind"] == "source":
+                    result["candidate_id"] = ingest_uploaded_media(self.server.config, result)
+                result["download_url"] = signed_upload_url(result["id"])
+                return self.send_json(result, HTTPStatus.CREATED)
             if parsed.path == "/api/uploads":
                 if not self.authorized_for_uploads():
                     return self.send_json(
@@ -994,6 +1109,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     kind=kind,
                     content_length=length,
                 )
+                if result["kind"] == "source":
+                    result["candidate_id"] = ingest_uploaded_media(self.server.config, result)
+                result["download_url"] = signed_upload_url(result["id"])
                 return self.send_json(result, HTTPStatus.CREATED)
             payload = self.read_json()
             if parsed.path == "/api/actions":
@@ -1063,6 +1181,42 @@ class DashboardHandler(BaseHTTPRequestHandler):
         provided = self.headers.get("X-Upload-Token", "").strip()
         return secrets.compare_digest(provided, token)
 
+    def valid_upload_signature(self, upload_id: str, query: dict[str, list[str]]) -> bool:
+        token = os.environ.get("JAGUARTV_UPLOAD_TOKEN", "").strip()
+        if not token:
+            return self.client_address[0] in {"127.0.0.1", "::1"}
+        try:
+            expires = int((query.get("exp") or ["0"])[0])
+        except ValueError:
+            return False
+        if expires < int(time.time()) or expires > int(time.time()) + 7200:
+            return False
+        provided = str((query.get("sig") or [""])[0])
+        expected = hmac.new(
+            token.encode("utf-8"), f"{upload_id}:{expires}".encode("utf-8"), hashlib.sha256
+        ).hexdigest()
+        return secrets.compare_digest(provided, expected)
+
+    def send_private_upload(self, parsed: Any, *, head_only: bool) -> None:
+        parts = parsed.path.strip("/").split("/")
+        if len(parts) != 4:
+            return self.send_error(HTTPStatus.NOT_FOUND)
+        upload_id = parts[2]
+        query = parse_qs(parsed.query)
+        if not self.authorized_for_uploads() and not self.valid_upload_signature(upload_id, query):
+            return self.send_json({"error": "private download link is invalid or expired"}, HTTPStatus.UNAUTHORIZED)
+        try:
+            item = find_upload(self.server.config, upload_id)
+        except ValueError:
+            return self.send_error(HTTPStatus.NOT_FOUND)
+        original = str(item.get("original_filename") or Path(str(item["path"])).name)
+        self.send_file(
+            Path(str(item["path"])),
+            cache="private, no-store",
+            disposition=f"attachment; filename=media{Path(original).suffix}; filename*=UTF-8''{quote(original)}",
+            head_only=head_only,
+        )
+
     def read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length") or 0)
         if length > 1_000_000:
@@ -1097,7 +1251,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return self.send_error(HTTPStatus.NOT_FOUND)
         self.send_file(path, cache="private, max-age=60")
 
-    def send_file(self, path: Path, cache: str) -> None:
+    def send_file(
+        self,
+        path: Path,
+        cache: str,
+        disposition: str = "",
+        head_only: bool = False,
+    ) -> None:
         size = path.stat().st_size
         content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         start, end = 0, size - 1
@@ -1118,10 +1278,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(length))
         self.send_header("Cache-Control", cache)
         self.send_header("Accept-Ranges", "bytes")
+        if disposition:
+            self.send_header("Content-Disposition", disposition)
         if partial:
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
         self.end_headers()
-        if self.command == "HEAD":
+        if self.command == "HEAD" or head_only:
             return
         with path.open("rb") as handle:
             handle.seek(start)

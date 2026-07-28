@@ -79,15 +79,17 @@ def platform_from_url(url: str) -> str:
 
 def yt_dlp_extra_args(config: dict[str, Any], url: str = "") -> list[str]:
     platform = platform_from_url(url)
-    options = (config.get("sources", {}).get("adapters") or {}).get(platform) or {}
-    platform_runtime = os.environ.get(f"JAGUARTV_{platform.upper()}_YTDLP_JS_RUNTIME") if platform else ""
-    runtime = str(
-        platform_runtime
-        or os.environ.get("JAGUARTV_YTDLP_JS_RUNTIME")
-        or options.get("js_runtime")
-        or ""
-    ).strip()
-    return ["--js-runtimes", runtime] if runtime else []
+    if not platform:
+        return []
+    try:
+        from .sources import YtDlpAdapter, get_adapter
+
+        adapter = get_adapter(platform, config)
+        if isinstance(adapter, YtDlpAdapter):
+            return [*adapter._cookie_args(), *adapter._js_runtime_args()]
+    except Exception:
+        pass
+    return []
 
 
 def load_config(path: Path | str | None = None) -> dict[str, Any]:
@@ -446,6 +448,74 @@ def inspect_url(config: dict[str, Any], url: str) -> str:
     )
     if candidate_too_long(config, info.get("duration")):
         connection.execute("UPDATE candidates SET status='TOO_LONG',updated_at=? WHERE id=?", (now_iso(), cid))
+    connection.commit()
+    return cid
+
+
+def ingest_uploaded_media(config: dict[str, Any], upload: dict[str, Any]) -> str:
+    """Register a private server upload as an already-downloaded candidate."""
+    media = Path(str(upload.get("path") or "")).expanduser().resolve()
+    if not media.is_file():
+        raise ValueError("uploaded media file does not exist")
+    upload_id = str(upload.get("id") or "").strip()
+    if not upload_id:
+        raise ValueError("upload id is required")
+    cid = f"upload_{upload_id[:16]}"
+    work = workspace_dir(config) / "jobs" / cid
+    work.mkdir(parents=True, exist_ok=True)
+    source = work / f"source{media.suffix.lower()}"
+    if not source.exists():
+        try:
+            os.link(media, source)
+        except OSError:
+            shutil.copy2(media, source)
+    duration = media_duration(media)
+    too_long = candidate_too_long(config, duration)
+    timestamp = now_iso()
+    title = str(upload.get("original_filename") or media.name)
+    metadata = {
+        "upload_id": upload_id,
+        "original_filename": title,
+        "server_upload": True,
+        "uploaded_at": upload.get("uploaded_at") or timestamp,
+        "private_storage_uri": upload.get("storage_uri") or "",
+        "duration": duration,
+        "duration_gate": {
+            "max_source_duration_sec": source_duration_limit(config),
+            "too_long": too_long,
+        },
+        "score_breakdown": {"total": 100, "source": "manual_server_upload"},
+    }
+    connection = connect_db(config)
+    existing = connection.execute("SELECT created_at FROM candidates WHERE id=?", (cid,)).fetchone()
+    created_at = existing["created_at"] if existing else timestamp
+    connection.execute(
+        """INSERT OR REPLACE INTO candidates
+        (id,platform,source_id,url,title,description,duration,view_count,detected_language,score,status,metadata_json,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            cid,
+            "server_upload",
+            upload_id,
+            f"server-upload://{upload_id}",
+            title,
+            "Private source uploaded through factory.jarg.top",
+            duration,
+            0,
+            "",
+            100,
+            "TOO_LONG" if too_long else "DOWNLOADED",
+            json.dumps(metadata, ensure_ascii=False),
+            created_at,
+            timestamp,
+        ),
+    )
+    append_event(connection, cid, "UPLOAD_INGESTED", {
+        "upload_id": upload_id,
+        "path": str(media),
+        "bytes": media.stat().st_size,
+        "duration": duration,
+    })
     connection.commit()
     return cid
 
