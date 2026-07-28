@@ -272,7 +272,8 @@ function candidateAction(item) {
   }
   if (item.status === "APPROVED" && item.video_url) {
     const server = item.server_url ? `<button class="table-action" onclick="window.open('${escapeHtml(item.server_url)}','_blank')">服务器成片</button>` : "";
-    return `<button class="table-action" onclick="window.open('${item.video_url}','_blank')">预览</button>${server}`;
+    const filename = `${String(item.id || "jaguartv-video").replace(/[^0-9A-Za-z_-]+/g, "_")}.mp4`;
+    return `<button class="table-action" onclick="window.open('${item.video_url}','_blank')">预览</button><a class="table-action" href="${escapeHtml(item.video_url)}" download="${escapeHtml(filename)}">下载成片</a>${server}`;
   }
   return "";
 }
