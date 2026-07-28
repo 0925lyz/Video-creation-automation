@@ -29,12 +29,12 @@ class SourceError(RuntimeError):
 
 
 def yt_dlp_binary() -> str:
-    path = shutil.which("yt-dlp")
-    if path:
-        return path
     sibling = Path(sys.executable).parent / "yt-dlp"
     if sibling.exists():
         return str(sibling)
+    path = shutil.which("yt-dlp")
+    if path:
+        return path
     raise SourceError("yt-dlp binary is missing")
 
 
