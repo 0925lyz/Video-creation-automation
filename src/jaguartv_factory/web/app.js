@@ -491,9 +491,12 @@ function renderUploads() {
       <td><span class="status-pill ${item.kind === "source" ? "ready" : ""}">${item.kind === "source" ? "源视频" : "Reaction"}</span></td>
       <td>${formatBytes(item.size)}</td>
       <td>${dateText(item.uploaded_at)}</td>
-      <td>${item.download_url ? `<a class="table-action asset-download" href="${escapeHtml(item.download_url)}" download>下载</a>` : ""}</td>
+      <td><button class="table-action asset-download" data-upload-download="${escapeHtml(item.id)}" type="button">下载</button></td>
     </tr>
   `).join("") : `<tr><td colspan="5"><div class="empty-state">服务器还没有上传素材</div></td></tr>`;
+  table.querySelectorAll("[data-upload-download]").forEach((button) => {
+    button.addEventListener("click", () => downloadUploadAsset(button.dataset.uploadDownload));
+  });
 }
 
 async function parseUploadResponse(response) {
@@ -534,6 +537,20 @@ async function uploadServerFile(file, kind, token, onProgress = () => {}) {
   });
   onProgress(100, kind === "source" ? "上传完成，已进入待制作库存" : "Reaction 上传完成");
   return completed;
+}
+
+async function downloadUploadAsset(uploadId) {
+  const token = storedUploadToken();
+  if (!token) return toast("请输入服务器管理令牌", "error");
+  try {
+    const payload = await api(`/api/uploads/${encodeURIComponent(uploadId)}/link`, {
+      headers: { "X-Upload-Token": token },
+    });
+    if (!payload.download_url) throw new Error("服务器没有返回下载链接");
+    window.location.assign(payload.download_url);
+  } catch (error) {
+    toast(`下载失败：${error.message}`, "error");
+  }
 }
 
 async function copyText(value) {

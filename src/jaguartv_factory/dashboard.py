@@ -66,7 +66,7 @@ def int_value(value: Any, default: int = 0) -> int:
         return default
 
 
-def signed_upload_url(upload_id: str, lifetime_sec: int = 3600) -> str:
+def signed_upload_url(upload_id: str, lifetime_sec: int = 24 * 3600) -> str:
     token = os.environ.get("JAGUARTV_UPLOAD_TOKEN", "").strip()
     if not token:
         return ""
@@ -1030,6 +1030,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         {"error": "missing or invalid upload token"}, HTTPStatus.UNAUTHORIZED
                     )
                 return self.send_json(upload_rows(self.server.config))
+            if parsed.path.startswith("/api/uploads/") and parsed.path.endswith("/link"):
+                if not self.authorized_for_uploads():
+                    return self.send_json(
+                        {"error": "missing or invalid upload token"}, HTTPStatus.UNAUTHORIZED
+                    )
+                upload_id = parsed.path.strip("/").split("/")[2]
+                find_upload(self.server.config, upload_id)
+                return self.send_json({"download_url": signed_upload_url(upload_id)})
             if parsed.path.startswith("/api/uploads/") and parsed.path.endswith("/download"):
                 return self.send_private_upload(parsed, head_only=False)
             if parsed.path == "/api/attribution":
@@ -1189,7 +1197,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             expires = int((query.get("exp") or ["0"])[0])
         except ValueError:
             return False
-        if expires < int(time.time()) or expires > int(time.time()) + 7200:
+        if expires < int(time.time()) or expires > int(time.time()) + 7 * 24 * 3600:
             return False
         provided = str((query.get("sig") or [""])[0])
         expected = hmac.new(
