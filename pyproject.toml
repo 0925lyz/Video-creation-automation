@@ -16,6 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 asr = ["faster-whisper>=1.1.1"]
+design = ["opencv-python-headless>=4.10"]
 workbuddy = ["demucs>=4.0.1", "faster-whisper>=1.1.1"]
 test = ["pytest>=8.3"]
 

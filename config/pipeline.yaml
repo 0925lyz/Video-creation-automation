@@ -112,7 +112,7 @@ brand:
       endcard:
         mode: orientation_image        # generated | image | orientation_image
         image: ""              # mode=image: full-frame 1080x1920 PNG
-        portrait_image: assets/brand/endcard_portrait_green.png
+        portrait_image: assets/brand/endcard_portrait_green_v2.png
         landscape_image: assets/brand/endcard_landscape_blue.png
         title: "Jaguar TV"
         tagline: "O melhor app de TV ao vivo e esportes"
