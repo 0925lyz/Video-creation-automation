@@ -82,7 +82,10 @@ def add_strategy_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--source-volume", type=float, default=0.72)
     parser.add_argument("--reaction-volume", type=float, default=1.0)
     parser.add_argument("--reaction-position", default="bottom_right", choices=("top_left", "top_right", "bottom_left", "bottom_right"))
-    parser.add_argument("--rights-status", choices=("OWNED", "LICENSED", "PUBLIC_DOMAIN", "CC_BY", "VERIFIED"))
+    parser.add_argument(
+        "--rights-status",
+        choices=("MANUAL_REVIEW", "OWNED", "LICENSED", "PUBLIC_DOMAIN", "CC_BY", "VERIFIED"),
+    )
 
 
 def strategy_options(args: argparse.Namespace) -> dict[str, object]:
