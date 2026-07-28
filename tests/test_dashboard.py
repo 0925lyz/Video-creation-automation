@@ -93,3 +93,25 @@ def test_session_manager_saves_and_checks_cookie_state(tmp_path: Path):
     assert sessions[0]["platform"] == "douyin"
     assert "session_login" in sessions[0]["login_command"]
     assert (tmp_path / saved["cookie_file_path"]).read_text(encoding="utf-8").count("douyin.com") == 1
+
+
+def test_session_manager_accepts_chrome_cookie_table_text(tmp_path: Path):
+    config = dashboard_config(tmp_path)
+    cookie_rows = "\n".join([
+        "LOGIN_INFO\tdemo-value\t.youtube.com\t/\t2027-08-31T13:37:30.096Z\t20\t✓\t✓\tNone",
+        "PREF\tf4=4000000&tz=Asia.Shanghai\t.youtube.com\t/\t2027-09-01T04:28:43.045Z\t31\t\t✓\tLax",
+    ])
+
+    saved = save_session(
+        config,
+        {
+            "platform": "youtube",
+            "account": "youtube_table",
+            "cookies_json": cookie_rows,
+        },
+    )
+    cookie_file = tmp_path / saved["cookie_file_path"]
+
+    assert saved["status"] == "READY"
+    assert saved["cookie_count"] == 2
+    assert cookie_file.read_text(encoding="utf-8").count(".youtube.com") == 2

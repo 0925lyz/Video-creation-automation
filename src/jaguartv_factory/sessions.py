@@ -87,7 +87,10 @@ def normalize_storage_state(raw_text: str) -> dict[str, Any]:
     try:
         parsed = json.loads(raw_text)
     except json.JSONDecodeError as error:
-        raise ValueError(f"cookies_json is not valid JSON: {error}") from error
+        try:
+            return {"cookies": parse_cookie_text(raw_text), "origins": []}
+        except ValueError:
+            raise ValueError(f"cookies_json is not valid JSON or cookie table text: {error}") from error
     if isinstance(parsed, list):
         parsed = {"cookies": parsed, "origins": []}
     if not isinstance(parsed, dict):
@@ -102,6 +105,61 @@ def normalize_storage_state(raw_text: str) -> dict[str, Any]:
     parsed["cookies"] = cookies
     parsed.setdefault("origins", [])
     return parsed
+
+
+def parse_cookie_expires(value: str) -> float:
+    value = str(value or "").strip()
+    if not value or value.lower() == "session":
+        return -1
+    try:
+        return float(value)
+    except ValueError:
+        pass
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError as error:
+        raise ValueError(f"unsupported cookie expiry: {value}") from error
+
+
+def parse_cookie_text(raw_text: str) -> list[dict[str, Any]]:
+    cookies: list[dict[str, Any]] = []
+    for raw_line in raw_text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        fields = raw_line.split("\t")
+        if len(fields) >= 7 and fields[1].upper() in {"TRUE", "FALSE"}:
+            domain, _include_subdomains, path, secure, expires, name, value = fields[:7]
+            cookies.append({
+                "name": name,
+                "value": value,
+                "domain": domain,
+                "path": path or "/",
+                "expires": parse_cookie_expires(expires),
+                "httpOnly": False,
+                "secure": secure.upper() == "TRUE",
+                "sameSite": "Lax",
+            })
+            continue
+        if len(fields) >= 5 and "." in fields[2]:
+            name, value, domain, path, expires = fields[:5]
+            flags = fields[5:]
+            same_site = next((item for item in flags if item in {"Strict", "Lax", "None"}), "Lax")
+            cookies.append({
+                "name": name,
+                "value": value,
+                "domain": domain,
+                "path": path or "/",
+                "expires": parse_cookie_expires(expires),
+                "httpOnly": "✓" in flags[:3],
+                "secure": "✓" in flags[1:4],
+                "sameSite": same_site,
+            })
+            continue
+        raise ValueError("cookie text must be JSON, Netscape cookies.txt, or tab-separated Chrome cookie rows")
+    if not cookies:
+        raise ValueError("no cookies found")
+    return cookies
 
 
 def cookie_expiry_summary(cookies: list[dict[str, Any]]) -> tuple[str, str]:
