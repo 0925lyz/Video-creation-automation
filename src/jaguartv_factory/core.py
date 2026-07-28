@@ -324,6 +324,11 @@ def discover(config: dict[str, Any], *, platforms: Iterable[str] | None = None, 
     enabled = list(platforms or config.get("sources", {}).get("enabled", []))
     supported = [platform for platform in enabled if platform in SEARCHABLE_PLATFORMS]
     per_query = int(limit or config.get("discovery", {}).get("max_candidates_per_keyword", 10))
+    excluded_languages = {
+        str(language).strip().lower()
+        for language in (config.get("sources", {}) or {}).get("exclude_languages", [])
+        if str(language).strip()
+    }
     stats = {
         "discovered": 0, "inserted": 0, "language_rejected": 0,
         "too_long": 0, "errors": 0, "categories_skipped": 0,
@@ -355,7 +360,7 @@ def discover(config: dict[str, Any], *, platforms: Iterable[str] | None = None, 
                     cid = candidate_id(actual_platform, source_id, url)
                     title = str(info.get("title") or "")
                     language, confidence = likely_language(f"{title} {info.get('description') or ''}")
-                    rejected = language in {"pt", "pt-BR", "pt-PT"} and confidence >= 0.7
+                    rejected = language.lower() in excluded_languages and confidence >= 0.7
                     too_long = candidate_too_long(config, info.get("duration"))
                     status = "LANGUAGE_REJECTED" if rejected else ("TOO_LONG" if too_long else "DISCOVERED")
                     if rejected:

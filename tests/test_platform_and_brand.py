@@ -67,10 +67,16 @@ def test_scoring_marks_estimated_dimensions():
 
 
 def test_keyword_platform_routing():
-    terms = {"en": ["football skills"], "zh-CN": ["巴西足球"]}
+    terms = {"en": ["football skills"], "pt": ["brasileirão"], "zh-CN": ["巴西足球"]}
     config = {"sources": {}}
-    assert terms_for_platform(terms, "youtube", config) == ["football skills"]
+    assert terms_for_platform(terms, "youtube", config) == ["football skills", "brasileirão"]
     assert terms_for_platform(terms, "douyin", config) == ["巴西足球"]
+    routed = terms_for_platform(
+        terms,
+        "tiktok",
+        {"sources": {"platform_language": {"tiktok": ["en", "pt"]}}},
+    )
+    assert routed == ["football skills", "brasileirão"]
     # platform with no preferred-language terms falls back to everything
     assert set(terms_for_platform({"fr": ["but incroyable"]}, "douyin", config)) == {"but incroyable"}
 

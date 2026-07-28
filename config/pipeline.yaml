@@ -5,7 +5,7 @@ run:
 
 sources:
   enabled: [youtube, bilibili, douyin, xiaohongshu, tiktok, facebook]
-  exclude_languages: [pt, pt-BR, pt-PT]
+  exclude_languages: []
   keywords_file: config/keywords.demo.yaml
   creators_file: config/creators.example.yaml
   # Which keyword languages go to which platform (see keywords file terms.*)
@@ -138,8 +138,9 @@ storage:
   upload_chunk_bytes: 8388608
 
 compliance:
-  require_verified_rights: true
-  blocked_content_risk: [football, sports_highlight, soap_opera, cartoon_kids]
+  require_verified_rights: false
+  mode: manual_review
+  review_content_risk: [football, sports_highlight, soap_opera, cartoon_kids]
 
 reaction:
   modes: [none, picture_in_picture, split_vertical, side_by_side]

@@ -7,7 +7,7 @@ run:
 
 sources:
   enabled: [youtube, bilibili, douyin, tiktok, kwai, facebook]
-  exclude_languages: [pt, pt-BR, pt-PT]
+  exclude_languages: []
   keywords_file: config/keywords.example.yaml
   creators_file: config/creators.example.yaml
 
@@ -49,7 +49,8 @@ storage:
   upload_chunk_bytes: 8388608
 
 compliance:
-  require_verified_rights: true
+  require_verified_rights: false
+  mode: manual_review
 
 reaction:
   default_mode: none

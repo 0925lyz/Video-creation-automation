@@ -69,7 +69,15 @@ def test_parse_srt_accepts_youtube_vtt_timing_settings(tmp_path: Path):
     assert cues == [TranscriptCue(7.86, 11.19, "Gol bonito")]
 
 
-def test_compliance_blocks_unknown_rights_and_allows_verified():
+def test_compliance_manual_review_does_not_block_unknown_rights():
+    config = {"compliance": {"require_verified_rights": False}}
+    result = assert_render_allowed(config, "football", {})
+    assert result["decision"] == "REVIEW_REQUIRED"
+    assert result["manual_review_required"] is True
+    assert result["risk_level"] == "high"
+
+
+def test_compliance_strict_mode_blocks_unknown_rights_and_allows_verified():
     config = {"compliance": {"require_verified_rights": True}}
     with pytest.raises(PermissionError, match="BLOCKED_RIGHTS"):
         assert_render_allowed(config, "football", {})

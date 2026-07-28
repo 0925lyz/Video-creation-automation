@@ -251,9 +251,9 @@
         <label>上传令牌<input id="productionUploadToken" type="password" autocomplete="off" placeholder="JAGUARTV_UPLOAD_TOKEN"></label>
         <label>源视频音量<input id="productionSourceVolume" type="number" min="0" max="2" step="0.05" value="0.72"></label>
         <label>Reaction 音量<input id="productionReactionVolume" type="number" min="0" max="2" step="0.05" value="1"></label>
-        <label>素材权利状态<select id="productionRightsStatus" required><option value="">请选择并确认</option><option value="OWNED">自有素材</option><option value="LICENSED">已获授权</option><option value="PUBLIC_DOMAIN">公共领域</option><option value="CC_BY">CC BY 许可</option><option value="VERIFIED">已由法务 / 负责人核验</option></select></label>
+        <label>素材权利状态<select id="productionRightsStatus"><option value="MANUAL_REVIEW" selected>内部人工审核</option><option value="OWNED">自有素材</option><option value="LICENSED">已获授权</option><option value="PUBLIC_DOMAIN">公共领域</option><option value="CC_BY">CC BY 许可</option><option value="VERIFIED">已由法务 / 负责人核验</option></select></label>
       </div>
-      <p class="dialog-note">体育赛事、影视和平台用户原创内容默认高风险。只有自有、已授权、公共领域或许可允许商业改编的素材可以制作；Reaction 不能用于规避版权检测。</p>
+      <p class="dialog-note">系统不在制作前拦截素材。体育赛事、影视、短剧和动画会写入人工审核标记，由内部审核确认授权、沟通记录和发布范围。</p>
       <div class="dialog-actions"><button class="secondary-button" id="cancelProductionDialog" type="button">取消</button><button class="primary-button" type="submit">开始分析并制作</button></div>
     </form>
   </dialog>
@@ -263,13 +263,13 @@
       <div class="dialog-heading"><div><p class="eyebrow">DISCOVERY JOB</p><h2>启动素材发现</h2></div><button class="icon-button" id="closeDiscoverDialog" type="button" title="关闭" aria-label="关闭">×</button></div>
       <label>来源平台<select id="discoverPlatform"><option value="youtube">YouTube</option><option value="bilibili">Bilibili</option><option value="douyin">抖音（关键词发现）</option><option value="xiaohongshu">小红书（作品 URL 导入）</option><option value="tiktok">TikTok</option><option value="facebook">Facebook（URL 优先）</option></select></label>
       <label id="discoverLimitField">每个关键词数量<input id="discoverLimit" type="number" min="1" max="20" value="3"></label>
-      <label id="discoverUrlField">具体视频 URL（填写后直接导入）<input id="discoverUrl" type="url" placeholder="https://..."></label>
+      <label id="discoverUrlField">具体视频 URL（填写后直接导入并可下载）<input id="discoverUrl" type="url" placeholder="https://..."></label>
       <p class="dialog-note" id="discoverPlatformNote">YouTube 可直接使用；Bilibili 建议配置 cookies。</p>
       <div class="dialog-actions"><button class="secondary-button" id="cancelDiscoverDialog" type="button">取消</button><button class="primary-button" id="submitDiscovery" type="submit">开始运行</button></div>
     </form>
   </dialog>
 
   <div class="toast" id="toast" role="status"></div>
-  <script src="/app.js"></script>
+  <script src="/app.js?v=20260728-manual-review"></script>
 </body>
 </html>

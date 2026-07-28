@@ -36,7 +36,7 @@ const statusLabels = {
   TOO_LONG: "超30分钟",
   DOWNLOAD_FAILED: "下载失败",
   PRODUCTION_FAILED: "制作失败",
-  BLOCKED_RIGHTS: "版权阻断",
+  BLOCKED_RIGHTS: "权利待人工确认",
   QUEUED: "排队中",
   SCHEDULED: "已计划",
   PUBLISHED: "已发布",
@@ -221,7 +221,7 @@ function failureReason(detail) {
   if (text.includes("HTTP Error 403")) return "源站拒绝下载（403）：建议配置 cookies 或更换素材";
   if (text.includes("Language gate")) return "葡语脚本被错误识别为英文：检测逻辑已修复，可重新制作";
   if (text.includes("exit status 69")) return "并发渲染导致成片文件不完整：已改为排队制作，可重新制作";
-  if (text.includes("BLOCKED_RIGHTS")) return "素材权利状态未核验，确认自有或授权后才能制作";
+  if (text.includes("BLOCKED_RIGHTS")) return "旧版本曾因权利状态阻断；现在可重新制作并进入人工审核";
   return text.length > 150 ? `${text.slice(0, 147)}...` : text;
 }
 
@@ -664,11 +664,11 @@ function updateDiscoverMode() {
   document.querySelector("#discoverLimitField").hidden = platform === "xiaohongshu";
   document.querySelector("#discoverUrl").required = platform === "xiaohongshu";
   const notes = {
-    youtube: "可按关键词发现；遇到登录验证时，在系统管理中保存 YouTube 登录态。",
+    youtube: "可按关键词发现或粘贴视频 URL；巴甲词已内置，遇到登录验证时保存 YouTube 登录态。",
     bilibili: "可按关键词发现或粘贴视频 URL；登录态可提高稳定性和画质。",
     douyin: "可按关键词发现或粘贴作品 URL；服务器采集服务和登录态必须可用。",
     xiaohongshu: "小红书当前通过作品 URL 导入，需要先启动本机 5556 端口的 XHS 服务。",
-    tiktok: "请优先粘贴具体视频 URL；地区或年龄限制内容需要登录态。",
+    tiktok: "请优先粘贴具体视频 URL；巴甲相关内容需要服务器 TikTok 登录态。",
     facebook: "请粘贴具体视频或 Reels URL；服务器登录态必须有权访问该视频。",
   };
   document.querySelector("#discoverPlatformNote").textContent = notes[platform];

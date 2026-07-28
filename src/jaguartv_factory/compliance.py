@@ -33,7 +33,7 @@ def assess_compliance(content_type: str, rights: Mapping[str, Any]) -> dict[str,
         "risk_level": risk,
         "rights_verified": verified,
         "rights_status": status,
-        "decision": "ALLOW" if verified else "BLOCKED_RIGHTS",
+        "decision": "ALLOW" if verified else "REVIEW_REQUIRED",
         "reason": "verified_rights_record" if verified else "missing_or_unverified_rights_record",
     }
 
@@ -45,7 +45,13 @@ def assert_render_allowed(
     assessment = assess_compliance(content_type, rights)
     enforce = bool((config.get("compliance", {}) or {}).get("require_verified_rights", True))
     if enforce and not assessment["rights_verified"]:
+        assessment["decision"] = "BLOCKED_RIGHTS"
         raise PermissionError(
             "BLOCKED_RIGHTS: rendering requires OWNED, LICENSED, PUBLIC_DOMAIN, CC_BY or VERIFIED rights status"
         )
-    return {"rights": rights, **assessment, "enforced": enforce}
+    return {
+        "rights": rights,
+        **assessment,
+        "enforced": enforce,
+        "manual_review_required": not assessment["rights_verified"],
+    }
