@@ -1482,9 +1482,17 @@ def ensure_remotion_runtime(config: dict[str, Any]) -> Path:
     require_binary("node")
     template = remotion_template_dir()
     runtime = workspace_dir(config) / "remotion_runtime"
-    shutil.copytree(template, runtime, dirs_exist_ok=True)
+    shutil.copytree(template, runtime, dirs_exist_ok=True, ignore=shutil.ignore_patterns("node_modules"))
     remotion_bin = runtime / "node_modules" / ".bin" / "remotion"
-    if not remotion_bin.exists():
+    installed = False
+    if remotion_bin.exists():
+        probe = run_command([str(remotion_bin), "--version"], cwd=runtime, check=False, timeout=20)
+        installed = probe.returncode == 0
+        if not installed:
+            shutil.rmtree(runtime / "node_modules", ignore_errors=True)
+            lockfile = runtime / "package-lock.json"
+            lockfile.unlink(missing_ok=True)
+    if not installed:
         installer = shutil.which("npm")
         args = [installer, "install", "--no-audit", "--no-fund"] if installer else []
         if not args and shutil.which("pnpm"):
