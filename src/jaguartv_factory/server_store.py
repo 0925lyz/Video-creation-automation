@@ -60,10 +60,20 @@ def sync_review_package_to_remote(config: dict[str, Any], package_id: str, desti
     mkdir = subprocess.run([*ssh_base, "mkdir", "-p", remote_dir], text=True, capture_output=True, check=False)
     if mkdir.returncode != 0:
         return {"enabled": True, "ok": False, "error": (mkdir.stderr or mkdir.stdout)[-1000:]}
+    files = [
+        str(path) for path in [
+            destination / "video.mp4",
+            *sorted(path for path in destination.glob("*.mp4") if path.name != "video.mp4"),
+            destination / "cover.jpg",
+            destination / "metadata.json",
+            destination / "review.json",
+        ]
+        if path.is_file()
+    ]
     scp = subprocess.run(
         [
             "scp", "-i", str(key), "-o", "StrictHostKeyChecking=accept-new",
-            *[str(destination / name) for name in ("video.mp4", "cover.jpg", "metadata.json", "review.json") if (destination / name).is_file()],
+            *files,
             f"{ssh_target}:{remote_dir}/",
         ],
         text=True,
@@ -80,7 +90,9 @@ def archive_review_package(config: dict[str, Any], package_id: str, review_dir: 
     destination = storage_root(config) / "review" / safe_id
     destination.mkdir(parents=True, exist_ok=True)
     copied: dict[str, dict[str, Any]] = {}
-    for name in ("video.mp4", "cover.jpg", "metadata.json", "review.json"):
+    names = ["video.mp4", *sorted(path.name for path in review_dir.glob("*.mp4") if path.name != "video.mp4")]
+    names.extend(["cover.jpg", "metadata.json", "review.json"])
+    for name in names:
         source = review_dir / name
         if not source.is_file():
             continue

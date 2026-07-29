@@ -2,6 +2,7 @@ run:
   timezone: Asia/Shanghai
   output_language: pt-BR
   workspace: workspace
+  timeout_sec: 120
 
 sources:
   enabled: [youtube, bilibili, douyin, xiaohongshu, tiktok, facebook]
@@ -48,7 +49,7 @@ selection:
   duplicate_threshold: 0.90
 
 edit:
-  render_engine: ffmpeg             # ffmpeg | remotion
+  render_engine: remotion           # dual-variant overlays/endcards require Remotion
   output_duration_sec: [12, 60]
   short_video_threshold_sec: 75       # <= about 1 minute: keep full video, no smart slicing
   max_segments_per_source: 3
@@ -87,12 +88,30 @@ audio:
   bgm_path: ""
 
 remotion:
+  promo_duration_sec: 1.5
+  overlay_max_width_ratio: 0.18
+  overlay_margin_h_ratio: 0.03
+  overlay_margin_v_ratio: 0.05
+  dual_variant:
+    enabled: true
+    generic_label: 通用版
+    facebook_label: FB版
+    tu_yi: assets/brand/overlay_tu_yi.jpg
+    tu_er: assets/brand/overlay_tu_er.png
+    lv_tu: assets/brand/endcard_portrait_green_v2.png
+    lan_tu: assets/brand/endcard_landscape_blue_v2.png
   add_bgm_under_source: true
   content_bgm_volume: 0.16
   endcard_bgm_volume: 0.24
   top_badge: "VÍDEO DO DIA 🔥"
   bottom_headline: "Assista esportes ao vivo"
   bottom_subline: "Canais, jogos e entretenimento em um só app"
+
+aspect_thresholds:
+  vertical_min: 0.5
+  vertical_max: 0.75
+  horizontal_min: 1.6
+  horizontal_max: 1.9
 
 brand:
   default_cta: https://copa.jarg.top/
@@ -113,7 +132,7 @@ brand:
         mode: orientation_image        # generated | image | orientation_image
         image: ""              # mode=image: full-frame 1080x1920 PNG
         portrait_image: assets/brand/endcard_portrait_green_v2.png
-        landscape_image: assets/brand/endcard_landscape_blue.png
+        landscape_image: assets/brand/endcard_landscape_blue_v2.png
         title: "Jaguar TV"
         tagline: "O melhor app de TV ao vivo e esportes"
         site: "Jarg.top"
@@ -136,6 +155,16 @@ storage:
   remote_review_root: /opt/jaguartv-content-factory-vnext/workspace/server_media/review
   max_upload_bytes: 2147483648
   upload_chunk_bytes: 8388608
+  inventory_dir: inventory
+
+trends:
+  enabled: true
+  pytrends_path: /opt/pytrends
+  cron: "0 8 * * *"
+  geo: BR
+  keywords: ["futebol Brasil"]
+  top_n: 10
+  source: google_trends
 
 compliance:
   require_verified_rights: false

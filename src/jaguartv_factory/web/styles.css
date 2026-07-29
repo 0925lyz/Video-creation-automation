@@ -118,6 +118,7 @@ tbody tr:hover { background: #fafcfb; }
 .content-cell strong, .content-cell small { display: block; }
 .content-cell strong { max-width: 430px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .content-cell small { margin-top: 5px; color: var(--muted); font-size: 10px; }
+.badge-published { display: inline-flex; margin-left: 8px; padding: 2px 8px; border-radius: 4px; background: #22c55e; color: #fff; font-size: 10px; font-weight: 800; vertical-align: 1px; }
 .status-pill { display: inline-block; padding: 4px 7px; border-radius: 4px; background: #e9edeb; color: #4e5955; font-size: 9px; font-weight: 800; }
 .status-pill.ready { background: var(--green-soft); color: #096344; }
 .status-pill.failed { background: #fbe7e1; color: #a13b21; }
@@ -154,6 +155,11 @@ input:focus, select:focus { border-color: var(--green); box-shadow: 0 0 0 2px rg
 .feedback-item:last-child { border-bottom: 0; }
 .feedback-item strong, .feedback-item span { display: block; }
 .feedback-item span { margin-top: 5px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.hot-keyword-strip { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+.hot-keyword { display: inline-grid; gap: 3px; min-width: 128px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--ink); text-align: left; cursor: pointer; }
+.hot-keyword strong { font-size: 13px; }
+.hot-keyword small { color: var(--muted); font-size: 10px; text-transform: uppercase; }
+.hot-keyword:hover { border-color: var(--green); box-shadow: 0 6px 18px rgba(39, 178, 125, .12); }
 .empty-state { min-height: 150px; display: grid; place-items: center; color: #8c9491; text-align: center; line-height: 1.6; }
 .metrics-band { margin-top: 34px; }
 

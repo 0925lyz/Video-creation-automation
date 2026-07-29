@@ -36,7 +36,7 @@ def test_demo_config_loads():
     assert config["audio"]["bgm_volume"] >= 0.40
     assert config["audio"]["source_mode"] == "auto"
     assert config["brand"]["kits"]["jaguartv"]["endcard"]["site"] == "Jarg.top"
-    assert config["edit"]["render_engine"] == "ffmpeg"
+    assert config["edit"]["render_engine"] == "remotion"
     assert config["edit"]["layout_mode"] == "original"
     assert config["edit"]["source_subtitle_cleanup"] == "ocr_blur"
     assert config["edit"]["short_video_threshold_sec"] == 75

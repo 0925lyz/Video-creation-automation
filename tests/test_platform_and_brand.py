@@ -290,6 +290,45 @@ def test_inventory_parent_candidate_exposes_all_segment_outputs(tmp_path: Path):
     assert row["output_assets"][1]["filename"] == "source1_part02.mp4"
 
 
+def test_inventory_exposes_dual_variant_outputs(tmp_path: Path):
+    config = {
+        "_root": str(tmp_path),
+        "run": {"workspace": "workspace"},
+        "storage": {
+            "root": "workspace/server_media",
+            "public_base_url": "https://factory.jarg.top/media",
+        },
+    }
+    insert_candidate(config, candidate_id="source2", status="APPROVED")
+    package = tmp_path / "workspace" / "server_media" / "review" / "source2"
+    package.mkdir(parents=True)
+    (package / "video.mp4").write_bytes(b"default")
+    (package / "0729-YouTube-1-通用版.mp4").write_bytes(b"generic")
+    (package / "0729-YouTube-1-FB版.mp4").write_bytes(b"facebook")
+    (package / "metadata.json").write_text(
+        json.dumps({
+            "job_id": "source2",
+            "server_storage": {
+                "files": {
+                    "0729-YouTube-1-通用版.mp4": {
+                        "url": "https://factory.jarg.top/media/review/source2/0729-YouTube-1-通用版.mp4"
+                    },
+                    "0729-YouTube-1-FB版.mp4": {
+                        "url": "https://factory.jarg.top/media/review/source2/0729-YouTube-1-FB版.mp4"
+                    },
+                }
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    row = next(item for item in candidate_rows(config) if item["id"] == "source2")
+    assert row["output_count"] == 2
+    assert [asset["variant"] for asset in row["output_assets"]] == ["通用版", "FB版"]
+    assert row["output_assets"][0]["download_url"].endswith("&download=1")
+    assert "%E9%80%9A%E7%94%A8%E7%89%88" in row["output_assets"][0]["video_url"]
+
+
 def test_media_download_forces_candidate_filename(tmp_path: Path):
     config = make_config(tmp_path)
     package = tmp_path / "workspace" / "ready_for_review" / "candidate_part01"

@@ -27,7 +27,7 @@ from .compliance import assert_render_allowed
 from .highlight import analyze_video
 from .reaction import compose_reaction, reaction_spec
 from .scoring import score_candidate_v2
-from .server_store import archive_review_package
+from .server_store import archive_review_package, storage_root
 from .strategy import render_audio_mode, resolve_production_strategy
 from .workbuddy_adapter import demucs_backing_track, edge_tts_ptbr, prepare_ocr_blurred_segment
 
@@ -46,8 +46,10 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def run_command(args: list[str], *, cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(args, cwd=cwd, check=check, text=True, capture_output=True)
+def run_command(
+    args: list[str], *, cwd: Path | None = None, check: bool = True, timeout: float | None = None
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(args, cwd=cwd, check=check, text=True, capture_output=True, timeout=timeout)
 
 
 def require_binary(name: str) -> str:
@@ -133,6 +135,7 @@ def connect_db(config: dict[str, Any]) -> sqlite3.Connection:
           detected_language TEXT,
           score REAL NOT NULL DEFAULT 0,
           status TEXT NOT NULL,
+          published_flag INTEGER NOT NULL DEFAULT 0,
           metadata_json TEXT NOT NULL,
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
@@ -207,8 +210,40 @@ def connect_db(config: dict[str, Any]) -> sqlite3.Connection:
           status TEXT NOT NULL DEFAULT 'PROPOSED',
           created_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS hot_keywords (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          keyword TEXT NOT NULL,
+          date TEXT NOT NULL,
+          source TEXT NOT NULL DEFAULT 'google_trends',
+          created_at TEXT NOT NULL,
+          UNIQUE(keyword, date, source)
+        );
+        CREATE TABLE IF NOT EXISTS callback_logs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          candidate_id TEXT NOT NULL,
+          video_id TEXT NOT NULL DEFAULT '',
+          publisher TEXT NOT NULL,
+          platform TEXT NOT NULL,
+          views INTEGER NOT NULL DEFAULT 0,
+          clicks INTEGER NOT NULL DEFAULT 0,
+          registrations INTEGER NOT NULL DEFAULT 0,
+          extra_data TEXT NOT NULL DEFAULT '{}',
+          callback_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS callback_candidate
+          ON callback_logs(candidate_id);
+        CREATE INDEX IF NOT EXISTS callback_at
+          ON callback_logs(callback_at);
         """
     )
+    candidate_columns = {
+        str(row["name"]) for row in connection.execute("PRAGMA table_info(candidates)")
+    }
+    if "published_flag" not in candidate_columns:
+        connection.execute(
+            "ALTER TABLE candidates ADD COLUMN published_flag INTEGER NOT NULL DEFAULT 0"
+        )
+        connection.commit()
     return connection
 
 
@@ -315,12 +350,27 @@ def category_active_today(category_config: dict[str, Any], today_index: int | No
     return WEEKDAY_KEYS[index] in {str(day).strip().lower()[:3] for day in days}
 
 
-def discover(config: dict[str, Any], *, platforms: Iterable[str] | None = None, limit: int | None = None) -> dict[str, int]:
+def discover(
+    config: dict[str, Any],
+    *,
+    platforms: Iterable[str] | None = None,
+    limit: int | None = None,
+    keyword_overrides: Iterable[str] | None = None,
+) -> dict[str, int]:
     from .sources import SEARCHABLE_PLATFORMS, SourceError, get_adapter
 
     connection = connect_db(config)
     keyword_path = resolve_config_path(config, config["sources"]["keywords_file"])
     keywords = yaml.safe_load(keyword_path.read_text(encoding="utf-8")) or {}
+    override_terms = [str(term).strip() for term in (keyword_overrides or []) if str(term).strip()]
+    if override_terms:
+        keywords = {
+            "hot_keyword_discovery": {
+                "weight": 1.0,
+                "enabled": True,
+                "terms": {"pt": override_terms},
+            }
+        }
     enabled = list(platforms or config.get("sources", {}).get("enabled", []))
     supported = [platform for platform in enabled if platform in SEARCHABLE_PLATFORMS]
     per_query = int(limit or config.get("discovery", {}).get("max_candidates_per_keyword", 10))
@@ -1430,19 +1480,93 @@ def ensure_remotion_runtime(config: dict[str, Any]) -> Path:
     first Remotion render.
     """
     require_binary("node")
-    require_binary("npm")
     template = remotion_template_dir()
     runtime = workspace_dir(config) / "remotion_runtime"
     shutil.copytree(template, runtime, dirs_exist_ok=True)
     remotion_bin = runtime / "node_modules" / ".bin" / "remotion"
     if not remotion_bin.exists():
-        result = run_command(["npm", "install", "--no-audit", "--no-fund"], cwd=runtime, check=False)
+        installer = shutil.which("npm")
+        args = [installer, "install", "--no-audit", "--no-fund"] if installer else []
+        if not args and shutil.which("pnpm"):
+            args = [shutil.which("pnpm") or "pnpm", "install", "--ignore-scripts"]
+        if not args:
+            raise RuntimeError("Remotion dependencies are missing and neither npm nor pnpm is available")
+        result = run_command(args, cwd=runtime, check=False)
         if result.returncode != 0:
             raise RuntimeError(
                 "Remotion dependencies install failed. Ensure Node.js/npm network access works.\n"
                 + (result.stderr or result.stdout)[-4000:]
             )
     return runtime
+
+
+SOURCE_FILENAME_LABELS = {
+    "tiktok": "TikTko",
+    "xiaohongshu": "小红书",
+    "douyin": "抖音",
+    "bilibili": "B站",
+    "youtube": "YouTube",
+    "facebook": "Facebook",
+}
+
+
+def source_filename_label(platform: str) -> str:
+    return SOURCE_FILENAME_LABELS.get(platform.strip().lower(), re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "", platform) or "source")
+
+
+def candidate_date_label(row: sqlite3.Row) -> str:
+    for field in ("created_at", "updated_at"):
+        try:
+            raw = str(row[field] or "")
+            if raw:
+                return datetime.fromisoformat(raw.replace("Z", "+00:00")).strftime("%m%d")
+        except (KeyError, ValueError):
+            pass
+    return datetime.now(timezone.utc).strftime("%m%d")
+
+
+def inventory_root(config: dict[str, Any]) -> Path:
+    configured = str((config.get("storage", {}) or {}).get("inventory_dir") or "inventory")
+    path = Path(configured).expanduser()
+    if not path.is_absolute():
+        path = storage_root(config) / path
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def next_inventory_index(config: dict[str, Any], date_label: str, source_label: str) -> int:
+    pattern = re.compile(rf"^{re.escape(date_label)}-{re.escape(source_label)}-(\d+)-.+\.mp4$")
+    highest = 0
+    root = inventory_root(config)
+    for path in root.glob(f"*/*/{date_label}-{source_label}-*.mp4"):
+        match = pattern.match(path.name)
+        if match:
+            highest = max(highest, int(match.group(1)))
+    return highest + 1
+
+
+def configured_remotion_asset(config: dict[str, Any], key: str) -> Path:
+    settings = config.get("remotion", {}).get("dual_variant", {}) or {}
+    path = resolve_config_path(config, str(settings.get(key) or ""))
+    if not path.is_file() or path.stat().st_size <= 0:
+        raise FileNotFoundError(f"missing Remotion asset {key}: {path}")
+    return path
+
+
+def selected_endcard_asset(config: dict[str, Any], width: int, height: int) -> tuple[Path, str]:
+    aspect = width / max(1, height)
+    settings = config.get("aspect_thresholds", {}) or {}
+    vertical_min = float(settings.get("vertical_min", 0.5))
+    vertical_max = float(settings.get("vertical_max", 0.75))
+    horizontal_min = float(settings.get("horizontal_min", 1.6))
+    horizontal_max = float(settings.get("horizontal_max", 1.9))
+    if vertical_min <= aspect <= vertical_max:
+        return configured_remotion_asset(config, "lv_tu"), "9:16"
+    if horizontal_min <= aspect <= horizontal_max:
+        return configured_remotion_asset(config, "lan_tu"), "16:9"
+    if aspect < 1.0:
+        return configured_remotion_asset(config, "lv_tu"), "9:16_fallback"
+    return configured_remotion_asset(config, "lan_tu"), "16:9_fallback"
 
 
 def render_clean_segment(
@@ -1527,77 +1651,86 @@ def render_clean_segment(
     render_target.replace(output)
 
 
-def render_video_remotion(
-    config: dict[str, Any], media: Path, voice: Path | None, bgm: Path | None,
-    subtitles: Path | None, output: Path, duration: float, audio_mode: str,
-    start_time: float = 0.0,
-) -> None:
-    runtime = ensure_remotion_runtime(config)
-    kit = brand_kit(config)
-    endcard_seconds = max(1.0, min(6.0, float(kit.get("endcard", {}).get("duration_sec", 3))))
-    endcard_seconds = min(endcard_seconds, max(1.0, duration - 1.0))
-    content_duration = max(1.0, duration - endcard_seconds)
-    clean = output.with_name(f"{output.stem}_clean_input.mp4")
-    render_clean_segment(config, media, voice, bgm, clean, content_duration, audio_mode, start_time)
+def copy_remotion_public_asset(source: Path, public_dir: Path, name: str) -> str:
+    destination = public_dir / name
+    shutil.copy2(source, destination)
+    return f"renders/{public_dir.name}/{name}"
 
-    width, height = media_dimensions(clean)
-    logo_path = resolve_config_path(config, str(kit.get("watermark", {}).get("image") or ""))
+
+def render_video_remotion_variant(
+    config: dict[str, Any],
+    clean_media: Path,
+    output: Path,
+    *,
+    variant: str,
+) -> dict[str, Any]:
+    runtime = ensure_remotion_runtime(config)
+    width, height = media_dimensions(clean_media)
+    content_duration = media_duration(clean_media)
+    remotion_settings = config.get("remotion", {}) or {}
+    promo_seconds = max(1.0, min(6.0, float(remotion_settings.get("promo_duration_sec", 1.5))))
     public_dir = runtime / "public" / "renders" / output.stem
     if public_dir.exists():
         shutil.rmtree(public_dir)
     public_dir.mkdir(parents=True, exist_ok=True)
-    public_source = public_dir / "source.mp4"
-    shutil.copy2(clean, public_source)
-    public_logo = public_dir / "logo.png"
-    if logo_path.exists():
-        shutil.copy2(logo_path, public_logo)
-    public_bgm = public_dir / "bgm.wav"
-    has_bgm = bool(bgm and bgm.exists())
-    if has_bgm and bgm:
-        shutil.copy2(bgm, public_bgm)
-    public_prefix = f"renders/{output.stem}"
-    remotion_settings = config.get("remotion", {}) or {}
-    title = str(kit.get("endcard", {}).get("title") or "Jaguar TV")
-    site = str(kit.get("endcard", {}).get("site") or "Jarg.top")
-    props = {
-        "sourceVideo": f"{public_prefix}/source.mp4",
-        "logoImage": f"{public_prefix}/logo.png" if logo_path.exists() else "",
-        "bgmAudio": f"{public_prefix}/bgm.wav" if has_bgm else "",
+    source_asset = copy_remotion_public_asset(clean_media, public_dir, "source.mp4")
+
+    props: dict[str, Any] = {
+        "variant": variant,
+        "sourceVideo": source_asset,
         "width": width,
         "height": height,
         "fps": 30,
-        "durationSeconds": duration,
         "contentSeconds": content_duration,
-        "contentBgmVolume": (
-            float(remotion_settings.get("content_bgm_volume", 0.16))
-            if audio_mode == "preserve_source" and has_bgm else 0.0
-        ),
-        "endcardBgmVolume": float(remotion_settings.get("endcard_bgm_volume", 0.24)) if has_bgm else 0.0,
-        "title": title,
-        "tagline": str(kit.get("endcard", {}).get("tagline") or "O melhor app de TV ao vivo e esportes"),
-        "topBadge": str(remotion_settings.get("top_badge") or "VÍDEO DO DIA 🔥"),
-        "bottomHeadline": str(remotion_settings.get("bottom_headline") or "Assista esportes ao vivo"),
-        "bottomSubline": str(remotion_settings.get("bottom_subline") or "Canais, jogos e entretenimento em um só app"),
-        "site": site,
-        "endcardCta": str(remotion_settings.get("endcard_cta") or f"BAIXE EM {site}"),
-        "subtitles": [
-            {"start": start, "end": end, "text": text}
-            for start, end, text in parse_srt_blocks(subtitles)
-        ] if subtitles else [],
+        "promoSeconds": promo_seconds if variant == "通用版" else 0,
+        "durationSeconds": content_duration + (promo_seconds if variant == "通用版" else 0),
+        "overlayMaxWidthRatio": float(remotion_settings.get("overlay_max_width_ratio", 0.18)),
+        "overlayMarginHRatio": float(remotion_settings.get("overlay_margin_h_ratio", 0.03)),
+        "overlayMarginVRatio": float(remotion_settings.get("overlay_margin_v_ratio", 0.05)),
     }
+    endcard_class = ""
+    if variant == "通用版":
+        tu_yi = configured_remotion_asset(config, "tu_yi")
+        tu_er = configured_remotion_asset(config, "tu_er")
+        props["imgTuYi"] = copy_remotion_public_asset(tu_yi, public_dir, f"tu_yi{tu_yi.suffix or '.png'}")
+        props["imgTuEr"] = copy_remotion_public_asset(tu_er, public_dir, f"tu_er{tu_er.suffix or '.png'}")
+        endcard_path, endcard_class = selected_endcard_asset(config, width, height)
+        props["imgEndcard"] = copy_remotion_public_asset(endcard_path, public_dir, f"endcard{endcard_path.suffix or '.png'}")
+
     props_path = output.with_name(f"{output.stem}_remotion_props.json")
     props_path.write_text(json.dumps(props, ensure_ascii=False, indent=2), encoding="utf-8")
     render_target = output.with_name(
         f".{output.stem}.{os.getpid()}.{threading.get_ident()}.remotion{output.suffix}"
     )
     remotion_bin = runtime / "node_modules" / ".bin" / "remotion"
-    result = run_command([
-        str(remotion_bin), "render", "src/index.tsx", "JaguarTVBrand",
-        str(render_target), "--props", json.dumps(props, ensure_ascii=False), "--log", "error",
-    ], cwd=runtime, check=False)
+    try:
+        result = run_command([
+            str(remotion_bin), "render", "src/index.tsx", "JaguarTVVariant",
+            str(render_target), "--props", json.dumps(props, ensure_ascii=False), "--log", "error",
+        ], cwd=runtime, check=False, timeout=float((config.get("run", {}) or {}).get("timeout_sec", 120)))
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError(f"Remotion render timed out after {error.timeout}s") from error
     if result.returncode != 0:
         raise RuntimeError("Remotion render failed:\n" + (result.stderr or result.stdout)[-6000:])
     render_target.replace(output)
+    return {
+        "variant": variant,
+        "path": str(output),
+        "filename": output.name,
+        "endcard_class": endcard_class,
+        "duration": media_duration(output),
+        "size": output.stat().st_size,
+    }
+
+
+def render_video_remotion(
+    config: dict[str, Any], media: Path, voice: Path | None, bgm: Path | None,
+    subtitles: Path | None, output: Path, duration: float, audio_mode: str,
+    start_time: float = 0.0,
+) -> None:
+    clean = output.with_name(f"{output.stem}_clean_input.mp4")
+    render_clean_segment(config, media, voice, bgm, clean, duration, audio_mode, start_time)
+    render_video_remotion_variant(config, clean, output, variant="通用版")
 
 
 def render_video(
@@ -1630,14 +1763,17 @@ def qa_video(path: Path, config: dict[str, Any] | None = None) -> dict[str, Any]
     }
     layout = str((config or {}).get("edit", {}).get("layout_mode", "vertical")).strip().lower()
     minimum, maximum = short_duration_bounds(config or {})
+    extra_duration = 0.0
+    if (config or {}).get("remotion", {}).get("dual_variant", {}).get("enabled", False):
+        extra_duration = max(0.0, float((config or {}).get("remotion", {}).get("promo_duration_sec", 1.5)))
     if layout == "original":
         checks["passed"] = (
             int(checks["width"] or 0) >= 360
             and int(checks["height"] or 0) >= 360
-            and minimum <= duration <= maximum + 0.5
+            and minimum <= duration <= maximum + extra_duration + 0.5
         )
     else:
-        checks["passed"] = checks["width"] == 1080 and checks["height"] == 1920 and minimum <= duration <= maximum + 0.5
+        checks["passed"] = checks["width"] == 1080 and checks["height"] == 1920 and minimum <= duration <= maximum + extra_duration + 0.5
     return checks
 
 
@@ -1887,7 +2023,11 @@ def produce_candidate(
         segment_index = int(segment["index"])
         segment_total = int(segment["total"])
         package_id = row["id"] if segment_total == 1 else f"{row['id']}_part{segment_index:02d}"
-        output = work / ("master_9x16.mp4" if segment_total == 1 else f"master_9x16_part{segment_index:02d}.mp4")
+        source_label = source_filename_label(str(row["platform"]))
+        date_label = candidate_date_label(row)
+        inventory_index = next_inventory_index(config, date_label, source_label)
+        filename_stem = f"{date_label}-{source_label}-{inventory_index}"
+        output = work / f"{filename_stem}-通用版.mp4"
         progress(62 + int((segment_index - 1) * 24 / max(1, segment_total)), f"正在渲染第 {segment_index}/{segment_total} 个 Short")
         render_media = media
         render_start = float(segment["start"])
@@ -1912,25 +2052,69 @@ def produce_candidate(
             )
             render_media = preprocessed
             render_start = 0.0
-        render_video(
-            config, render_media, voice, bgm, subtitles, output, float(segment["duration"]),
-            audio_mode=audio_mode, start_time=render_start,
-        )
-        if reaction.mode != "none":
-            endcard_seconds = max(
-                1.0,
-                min(
-                    6.0,
-                    float(brand_kit(config).get("endcard", {}).get("duration_sec", 3)),
-                    max(1.0, float(segment["duration"]) - 1.0),
-                ),
+        variant_outputs: list[dict[str, Any]] = []
+        if render_engine == "remotion" and (config.get("remotion", {}).get("dual_variant", {}) or {}).get("enabled", False):
+            clean = work / f"{filename_stem}_clean_input.mp4"
+            render_clean_segment(
+                config, render_media, voice, bgm, clean, float(segment["duration"]),
+                audio_mode=audio_mode, start_time=render_start,
             )
-            compose_reaction(
-                output,
-                output,
-                reaction,
-                content_duration=max(1.0, float(segment["duration"]) - endcard_seconds),
+            for variant in ("通用版", "FB版"):
+                variant_output = work / f"{filename_stem}-{variant}.mp4"
+                info = render_video_remotion_variant(config, clean, variant_output, variant=variant)
+                if reaction.mode != "none":
+                    compose_reaction(
+                        variant_output,
+                        variant_output,
+                        reaction,
+                        content_duration=float(segment["duration"]),
+                    )
+                    info["duration"] = media_duration(variant_output)
+                    info["size"] = variant_output.stat().st_size
+                inventory_dir = inventory_root(config) / variant / source_label
+                inventory_dir.mkdir(parents=True, exist_ok=True)
+                inventory_path = inventory_dir / variant_output.name
+                shutil.copy2(variant_output, inventory_path)
+                qa_variant = qa_video(variant_output, config)
+                qa_variant["variant"] = variant
+                info.update({
+                    "path": str(variant_output),
+                    "inventory_path": str(inventory_path),
+                    "qa": qa_variant,
+                    "source_label": source_label,
+                })
+                if not qa_variant["passed"]:
+                    raise RuntimeError(f"QA failed for {package_id} {variant}: {qa_variant}")
+                variant_outputs.append(info)
+            output = Path(str(variant_outputs[0]["path"]))
+        else:
+            render_video(
+                config, render_media, voice, bgm, subtitles, output, float(segment["duration"]),
+                audio_mode=audio_mode, start_time=render_start,
             )
+            if reaction.mode != "none":
+                endcard_seconds = max(
+                    1.0,
+                    min(
+                        6.0,
+                        float(brand_kit(config).get("endcard", {}).get("duration_sec", 3)),
+                        max(1.0, float(segment["duration"]) - 1.0),
+                    ),
+                )
+                compose_reaction(
+                    output,
+                    output,
+                    reaction,
+                    content_duration=max(1.0, float(segment["duration"]) - endcard_seconds),
+                )
+            variant_outputs.append({
+                "variant": "通用版",
+                "path": str(output),
+                "filename": output.name,
+                "duration": media_duration(output),
+                "size": output.stat().st_size,
+                "source_label": source_label,
+            })
         qa = qa_video(output, config)
         qa["segment"] = {
             "index": segment_index,
@@ -1949,6 +2133,10 @@ def produce_candidate(
         review = review_root / package_id
         review.mkdir(parents=True, exist_ok=True)
         shutil.copy2(output, review / "video.mp4")
+        for info in variant_outputs:
+            variant_path = Path(str(info["path"]))
+            if variant_path.is_file():
+                shutil.copy2(variant_path, review / variant_path.name)
         cover = review / "cover.jpg"
         active_kit = brand_kit(config)
         cover_source = render_cover_image(config, active_kit, output, cover)
@@ -1997,6 +2185,7 @@ def produce_candidate(
                 "watermark": str(brand_kit(config).get("watermark", {}).get("image") or ""),
                 "endcard": str(brand_kit(config).get("endcard", {}).get("image") or ""),
             },
+            "output_variants": variant_outputs,
             "render_engine": render_engine,
             "reaction": reaction.to_dict(),
             "compliance": compliance,

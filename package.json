@@ -1,0 +1,8 @@
+{
+  "name": "jaguartv-content-factory-vnext",
+  "version": "0.2.0",
+  "private": true,
+  "scripts": {
+    "build": "node scripts/build-remotion-template.cjs"
+  }
+}

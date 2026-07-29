@@ -5,6 +5,7 @@ const state = {
   workers: [],
   feedback: [],
   keywordGroups: [],
+  hotKeywords: [],
   settings: null,
   sessions: [],
   uploads: [],
@@ -92,11 +93,11 @@ async function refreshAll(showToast = false) {
   button.disabled = true;
   try {
     const token = storedUploadToken();
-    const [overview, candidates, publications, workers, feedback, keywordGroups, tasks, settings, sessions, health, uploads] = await Promise.all([
-      api("/api/overview"), api("/api/candidates?limit=200"), api("/api/publications"), api("/api/workers"), api("/api/feedback"), api("/api/keywords"), api("/api/tasks"), api("/api/settings"), api("/api/sessions"), api("/api/health"),
+    const [overview, candidates, publications, workers, feedback, keywordGroups, hotKeywords, tasks, settings, sessions, health, uploads] = await Promise.all([
+      api("/api/overview"), api("/api/candidates?limit=200"), api("/api/publications"), api("/api/workers"), api("/api/feedback"), api("/api/keywords"), api("/api/hot-keywords?date=today"), api("/api/tasks"), api("/api/settings"), api("/api/sessions"), api("/api/health"),
       token ? api("/api/uploads", { headers: { "X-Upload-Token": token } }).catch(() => []) : Promise.resolve([]),
     ]);
-    Object.assign(state, { overview, candidates, publications, workers, feedback, keywordGroups, tasks, settings, sessions, health, uploads });
+    Object.assign(state, { overview, candidates, publications, workers, feedback, keywordGroups, hotKeywords, tasks, settings, sessions, health, uploads });
     renderAll();
     document.querySelector("#serviceTime").textContent = `更新于 ${dateText(overview.generated_at)}`;
     if (showToast) toast("数据已刷新");
@@ -116,6 +117,7 @@ function renderAll() {
   renderInventory();
   renderPublications();
   renderAnalytics();
+  renderHotKeywords();
   renderKeywordGroups();
   renderWorkers();
   renderSettings();
@@ -191,7 +193,7 @@ function renderInventory() {
     return `
     <tr>
       <td class="check-column"><input class="candidate-checkbox" type="checkbox" data-candidate-select="${item.id}" ${state.selectedCandidates.has(item.id) ? "checked" : ""} aria-label="选择 ${escapeHtml(item.title || item.id)}"></td>
-      <td><div class="content-cell">${thumb ? `<img class="mini-cover" src="${thumb}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<div class="mini-cover"></div>`}<div><strong title="${escapeHtml(item.title)}">${escapeHtml(item.title || "未命名内容")}</strong><small>${item.id}${item.keyword ? ` · ${escapeHtml(item.keyword)}` : ""}</small></div></div></td>
+      <td><div class="content-cell">${thumb ? `<img class="mini-cover" src="${thumb}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<div class="mini-cover"></div>`}<div><strong title="${escapeHtml(item.title)}">${escapeHtml(item.title || "未命名内容")}${item.published_flag ? `<span class="badge-published">Published</span>` : ""}</strong><small>${item.id}${item.keyword ? ` · ${escapeHtml(item.keyword)}` : ""}</small></div></div></td>
       <td>${escapeHtml(item.platform)}</td>
       <td><strong>${escapeHtml(item.content_type || "unknown")}</strong><small>${escapeHtml(item.segment_strategy || "未分析")} · ${escapeHtml(item.audio_policy || "自动")}</small></td>
       <td>${Number(item.highlight_score || 0).toFixed(1)}</td>
@@ -378,6 +380,34 @@ function renderAnalytics() {
   document.querySelector("#analyticsSummary").innerHTML = cards.map((item, index) => `<article class="kpi-card ${index === 3 ? "highlight" : ""}"><span>${item[0]}</span><strong>${number(item[1])}</strong><small>${index ? `上一阶段转化见总览` : "平台最新快照"}</small></article>`).join("");
   document.querySelector("#keywordTable").innerHTML = state.overview.keywords.length ? state.overview.keywords.map((row) => `<tr><td>${escapeHtml(row.keyword)}</td><td>${row.candidates}</td><td>${number(row.views)}</td><td>${number(row.clicks)}</td><td>${number(row.registrations)}</td><td>${number(row.first_watch || 0)}</td><td>${row.score}</td></tr>`).join("") : `<tr><td colspan="7"><div class="empty-state">暂无关键词数据</div></td></tr>`;
   document.querySelector("#feedbackList").innerHTML = state.feedback.length ? state.feedback.map((item) => `<div class="feedback-item"><strong>${escapeHtml(item.action_type)} · ${escapeHtml(item.keyword || item.candidate_id || "内容")}</strong><span>${escapeHtml(item.reason)} · 信号分 ${Number(item.score).toFixed(2)}</span></div>`).join("") : `<div class="empty-state">当视频达到最低播放量且注册率或分享率突出时，系统会在这里提出关键词增强建议。<br>建议先审核，再应用到发现配置。</div>`;
+}
+
+function renderHotKeywords() {
+  const element = document.querySelector("#hotKeywordStrip");
+  if (!element) return;
+  element.innerHTML = state.hotKeywords.length ? state.hotKeywords.map((item) => `
+    <button class="hot-keyword" data-hot-keyword="${escapeHtml(item.keyword)}" type="button">
+      <strong>${escapeHtml(item.keyword)}</strong><small>${escapeHtml(item.source || "google_trends")}</small>
+    </button>
+  `).join("") : `<div class="empty-state">今日热词还未同步；调度器会保留最近一次成功结果</div>`;
+  element.querySelectorAll("[data-hot-keyword]").forEach((button) => {
+    button.addEventListener("click", () => discoverWithHotKeyword(button.dataset.hotKeyword));
+  });
+}
+
+async function discoverWithHotKeyword(keyword) {
+  const value = String(keyword || "").trim();
+  if (!value) return;
+  try {
+    const result = await api("/api/actions", {
+      method: "POST",
+      body: JSON.stringify({ action: "discover", platform: "youtube", limit: 3, keywords: [value] }),
+    });
+    toast(`热词发现任务 ${result.task_id} 已启动`);
+    pollTask(result.task_id);
+  } catch (error) {
+    toast(`热词发现失败：${error.message}`, "error");
+  }
 }
 
 function renderKeywordGroups() {

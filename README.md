@@ -85,6 +85,37 @@ X-Upload-Token: <JAGUARTV_UPLOAD_TOKEN>
 
 最大上传大小默认 2GB。服务端流式写入 `.uploading` 临时文件，完整接收后原子重命名。
 
+## 双版本审核成片
+
+Remotion 品牌模式会为每个审核包生成两个版本：
+
+- `通用版`：播放期间左上角显示图一、右上角显示图二，结尾追加宣传尾图；竖屏使用绿图，横屏使用蓝图。
+- `FB版`：不加角标、不加宣传尾图，只保留归一化后的成片，方便 Facebook 单独发布。
+
+默认预览文件仍是 `review/<candidate>/video.mp4`。内容库存页会读取同一审核包内的全部 `.mp4`，为 `通用版` 和 `FB版` 分别显示“预览 / 下载成片 / 服务器成片”。
+
+发布数据回传接口：
+
+```text
+POST /api/callback
+Content-Type: application/json
+
+{
+  "candidate_id": "candidate-or-package-id",
+  "publisher": "operator-name",
+  "platform": "youtube",
+  "views": 1000,
+  "clicks": 30,
+  "registrations": 4
+}
+```
+
+今日巴西热词接口：
+
+```text
+GET /api/hot-keywords?date=today
+```
+
 ## 腾讯云部署
 
 - 首次安装：`scripts/server-install.sh`

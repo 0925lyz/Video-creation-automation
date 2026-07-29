@@ -18,7 +18,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import yaml
 
@@ -48,6 +48,7 @@ from .server_store import (
     save_upload_chunk,
     storage_root,
 )
+from .trends import list_hot_keywords, start_trends_scheduler
 
 
 WEB_ROOT = Path(__file__).resolve().parent / "web"
@@ -317,46 +318,51 @@ def review_output_index(config: dict[str, Any]) -> dict[str, list[dict[str, Any]
         else:
             continue
 
-        video = media_dir / "video.mp4"
-        version = int(video.stat().st_mtime)
-        video_url = f"/media/{media_relative}?v={version}"
-        server_url = ""
         metadata_path = local_dir / "metadata.json"
         if not metadata_path.is_file():
             metadata_path = server_dir / "metadata.json"
+        server_files: dict[str, Any] = {}
         if metadata_path.is_file():
             try:
                 review_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-                server_url = str(
-                    review_metadata.get("server_storage", {}).get("files", {}).get("video.mp4", {}).get("url") or ""
-                )
+                server_files = review_metadata.get("server_storage", {}).get("files", {}) or {}
             except (json.JSONDecodeError, OSError):
                 pass
-        if not server_url and server_video.is_file():
-            server_url = public_url(config, f"review/{package_id}/video.mp4")
 
         cover = media_dir / "cover.jpg"
         cover_url = ""
         if cover.is_file():
             cover_relative = media_relative.rsplit("/", 1)[0] + "/cover.jpg"
-            cover_url = f"/media/{cover_relative}?v={int(cover.stat().st_mtime)}"
+            cover_url = f"/media/{quote(cover_relative, safe='/')}?v={int(cover.stat().st_mtime)}"
 
         part_match = PART_PACKAGE_PATTERN.match(package_id)
         part_number = int(part_match.group("number")) if part_match else None
-        asset = {
-            "id": package_id,
-            "label": f"片段 {part_number:02d}" if part_number is not None else "成片",
-            "part_number": part_number,
-            "video_url": video_url,
-            "download_url": f"{video_url}&download=1",
-            "server_url": server_url,
-            "cover_url": cover_url,
-            "filename": f"{package_id}.mp4",
-            "_metadata_path": str(metadata_path) if metadata_path.is_file() else "",
-        }
-        index.setdefault(package_id, []).append(asset)
-        if part_match:
-            index.setdefault(part_match.group("parent"), []).append(asset)
+        variant_files = sorted(path for path in media_dir.glob("*.mp4") if path.name != "video.mp4")
+        mp4_files = variant_files or [media_dir / "video.mp4"]
+        for video in [path for path in mp4_files if path.is_file()]:
+            version = int(video.stat().st_mtime)
+            video_relative = media_relative.rsplit("/", 1)[0] + f"/{video.name}"
+            video_url = f"/media/{quote(video_relative, safe='/')}?v={version}"
+            server_url = str(server_files.get(video.name, {}).get("url") or "")
+            if not server_url and server_video.is_file():
+                server_url = public_url(config, f"review/{package_id}/{video.name}")
+            variant = "通用版" if "通用版" in video.name or video.name == "video.mp4" else ("FB版" if "FB版" in video.name else "")
+            base_label = f"片段 {part_number:02d}" if part_number is not None else "成片"
+            asset = {
+                "id": package_id if video.name == "video.mp4" else f"{package_id}:{video.stem}",
+                "label": f"{base_label} · {variant}" if variant else base_label,
+                "variant": variant,
+                "part_number": part_number,
+                "video_url": video_url,
+                "download_url": f"{video_url}&download=1",
+                "server_url": server_url,
+                "cover_url": cover_url,
+                "filename": f"{package_id}.mp4" if video.name == "video.mp4" else video.name,
+                "_metadata_path": str(metadata_path) if metadata_path.is_file() else "",
+            }
+            index.setdefault(package_id, []).append(asset)
+            if part_match:
+                index.setdefault(part_match.group("parent"), []).append(asset)
 
     for assets in index.values():
         unique = {asset["id"]: asset for asset in assets}
@@ -365,6 +371,7 @@ def review_output_index(config: dict[str, Any]) -> dict[str, list[dict[str, Any]
             key=lambda asset: (
                 asset["part_number"] is not None,
                 asset["part_number"] if asset["part_number"] is not None else 0,
+                0 if asset.get("variant") == "通用版" else 1 if asset.get("variant") == "FB版" else 2,
                 asset["id"],
             ),
         )
@@ -402,6 +409,7 @@ def candidate_rows(config: dict[str, Any], status: str | None = None, limit: int
         except json.JSONDecodeError:
             pass
         item.pop("metadata_json", None)
+        item["published_flag"] = bool(item.get("published_flag"))
         item["keyword"] = str(metadata.get("keyword") or "")
         item["score_breakdown"] = metadata.get("score_breakdown") or {}
         analysis = metadata.get("analysis") or {}
@@ -540,6 +548,7 @@ def server_review_rows(config: dict[str, Any], exclude: set[str] | None = None) 
             "failure_event": "",
             "failure_detail": "",
             "failure_at": "",
+            "published_flag": False,
         })
     return items
 
@@ -606,6 +615,123 @@ def save_publication(config: dict[str, Any], payload: dict[str, Any]) -> int:
     )
     connection.commit()
     return int(cursor.lastrowid)
+
+
+def update_publication_status(config: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    publication_id = int_value(payload.get("publication_id"))
+    status = str(payload.get("status") or "").strip().upper()
+    if not publication_id or status not in {"QUEUED", "SCHEDULED", "PUBLISHED", "FAILED"}:
+        raise ValueError("publication_id and a supported status are required")
+    connection = connect_db(config)
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        row = connection.execute(
+            "SELECT candidate_id FROM publications WHERE id=?", (publication_id,)
+        ).fetchone()
+        if not row:
+            raise ValueError("publication does not exist")
+        timestamp = now_iso()
+        connection.execute(
+            "UPDATE publications SET status=?,published_at=?,updated_at=? WHERE id=?",
+            (status, timestamp if status == "PUBLISHED" else None, timestamp, publication_id),
+        )
+        if status == "PUBLISHED":
+            connection.execute(
+                "UPDATE candidates SET published_flag=1,updated_at=? WHERE id=?",
+                (timestamp, row["candidate_id"]),
+            )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    return {"publication_id": publication_id, "candidate_id": row["candidate_id"], "status": status}
+
+
+def save_callback(config: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    candidate = str(payload.get("candidate_id") or "").strip()
+    publisher = str(payload.get("publisher") or "").strip()
+    platform = str(payload.get("platform") or "").strip().lower()
+    if not candidate or not publisher:
+        raise ValueError("candidate_id and publisher are required")
+    if platform not in PLATFORMS:
+        raise ValueError(f"platform must be one of {PLATFORMS}")
+    metrics: dict[str, int] = {}
+    for field in ("views", "clicks", "registrations"):
+        value = payload.get(field, 0)
+        if isinstance(value, bool):
+            raise ValueError(f"{field} must be a non-negative integer")
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"{field} must be a non-negative integer") from error
+        if parsed < 0:
+            raise ValueError(f"{field} must be a non-negative integer")
+        metrics[field] = parsed
+    callback_at = str(payload.get("timestamp") or now_iso()).strip()
+    try:
+        datetime.fromisoformat(callback_at.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError("timestamp must be ISO8601") from error
+    extra = payload.get("extra_data") or {}
+    if not isinstance(extra, dict):
+        raise ValueError("extra_data must be an object")
+    connection = connect_db(config)
+    cursor = connection.execute(
+        """
+        INSERT INTO callback_logs(
+          candidate_id,video_id,publisher,platform,views,clicks,registrations,extra_data,callback_at
+        ) VALUES(?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            candidate, str(payload.get("video_id") or ""), publisher, platform,
+            metrics["views"], metrics["clicks"], metrics["registrations"],
+            json.dumps(extra, ensure_ascii=False), callback_at,
+        ),
+    )
+    connection.commit()
+    print(f"callback {callback_at} candidate={candidate} platform={platform}")
+    return {"success": True, "log_id": int(cursor.lastrowid)}
+
+
+def move_candidate_to_review(config: dict[str, Any], candidate: str) -> dict[str, Any]:
+    candidate = candidate.strip()
+    if not candidate:
+        raise ValueError("candidate_id is required")
+    local_root = workspace_dir(config) / "ready_for_review"
+    server_root = storage_root(config) / "review"
+    packages = [
+        path
+        for root in (local_root, server_root)
+        if root.exists()
+        for path in [root / candidate, *sorted(root.glob(f"{candidate}_part*"))]
+        if path.is_dir()
+        and any(item.is_file() and item.stat().st_size > 0 for item in path.glob("*.mp4"))
+    ]
+    if not packages:
+        raise ValueError("candidate has no verified rendered output to move into review")
+    connection = connect_db(config)
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        row = connection.execute("SELECT status FROM candidates WHERE id=?", (candidate,)).fetchone()
+        if not row:
+            raise ValueError("candidate does not exist")
+        allowed = {"DOWNLOADED", "APPROVED", "REVISION_REQUIRED", "READY_FOR_REVIEW"}
+        if row["status"] not in allowed:
+            raise ValueError(f"candidate status {row['status']} cannot move to review")
+        timestamp = now_iso()
+        connection.execute(
+            "UPDATE candidates SET status='READY_FOR_REVIEW',updated_at=? WHERE id=?",
+            (timestamp, candidate),
+        )
+        connection.execute(
+            "INSERT INTO events(candidate_id,event_type,payload_json,created_at) VALUES(?,?,?,?)",
+            (candidate, "READY_FOR_REVIEW", json.dumps({"packages": [p.name for p in packages]}), timestamp),
+        )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    return {"candidate_id": candidate, "status": "READY_FOR_REVIEW", "packages": [p.name for p in packages]}
 
 
 def save_metrics(config: dict[str, Any], payload: dict[str, Any]) -> int:
@@ -1065,7 +1191,13 @@ class DashboardApplication(ThreadingHTTPServer):
         try:
             if action == "discover":
                 self.update_task(task_id, progress=10, message=f"正在搜索 {payload.get('platform') or 'youtube'}")
-                result = discover(self.config, platforms=[str(payload.get("platform") or "youtube")], limit=int_value(payload.get("limit"), 3))
+                keywords = payload.get("keywords") or []
+                result = discover(
+                    self.config,
+                    platforms=[str(payload.get("platform") or "youtube")],
+                    limit=int_value(payload.get("limit"), 3),
+                    keyword_overrides=keywords if isinstance(keywords, list) else [],
+                )
             elif action == "ingest":
                 url = str(payload.get("url") or "").strip()
                 if not url:
@@ -1116,6 +1248,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return self.send_json(feedback_rows(self.server.config))
             if parsed.path == "/api/keywords":
                 return self.send_json(load_keyword_groups(self.server.config))
+            if parsed.path == "/api/hot-keywords":
+                date_value = (query.get("date") or [""])[0].strip()
+                if date_value == "today":
+                    date_value = ""
+                return self.send_json(list_hot_keywords(self.server.config, date_value or None))
             if parsed.path == "/api/settings":
                 return self.send_json(system_settings(self.server.config))
             if parsed.path == "/api/sessions":
@@ -1228,8 +1365,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return self.send_json({"task_id": task_id, "status": "RUNNING"}, HTTPStatus.ACCEPTED)
             if parsed.path == "/api/publications":
                 return self.send_json({"id": save_publication(self.server.config, payload)}, HTTPStatus.CREATED)
+            if parsed.path == "/api/publications/status":
+                return self.send_json(update_publication_status(self.server.config, payload), HTTPStatus.OK)
+            if parsed.path == "/api/callback":
+                return self.send_json(save_callback(self.server.config, payload), HTTPStatus.OK)
             if parsed.path == "/api/metrics":
                 return self.send_json({"id": save_metrics(self.server.config, payload)}, HTTPStatus.CREATED)
+            if parsed.path == "/api/move-to-review":
+                return self.send_json(
+                    move_candidate_to_review(
+                        self.server.config,
+                        str(payload.get("candidate_id") or payload.get("id") or ""),
+                    ),
+                    HTTPStatus.OK,
+                )
             if parsed.path == "/api/review":
                 return self.send_json(save_review(self.server.config, payload), HTTPStatus.OK)
             if parsed.path == "/api/skip":
@@ -1350,6 +1499,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_file(path, cache="no-cache")
 
     def send_media(self, relative: str, download: bool = False) -> None:
+        relative = unquote(relative)
         if relative.startswith("review/"):
             root = storage_root(self.server.config)
             path = (root / relative).resolve()
@@ -1360,7 +1510,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return self.send_error(HTTPStatus.NOT_FOUND)
         disposition = ""
         if download:
-            filename = f"{path.parent.name}{path.suffix}"
+            filename = path.name if path.name != "video.mp4" else f"{path.parent.name}{path.suffix}"
             disposition = f"attachment; filename*=UTF-8''{quote(filename)}"
         self.send_file(path, cache="private, max-age=60", disposition=disposition)
 
@@ -1408,6 +1558,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
 def serve_dashboard(config: dict[str, Any], host: str = "127.0.0.1", port: int = 8787) -> None:
     register_coordinator(config, port)
+    start_trends_scheduler(config)
     server = DashboardApplication((host, port), config)
     print(f"JaguarTV Content OS: http://{host}:{port}")
     try:
