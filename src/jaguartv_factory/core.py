@@ -2144,41 +2144,91 @@ def produce_candidate(
             render_start = 0.0
         variant_outputs: list[dict[str, Any]] = []
         if render_engine == "remotion" and (config.get("remotion", {}).get("dual_variant", {}) or {}).get("enabled", False):
-            clean = work / f"{filename_stem}_clean_input.mp4"
-            render_clean_segment(
-                config, render_media, voice, bgm, clean, float(segment["duration"]),
-                audio_mode=audio_mode, start_time=render_start,
-            )
-            for variant in ("通用版", "FB版"):
-                variant_output = work / f"{filename_stem}-{variant}.mp4"
-                info = render_video_remotion_variant(config, clean, variant_output, variant=variant)
+            try:
+                clean = work / f"{filename_stem}_clean_input.mp4"
+                render_clean_segment(
+                    config, render_media, voice, bgm, clean, float(segment["duration"]),
+                    audio_mode=audio_mode, start_time=render_start,
+                )
+                for variant in ("通用版", "FB版"):
+                    variant_output = work / f"{filename_stem}-{variant}.mp4"
+                    info = render_video_remotion_variant(config, clean, variant_output, variant=variant)
+                    if reaction.mode != "none":
+                        compose_reaction(
+                            variant_output,
+                            variant_output,
+                            reaction,
+                            content_duration=float(segment["duration"]),
+                        )
+                    mobile_format = normalize_mobile_review_video(variant_output, config)
+                    info["mobile_format"] = mobile_format
+                    info["duration"] = media_duration(variant_output)
+                    info["size"] = variant_output.stat().st_size
+                    inventory_dir = inventory_root(config) / batch_label / variant / source_label if batch_label else inventory_root(config) / variant / source_label
+                    inventory_dir.mkdir(parents=True, exist_ok=True)
+                    inventory_path = inventory_dir / variant_output.name
+                    shutil.copy2(variant_output, inventory_path)
+                    qa_variant = qa_video(variant_output, config)
+                    qa_variant["variant"] = variant
+                    info.update({
+                        "path": str(variant_output),
+                        "inventory_path": str(inventory_path),
+                        "qa": qa_variant,
+                        "source_label": source_label,
+                        "batch_label": batch_label,
+                    })
+                    if not qa_variant["passed"]:
+                        raise RuntimeError(f"QA failed for {package_id} {variant}: {qa_variant}")
+                    variant_outputs.append(info)
+            except RuntimeError as error:
+                fallback_reason = str(error)
+                output = work / f"{filename_stem}-通用版.mp4"
+                render_video_ffmpeg(
+                    config, render_media, voice, bgm, subtitles, output, float(segment["duration"]),
+                    audio_mode=audio_mode, start_time=render_start,
+                )
                 if reaction.mode != "none":
-                    compose_reaction(
-                        variant_output,
-                        variant_output,
-                        reaction,
-                        content_duration=float(segment["duration"]),
+                    endcard_seconds = max(
+                        1.0,
+                        min(
+                            6.0,
+                            float(brand_kit(config).get("endcard", {}).get("duration_sec", 3)),
+                            max(1.0, float(segment["duration"]) - 1.0),
+                        ),
                     )
-                mobile_format = normalize_mobile_review_video(variant_output, config)
-                info["mobile_format"] = mobile_format
-                info["duration"] = media_duration(variant_output)
-                info["size"] = variant_output.stat().st_size
-                inventory_dir = inventory_root(config) / batch_label / variant / source_label if batch_label else inventory_root(config) / variant / source_label
-                inventory_dir.mkdir(parents=True, exist_ok=True)
-                inventory_path = inventory_dir / variant_output.name
-                shutil.copy2(variant_output, inventory_path)
-                qa_variant = qa_video(variant_output, config)
-                qa_variant["variant"] = variant
-                info.update({
-                    "path": str(variant_output),
-                    "inventory_path": str(inventory_path),
-                    "qa": qa_variant,
-                    "source_label": source_label,
-                    "batch_label": batch_label,
-                })
-                if not qa_variant["passed"]:
-                    raise RuntimeError(f"QA failed for {package_id} {variant}: {qa_variant}")
-                variant_outputs.append(info)
+                    compose_reaction(
+                        output,
+                        output,
+                        reaction,
+                        content_duration=max(1.0, float(segment["duration"]) - endcard_seconds),
+                    )
+                for variant in ("通用版", "FB版"):
+                    variant_output = output if variant == "通用版" else work / f"{filename_stem}-{variant}.mp4"
+                    if variant != "通用版":
+                        shutil.copy2(output, variant_output)
+                    mobile_format = normalize_mobile_review_video(variant_output, config)
+                    qa_variant = qa_video(variant_output, config)
+                    qa_variant["variant"] = variant
+                    inventory_dir = inventory_root(config) / batch_label / variant / source_label if batch_label else inventory_root(config) / variant / source_label
+                    inventory_dir.mkdir(parents=True, exist_ok=True)
+                    inventory_path = inventory_dir / variant_output.name
+                    shutil.copy2(variant_output, inventory_path)
+                    if not qa_variant["passed"]:
+                        raise RuntimeError(f"QA failed for {package_id} {variant}: {qa_variant}") from error
+                    variant_outputs.append({
+                        "variant": variant,
+                        "path": str(variant_output),
+                        "filename": variant_output.name,
+                        "duration": media_duration(variant_output),
+                        "size": variant_output.stat().st_size,
+                        "source_label": source_label,
+                        "mobile_format": mobile_format,
+                        "batch_label": batch_label,
+                        "inventory_path": str(inventory_path),
+                        "qa": qa_variant,
+                        "render_fallback": "ffmpeg",
+                        "fallback_reason": fallback_reason[-1000:],
+                    })
             output = Path(str(variant_outputs[0]["path"]))
         else:
             render_video(
