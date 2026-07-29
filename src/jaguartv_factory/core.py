@@ -1708,7 +1708,7 @@ def render_video_remotion_variant(
     props_path = output.with_name(f"{output.stem}_remotion_props.json")
     props_path.write_text(json.dumps(props, ensure_ascii=False, indent=2), encoding="utf-8")
     render_target = output.with_name(
-        f".{output.stem}.{os.getpid()}.{threading.get_ident()}.remotion{output.suffix}"
+        f".remotion-{os.getpid()}-{threading.get_ident()}-{random.randrange(1_000_000)}{output.suffix}"
     )
     remotion_bin = runtime / "node_modules" / ".bin" / "remotion"
     try:
@@ -1720,6 +1720,8 @@ def render_video_remotion_variant(
         raise RuntimeError(f"Remotion render timed out after {error.timeout}s") from error
     if result.returncode != 0:
         raise RuntimeError("Remotion render failed:\n" + (result.stderr or result.stdout)[-6000:])
+    if not render_target.is_file() or render_target.stat().st_size <= 0:
+        raise RuntimeError("Remotion render finished without output:\n" + (result.stderr or result.stdout)[-6000:])
     render_target.replace(output)
     return {
         "variant": variant,
