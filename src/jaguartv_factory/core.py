@@ -1672,6 +1672,8 @@ def render_video_remotion_variant(
     *,
     variant: str,
 ) -> dict[str, Any]:
+    clean_media = clean_media.expanduser().resolve()
+    output = output.expanduser().resolve()
     runtime = ensure_remotion_runtime(config)
     width, height = media_dimensions(clean_media)
     content_duration = media_duration(clean_media)
