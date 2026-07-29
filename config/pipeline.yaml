@@ -113,6 +113,13 @@ aspect_thresholds:
   horizontal_min: 1.6
   horizontal_max: 1.9
 
+mobile_review_format:
+  enabled: true
+  target_aspect: "3:4"
+  target_resolution: [1080, 1440]
+  landscape_min_aspect: 1.2
+  background: "#000000"
+
 brand:
   default_cta: https://copa.jarg.top/
   default_kit: jaguartv

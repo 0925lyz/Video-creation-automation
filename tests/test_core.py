@@ -10,6 +10,7 @@ from jaguartv_factory.core import (
     generate_funk_bgm,
     likely_language,
     load_config,
+    mobile_review_format_needed,
     render_endcard,
     write_srt,
 )
@@ -42,6 +43,21 @@ def test_demo_config_loads():
     assert config["edit"]["short_video_threshold_sec"] == 75
     assert config["selection"]["max_source_duration_sec"] == 1800
     assert config["brand"]["kits"]["jaguartv"]["endcard"]["mode"] == "orientation_image"
+    assert config["mobile_review_format"]["target_resolution"] == [1080, 1440]
+
+
+def test_mobile_review_format_only_wraps_landscape_outputs():
+    config = {
+        "mobile_review_format": {
+            "enabled": True,
+            "landscape_min_aspect": 1.2,
+        }
+    }
+    assert mobile_review_format_needed(1920, 1080, config) is True
+    assert mobile_review_format_needed(1280, 720, config) is True
+    assert mobile_review_format_needed(1080, 1440, config) is False
+    assert mobile_review_format_needed(720, 1280, config) is False
+    assert mobile_review_format_needed(1920, 1080, {"mobile_review_format": {"enabled": False}}) is False
 
 
 def test_generate_funk_bgm(tmp_path: Path):

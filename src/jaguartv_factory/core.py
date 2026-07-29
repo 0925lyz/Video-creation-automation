@@ -934,6 +934,74 @@ def media_dimensions(path: Path) -> tuple[int, int]:
     return width - width % 2, height - height % 2
 
 
+def mobile_review_format_needed(width: int, height: int, config: dict[str, Any]) -> bool:
+    mobile = config.get("mobile_review_format", {}) or {}
+    if not bool(mobile.get("enabled", True)):
+        return False
+    if width <= 0 or height <= 0:
+        return False
+    min_aspect = float(mobile.get("landscape_min_aspect", 1.2))
+    return (width / height) >= min_aspect
+
+
+def normalize_mobile_review_video(path: Path, config: dict[str, Any]) -> dict[str, Any]:
+    mobile = config.get("mobile_review_format", {}) or {}
+    width, height = media_dimensions(path)
+    if not mobile_review_format_needed(width, height, config):
+        return {
+            "applied": False,
+            "mode": "unchanged",
+            "source_width": width,
+            "source_height": height,
+            "reason": "not_landscape_or_disabled",
+        }
+
+    target = mobile.get("target_resolution", [1080, 1440])
+    target_width = int(target[0]) if isinstance(target, (list, tuple)) and len(target) >= 2 else 1080
+    target_height = int(target[1]) if isinstance(target, (list, tuple)) and len(target) >= 2 else 1440
+    target_width = max(360, target_width - target_width % 2)
+    target_height = max(480, target_height - target_height % 2)
+    background = str(mobile.get("background", "#000000")).strip() or "#000000"
+    timeout = float((config.get("run", {}) or {}).get("timeout_sec", 120))
+    tmp = path.with_name(f".mobile3x4-{os.getpid()}-{threading.get_ident()}-{random.randrange(1_000_000)}.mp4")
+    vf = (
+        f"scale={target_width}:{target_height}:force_original_aspect_ratio=decrease,"
+        f"pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2:color={background},"
+        "setsar=1"
+    )
+    try:
+        run_command([
+            "ffmpeg", "-y",
+            "-i", str(path),
+            "-map", "0:v:0",
+            "-map", "0:a?",
+            "-vf", vf,
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "22",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-movflags", "+faststart",
+            str(tmp),
+        ], timeout=timeout)
+        if not tmp.is_file() or tmp.stat().st_size <= 0:
+            raise RuntimeError("mobile 3:4 render produced an empty file")
+        tmp.replace(path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+    final_width, final_height = media_dimensions(path)
+    return {
+        "applied": True,
+        "mode": "landscape_to_3x4_black_letterbox",
+        "source_width": width,
+        "source_height": height,
+        "target_width": final_width,
+        "target_height": final_height,
+    }
+
+
 def render_output_size(config: dict[str, Any], media: Path) -> tuple[int, int]:
     layout = str(config.get("edit", {}).get("layout_mode", "vertical")).strip().lower()
     if layout == "original":
@@ -2081,8 +2149,10 @@ def produce_candidate(
                         reaction,
                         content_duration=float(segment["duration"]),
                     )
-                    info["duration"] = media_duration(variant_output)
-                    info["size"] = variant_output.stat().st_size
+                mobile_format = normalize_mobile_review_video(variant_output, config)
+                info["mobile_format"] = mobile_format
+                info["duration"] = media_duration(variant_output)
+                info["size"] = variant_output.stat().st_size
                 inventory_dir = inventory_root(config) / variant / source_label
                 inventory_dir.mkdir(parents=True, exist_ok=True)
                 inventory_path = inventory_dir / variant_output.name
@@ -2119,6 +2189,7 @@ def produce_candidate(
                     reaction,
                     content_duration=max(1.0, float(segment["duration"]) - endcard_seconds),
                 )
+            mobile_format = normalize_mobile_review_video(output, config)
             variant_outputs.append({
                 "variant": "通用版",
                 "path": str(output),
@@ -2126,6 +2197,7 @@ def produce_candidate(
                 "duration": media_duration(output),
                 "size": output.stat().st_size,
                 "source_label": source_label,
+                "mobile_format": mobile_format,
             })
         qa = qa_video(output, config)
         qa["segment"] = {
