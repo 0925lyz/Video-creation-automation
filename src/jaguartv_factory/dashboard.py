@@ -1301,6 +1301,19 @@ class DashboardApplication(ThreadingHTTPServer):
                 result = download_top(self.config, 1, candidate)
                 item_failed = int(result.get("failed", 0)) or int(result.get("selected", 0) == 0)
             elif action == "produce":
+                row = connect_db(self.config).execute(
+                    "SELECT status FROM candidates WHERE id=?", (candidate,)
+                ).fetchone()
+                if row and row["status"] in {"DISCOVERED", "DOWNLOAD_FAILED"}:
+                    self.update_task(task_id, message=f"先下载素材 · {index + 1}/{total}")
+                    download_result = download_top(self.config, 1, candidate)
+                    if int(download_result.get("failed", 0)) or int(download_result.get("downloaded", 0) == 0):
+                        result = {"download": download_result, "produce": {"selected": 0, "produced": 0, "failed": 1}}
+                        failed += 1
+                        items.append({"candidate_id": candidate, "result": result, "failed": True})
+                        self.update_task(task_id, completed=index + 1, progress=int((index + 1) / total * 95))
+                        continue
+
                 def production_progress(percent: int, message: str) -> None:
                     base = index / total * 95
                     share = 95 / total

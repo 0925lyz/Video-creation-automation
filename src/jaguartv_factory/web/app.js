@@ -238,7 +238,7 @@ function updateBatchToolbar() {
   const rows = selectedRows();
   document.querySelector("#selectionCount").textContent = `已选 ${rows.length} 条`;
   document.querySelector("#batchDownload").disabled = !rows.some((item) => item.status === "DISCOVERED");
-  document.querySelector("#batchProduce").disabled = !rows.some((item) => ["DOWNLOADED", "REVISION_REQUIRED", "BLOCKED_RIGHTS"].includes(item.status) || (item.status === "APPROVED" && !outputAssetsFor(item).length));
+  document.querySelector("#batchProduce").disabled = !rows.some((item) => ["DISCOVERED", "DOWNLOADED", "REVISION_REQUIRED", "BLOCKED_RIGHTS"].includes(item.status) || (item.status === "APPROVED" && !outputAssetsFor(item).length));
   document.querySelector("#batchDelete").disabled = rows.length === 0;
   const visible = filteredCandidates();
   const selectVisible = document.querySelector("#selectVisible");
@@ -297,7 +297,7 @@ function approvedOutputActions(item) {
 function candidateAction(item) {
   const sourceLink = item.url ? `<button class="table-action" onclick="window.open('${escapeHtml(item.url)}','_blank')">源页</button>` : "";
   const deleteButton = `<button class="table-action danger-action" data-delete-id="${item.id}">删除</button>`;
-  if (item.status === "DISCOVERED") return `${sourceLink}<button class="table-action" data-candidate-action="download" data-candidate-id="${item.id}">下载</button>${deleteButton}`;
+  if (item.status === "DISCOVERED") return `${sourceLink}<button class="table-action" data-candidate-action="download" data-candidate-id="${item.id}">下载</button><button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">制作</button>${deleteButton}`;
   if (item.status === "DOWNLOAD_FAILED") return `${sourceLink}${deleteButton}`;
   if (item.status === "PRODUCTION_FAILED") return `${sourceLink}${deleteButton}`;
   if (["DOWNLOADED", "REVISION_REQUIRED", "BLOCKED_RIGHTS"].includes(item.status)) return `<button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">制作</button>${deleteButton}`;
@@ -730,7 +730,7 @@ document.querySelector("#selectVisible").addEventListener("change", (event) => {
 });
 document.querySelector("#batchDownload").addEventListener("click", () => runBatchAction("download", ["DISCOVERED"]));
 document.querySelector("#batchProduce").addEventListener("click", () => {
-  const ids = selectedRows().filter((item) => ["DOWNLOADED", "REVISION_REQUIRED", "BLOCKED_RIGHTS"].includes(item.status) || (item.status === "APPROVED" && !outputAssetsFor(item).length)).map((item) => item.id);
+  const ids = selectedRows().filter((item) => ["DISCOVERED", "DOWNLOADED", "REVISION_REQUIRED", "BLOCKED_RIGHTS"].includes(item.status) || (item.status === "APPROVED" && !outputAssetsFor(item).length)).map((item) => item.id);
   if (!ids.length) return toast("所选内容中没有可制作项目", "error");
   openProductionDialog(ids);
 });
@@ -783,6 +783,7 @@ document.querySelector("#productionForm").addEventListener("submit", async (even
       source_volume: Number(document.querySelector("#productionSourceVolume").value || 0.72),
       reaction_volume: Number(document.querySelector("#productionReactionVolume").value || 1),
       rights_status: document.querySelector("#productionRightsStatus").value,
+      batch_label: document.querySelector("#productionBatchLabel").value.trim(),
     };
     document.querySelector("#productionDialog").close();
     await runBatchAction("produce", [], options, state.pendingProductionIds);
