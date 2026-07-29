@@ -18,7 +18,7 @@ from jaguartv_factory.core import (
     terms_for_platform,
     write_srt,
 )
-from jaguartv_factory.dashboard import DashboardApplication, candidate_rows, skip_candidate
+from jaguartv_factory.dashboard import DashboardApplication, candidate_rows, delete_candidates, skip_candidate
 from jaguartv_factory.scoring import score_candidate_v2
 from jaguartv_factory.server_store import (
     archive_review_package,
@@ -366,6 +366,84 @@ def test_skip_candidate_and_inventory_fields(tmp_path: Path):
     assert skip_candidate(config, {"candidate_id": "c1"})["status"] == "SKIPPED"
     with pytest.raises(ValueError):
         skip_candidate(config, {"candidate_id": "missing"})
+
+
+def test_delete_candidate_clears_db_review_job_and_inventory_files(tmp_path: Path):
+    config = make_config(tmp_path)
+    insert_candidate(config, candidate_id="c-delete", status="APPROVED")
+    connection = connect_db(config)
+    for table in ("events", "publications", "performance_snapshots", "conversion_events", "feedback_actions"):
+        if table == "events":
+            connection.execute(
+                "INSERT INTO events(candidate_id,event_type,payload_json,created_at) VALUES(?,?,?,?)",
+                ("c-delete", "READY_FOR_REVIEW", "{}", now_iso()),
+            )
+        elif table == "publications":
+            connection.execute(
+                "INSERT INTO publications(candidate_id,platform,created_at,updated_at) VALUES(?,?,?,?)",
+                ("c-delete", "youtube", now_iso(), now_iso()),
+            )
+        elif table == "performance_snapshots":
+            connection.execute(
+                "INSERT INTO performance_snapshots(candidate_id,platform,captured_at) VALUES(?,?,?)",
+                ("c-delete", "youtube", now_iso()),
+            )
+        elif table == "conversion_events":
+            connection.execute(
+                "INSERT INTO conversion_events(candidate_id,event_type,occurred_at) VALUES(?,?,?)",
+                ("c-delete", "install", now_iso()),
+            )
+        else:
+            connection.execute(
+                "INSERT INTO feedback_actions(candidate_id,action_type,reason,created_at) VALUES(?,?,?,?)",
+                ("c-delete", "BOOST_KEYWORD", "demo", now_iso()),
+            )
+    connection.commit()
+
+    job_dir = tmp_path / "workspace" / "jobs" / "c-delete"
+    review_dir = tmp_path / "workspace" / "ready_for_review" / "c-delete_part01"
+    inventory_file = tmp_path / "workspace" / "server_media" / "inventory" / "通用版" / "youtube" / "demo.mp4"
+    job_dir.mkdir(parents=True)
+    review_dir.mkdir(parents=True)
+    inventory_file.parent.mkdir(parents=True)
+    (job_dir / "source.mp4").write_bytes(b"source")
+    inventory_file.write_bytes(b"inventory-video")
+    (review_dir / "video.mp4").write_bytes(b"review-video")
+    (review_dir / "metadata.json").write_text(
+        json.dumps({
+            "job_id": "c-delete_part01",
+            "output_variants": [{"inventory_path": str(inventory_file)}],
+        }),
+        encoding="utf-8",
+    )
+
+    result = delete_candidates(config, {"candidate_ids": ["c-delete"]})
+    assert result["deleted"] == 1
+    assert result["bytes_freed"] >= len(b"source") + len(b"review-video") + len(b"inventory-video")
+    assert not job_dir.exists()
+    assert not review_dir.exists()
+    assert not inventory_file.exists()
+    connection = connect_db(config)
+    assert connection.execute("SELECT COUNT(*) count FROM candidates WHERE id='c-delete'").fetchone()["count"] == 0
+    for table in ("events", "publications", "performance_snapshots", "conversion_events", "feedback_actions"):
+        assert connection.execute(f"SELECT COUNT(*) count FROM {table} WHERE candidate_id='c-delete'").fetchone()["count"] == 0
+
+
+def test_delete_server_only_review_package(tmp_path: Path):
+    config = {
+        "_root": str(tmp_path),
+        "run": {"workspace": "workspace"},
+        "storage": {"root": "workspace/server_media"},
+    }
+    review_dir = tmp_path / "workspace" / "server_media" / "review" / "server-only"
+    review_dir.mkdir(parents=True)
+    (review_dir / "video.mp4").write_bytes(b"review-video")
+    (review_dir / "metadata.json").write_text(json.dumps({"job_id": "server-only"}), encoding="utf-8")
+    assert candidate_rows(config)[0]["id"] == "server-only"
+    result = delete_candidates(config, {"candidate_ids": ["server-only"]})
+    assert result["deleted"] == 1
+    assert not review_dir.exists()
+    assert candidate_rows(config) == []
 
 
 def test_inventory_exposes_latest_failure_reason(tmp_path: Path):

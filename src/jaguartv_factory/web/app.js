@@ -28,7 +28,6 @@ const views = {
 
 const statusLabels = {
   DISCOVERED: "待筛选",
-  SKIPPED: "已忽略",
   DOWNLOADED: "待制作",
   READY_FOR_REVIEW: "待审核",
   APPROVED: "审核通过",
@@ -208,8 +207,8 @@ function renderInventory() {
     updateBatchToolbar();
   }));
   document.querySelectorAll("[data-candidate-action]").forEach((button) => button.addEventListener("click", () => runCandidateAction(button.dataset.candidateAction, button.dataset.candidateId)));
+  document.querySelectorAll("[data-delete-id]").forEach((button) => button.addEventListener("click", () => deleteCandidates([button.dataset.deleteId])));
   document.querySelectorAll("[data-review-decision]").forEach((button) => button.addEventListener("click", () => submitReview(button.dataset.reviewDecision, button.dataset.candidateId)));
-  document.querySelectorAll("[data-skip-id]").forEach((button) => button.addEventListener("click", () => skipCandidate(button.dataset.skipId)));
   updateBatchToolbar();
 }
 
@@ -221,9 +220,9 @@ function failureReason(detail) {
   if (text.includes("HTTP Error 412")) return "Bilibili 拒绝当前请求：保存 B站登录态后重试";
   if (text.includes("Video unavailable")) return "源视频已删除、设为私密或当前地区不可用";
   if (text.includes("HTTP Error 403")) return "源站拒绝下载（403）：建议配置 cookies 或更换素材";
-  if (text.includes("Language gate")) return "葡语脚本被错误识别为英文：检测逻辑已修复，可重新制作";
-  if (text.includes("exit status 69")) return "并发渲染导致成片文件不完整：已改为排队制作，可重新制作";
-  if (text.includes("BLOCKED_RIGHTS")) return "旧版本曾因权利状态阻断；现在可重新制作并进入人工审核";
+  if (text.includes("Language gate")) return "葡语脚本识别异常：请删除该失败项，检查翻译/语音配置后重新拉取素材";
+  if (text.includes("exit status 69")) return "历史并发渲染失败：请删除该失败项，使用新任务重新进入流程";
+  if (text.includes("BLOCKED_RIGHTS")) return "历史权利状态阻断：请删除该失败项，按人工审核流程重新导入";
   return text.length > 150 ? `${text.slice(0, 147)}...` : text;
 }
 
@@ -238,9 +237,9 @@ function selectedRows() {
 function updateBatchToolbar() {
   const rows = selectedRows();
   document.querySelector("#selectionCount").textContent = `已选 ${rows.length} 条`;
-  document.querySelector("#batchDownload").disabled = !rows.some((item) => ["DISCOVERED", "DOWNLOAD_FAILED"].includes(item.status));
-  document.querySelector("#batchProduce").disabled = !rows.some((item) => ["DOWNLOADED", "PRODUCTION_FAILED", "REVISION_REQUIRED", "BLOCKED_RIGHTS"].includes(item.status) || (item.status === "APPROVED" && !outputAssetsFor(item).length));
-  document.querySelector("#batchSkip").disabled = !rows.some((item) => item.status === "DISCOVERED");
+  document.querySelector("#batchDownload").disabled = !rows.some((item) => item.status === "DISCOVERED");
+  document.querySelector("#batchProduce").disabled = !rows.some((item) => ["DOWNLOADED", "REVISION_REQUIRED", "BLOCKED_RIGHTS"].includes(item.status) || (item.status === "APPROVED" && !outputAssetsFor(item).length));
+  document.querySelector("#batchDelete").disabled = rows.length === 0;
   const visible = filteredCandidates();
   const selectVisible = document.querySelector("#selectVisible");
   selectVisible.checked = visible.length > 0 && visible.every((item) => state.selectedCandidates.has(item.id));
@@ -252,7 +251,7 @@ function renderTasks() {
   const tasks = state.tasks.filter((task) => task.status === "RUNNING" || Date.now() - new Date(task.finished_at || 0).getTime() < 120000);
   panel.hidden = tasks.length === 0;
   panel.innerHTML = tasks.map((task) => `<div class="task-progress-item">
-    <div><strong>${escapeHtml({discover:"发现素材",ingest:"导入素材",download:"下载素材",produce:"制作成片",skip:"忽略候选"}[task.action] || task.action)}</strong><span>${escapeHtml(task.message || "处理中")}${task.total > 1 ? ` · ${task.completed || 0}/${task.total}` : ""}</span></div>
+    <div><strong>${escapeHtml({discover:"发现素材",ingest:"导入素材",download:"下载素材",produce:"制作成片"}[task.action] || task.action)}</strong><span>${escapeHtml(task.message || "处理中")}${task.total > 1 ? ` · ${task.completed || 0}/${task.total}` : ""}</span></div>
     <div class="progress-track"><span style="width:${Math.max(2, Number(task.progress || 0))}%"></span></div><b>${Number(task.progress || 0)}%</b>
   </div>`).join("");
 }
@@ -297,29 +296,23 @@ function approvedOutputActions(item) {
 
 function candidateAction(item) {
   const sourceLink = item.url ? `<button class="table-action" onclick="window.open('${escapeHtml(item.url)}','_blank')">源页</button>` : "";
-  if (item.status === "DISCOVERED") return `${sourceLink}<button class="table-action" data-candidate-action="download" data-candidate-id="${item.id}">下载</button><button class="table-action" data-skip-id="${item.id}">忽略</button>`;
-  if (item.status === "DOWNLOAD_FAILED") return `${sourceLink}<button class="table-action" data-candidate-action="download" data-candidate-id="${item.id}">重试下载</button>`;
-  if (["DOWNLOADED", "PRODUCTION_FAILED", "REVISION_REQUIRED", "BLOCKED_RIGHTS"].includes(item.status)) return `<button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">制作</button>`;
+  const deleteButton = `<button class="table-action danger-action" data-delete-id="${item.id}">删除</button>`;
+  if (item.status === "DISCOVERED") return `${sourceLink}<button class="table-action" data-candidate-action="download" data-candidate-id="${item.id}">下载</button>${deleteButton}`;
+  if (item.status === "DOWNLOAD_FAILED") return `${sourceLink}${deleteButton}`;
+  if (item.status === "PRODUCTION_FAILED") return `${sourceLink}${deleteButton}`;
+  if (["DOWNLOADED", "REVISION_REQUIRED", "BLOCKED_RIGHTS"].includes(item.status)) return `<button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">制作</button>${deleteButton}`;
   if (item.status === "READY_FOR_REVIEW") {
     const preview = item.video_url ? `<button class="table-action" onclick="window.open('${item.video_url}','_blank')">预览</button>` : "";
-    return `${preview}<button class="table-action" data-review-decision="APPROVED" data-candidate-id="${item.id}">通过</button><button class="table-action" data-review-decision="REVISION_REQUIRED" data-candidate-id="${item.id}">返工</button>`;
+    return `${preview}<button class="table-action" data-review-decision="APPROVED" data-candidate-id="${item.id}">通过</button><button class="table-action" data-review-decision="REVISION_REQUIRED" data-candidate-id="${item.id}">返工</button>${deleteButton}`;
   }
-  if (item.status === "APPROVED") return approvedOutputActions(item);
-  return "";
+  if (item.status === "APPROVED") return `${approvedOutputActions(item)}${deleteButton}`;
+  return deleteButton;
 }
 
 async function submitReview(decision, candidateId) {
   try {
     await api("/api/review", { method: "POST", body: JSON.stringify({ candidate_id: candidateId, decision, reviewer: "dashboard" }) });
     toast(decision === "APPROVED" ? "已通过，可加入发布队列" : "已标记为需返工");
-    await refreshAll();
-  } catch (error) { toast(error.message, "error"); }
-}
-
-async function skipCandidate(candidateId) {
-  try {
-    await api("/api/skip", { method: "POST", body: JSON.stringify({ candidate_id: candidateId }) });
-    toast("已忽略该候选");
     await refreshAll();
   } catch (error) { toast(error.message, "error"); }
 }
@@ -334,6 +327,19 @@ async function runCandidateAction(action, candidateId) {
     toast(`任务 ${result.task_id} 已启动`);
     pollTask(result.task_id);
   } catch (error) { toast(error.message, "error"); }
+}
+
+async function deleteCandidates(candidateIds) {
+  const ids = Array.from(new Set((candidateIds || []).filter(Boolean)));
+  if (!ids.length) return toast("请选择要删除的视频", "error");
+  if (!confirm(`确定删除 ${ids.length} 条内容？这会清空数据库记录、源视频、审核包和库存成片，无法撤销。`)) return;
+  try {
+    const result = await api("/api/candidates/delete", { method: "POST", body: JSON.stringify({ candidate_ids: ids }) });
+    ids.forEach((id) => state.selectedCandidates.delete(id));
+    const megabytes = (Number(result.bytes_freed || 0) / 1024 / 1024).toFixed(1);
+    toast(`已删除 ${result.deleted || ids.length} 条，释放约 ${megabytes} MB`);
+    await refreshAll();
+  } catch (error) { toast(`删除失败：${error.message}`, "error"); }
 }
 
 async function runBatchAction(action, allowedStatuses, options = {}, explicitIds = null) {
@@ -722,13 +728,13 @@ document.querySelector("#selectVisible").addEventListener("change", (event) => {
   filteredCandidates().forEach((item) => event.target.checked ? state.selectedCandidates.add(item.id) : state.selectedCandidates.delete(item.id));
   renderInventory();
 });
-document.querySelector("#batchDownload").addEventListener("click", () => runBatchAction("download", ["DISCOVERED", "DOWNLOAD_FAILED"]));
+document.querySelector("#batchDownload").addEventListener("click", () => runBatchAction("download", ["DISCOVERED"]));
 document.querySelector("#batchProduce").addEventListener("click", () => {
-  const ids = selectedRows().filter((item) => ["DOWNLOADED", "PRODUCTION_FAILED", "REVISION_REQUIRED", "BLOCKED_RIGHTS"].includes(item.status) || (item.status === "APPROVED" && !outputAssetsFor(item).length)).map((item) => item.id);
+  const ids = selectedRows().filter((item) => ["DOWNLOADED", "REVISION_REQUIRED", "BLOCKED_RIGHTS"].includes(item.status) || (item.status === "APPROVED" && !outputAssetsFor(item).length)).map((item) => item.id);
   if (!ids.length) return toast("所选内容中没有可制作项目", "error");
   openProductionDialog(ids);
 });
-document.querySelector("#batchSkip").addEventListener("click", () => runBatchAction("skip", ["DISCOVERED"]));
+document.querySelector("#batchDelete").addEventListener("click", () => deleteCandidates(selectedRows().map((item) => item.id)));
 document.querySelectorAll("#statusFilters button").forEach((button) => button.addEventListener("click", () => {
   document.querySelectorAll("#statusFilters button").forEach((item) => item.classList.toggle("active", item === button));
   state.status = button.dataset.status;

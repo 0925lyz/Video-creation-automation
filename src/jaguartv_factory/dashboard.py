@@ -30,6 +30,7 @@ from .core import (
     generate_review_index,
     inspect_url,
     ingest_uploaded_media,
+    inventory_root,
     list_candidates,
     now_iso,
     produce_top,
@@ -380,6 +381,138 @@ def review_output_index(config: dict[str, Any]) -> dict[str, list[dict[str, Any]
 
 def public_output_asset(asset: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in asset.items() if not key.startswith("_")}
+
+
+def safe_remove_tree(path: Path, allowed_roots: list[Path]) -> int:
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return 0
+    allowed = [root.resolve() for root in allowed_roots]
+    if not any(resolved == root or root in resolved.parents for root in allowed):
+        raise ValueError(f"refusing to delete outside managed storage: {path}")
+    if resolved.is_dir():
+        size = sum(child.stat().st_size for child in resolved.rglob("*") if child.is_file())
+        shutil.rmtree(resolved)
+        return size
+    if resolved.is_file():
+        size = resolved.stat().st_size
+        resolved.unlink()
+        return size
+    return 0
+
+
+def candidate_package_ids(candidate: str) -> set[str]:
+    return {candidate}
+
+
+def collect_package_ids_for_candidate(config: dict[str, Any], candidate: str) -> set[str]:
+    ids = candidate_package_ids(candidate)
+    roots = [workspace_dir(config) / "ready_for_review", storage_root(config) / "review"]
+    for root in roots:
+        if not root.exists():
+            continue
+        for path in root.iterdir():
+            if path.is_dir() and (path.name == candidate or path.name.startswith(f"{candidate}_part")):
+                ids.add(path.name)
+    return ids
+
+
+def inventory_paths_from_package(package_dir: Path) -> list[Path]:
+    metadata_path = package_dir / "metadata.json"
+    if not metadata_path.is_file():
+        return []
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+    paths: list[Path] = []
+    for variant in metadata.get("output_variants") or []:
+        if isinstance(variant, dict) and variant.get("inventory_path"):
+            paths.append(Path(str(variant["inventory_path"])).expanduser())
+    return paths
+
+
+def delete_candidates(config: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    raw_ids = payload.get("candidate_ids")
+    if raw_ids is None:
+        raw_ids = [payload.get("candidate_id") or payload.get("id")]
+    if not isinstance(raw_ids, list):
+        raise ValueError("candidate_ids must be a list")
+    candidate_ids = [
+        str(candidate).split(":", 1)[0].strip()
+        for candidate in raw_ids
+        if str(candidate or "").strip()
+    ]
+    candidate_ids = list(dict.fromkeys(candidate_ids))
+    if not candidate_ids:
+        raise ValueError("select at least one candidate")
+    if len(candidate_ids) > 100:
+        raise ValueError("a batch can contain at most 100 candidates")
+
+    workspace = workspace_dir(config)
+    storage = storage_root(config)
+    inventory = inventory_root(config)
+    managed_roots = [
+        workspace / "jobs",
+        workspace / "ready_for_review",
+        storage / "review",
+        inventory,
+    ]
+    deleted_bytes = 0
+    deleted_items: list[dict[str, Any]] = []
+    connection = connect_db(config)
+    for candidate in candidate_ids:
+        package_ids = collect_package_ids_for_candidate(config, candidate)
+        inventory_paths: list[Path] = []
+        for package_id in package_ids:
+            for root in (workspace / "ready_for_review", storage / "review"):
+                package_dir = root / package_id
+                if package_dir.exists():
+                    inventory_paths.extend(inventory_paths_from_package(package_dir))
+        removed_paths: list[str] = []
+        for inventory_path in inventory_paths:
+            if inventory_path.exists():
+                deleted_bytes += safe_remove_tree(inventory_path, managed_roots)
+                removed_paths.append(str(inventory_path))
+                parent = inventory_path.parent.resolve()
+                inventory_boundary = inventory.resolve()
+                while parent != parent.parent and parent != inventory_boundary:
+                    try:
+                        parent.rmdir()
+                    except OSError:
+                        break
+                    parent = parent.parent
+        for package_id in package_ids:
+            for path in (workspace / "ready_for_review" / package_id, storage / "review" / package_id):
+                if path.exists():
+                    deleted_bytes += safe_remove_tree(path, managed_roots)
+                    removed_paths.append(str(path))
+        job_dir = workspace / "jobs" / candidate
+        if job_dir.exists():
+            deleted_bytes += safe_remove_tree(job_dir, managed_roots)
+            removed_paths.append(str(job_dir))
+        for table in (
+            "events",
+            "publications",
+            "performance_snapshots",
+            "conversion_events",
+            "feedback_actions",
+        ):
+            connection.execute(f"DELETE FROM {table} WHERE candidate_id=?", (candidate,))
+        cursor = connection.execute("DELETE FROM candidates WHERE id=?", (candidate,))
+        deleted_items.append({
+            "candidate_id": candidate,
+            "removed_from_db": bool(cursor.rowcount),
+            "package_ids": sorted(package_ids),
+            "paths": removed_paths,
+        })
+    connection.commit()
+    return {
+        "deleted": len(deleted_items),
+        "bytes_freed": deleted_bytes,
+        "items": deleted_items,
+    }
 
 
 def candidate_rows(config: dict[str, Any], status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
@@ -1363,6 +1496,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/actions":
                 task_id = self.server.start_action(payload)
                 return self.send_json({"task_id": task_id, "status": "RUNNING"}, HTTPStatus.ACCEPTED)
+            if parsed.path == "/api/candidates/delete":
+                return self.send_json(delete_candidates(self.server.config, payload), HTTPStatus.OK)
             if parsed.path == "/api/publications":
                 return self.send_json({"id": save_publication(self.server.config, payload)}, HTTPStatus.CREATED)
             if parsed.path == "/api/publications/status":

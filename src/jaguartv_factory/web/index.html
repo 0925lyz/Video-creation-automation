@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>JaguarTV Content OS</title>
-  <link rel="stylesheet" href="/styles.css?v=20260728-parent-output-actions-2">
+  <link rel="stylesheet" href="/styles.css?v=20260729-delete-inventory">
 </head>
 <body>
   <aside class="sidebar">
@@ -67,14 +67,14 @@
       <div id="taskProgressPanel" class="task-progress-panel" hidden></div>
       <div class="toolbar">
         <div class="segmented" id="statusFilters">
-          <button class="active" data-status="">全部</button><button data-status="DISCOVERED">待筛选</button><button data-status="DOWNLOADED">待制作</button><button data-status="READY_FOR_REVIEW">待审核</button><button data-status="APPROVED">审核通过</button><button data-status="DOWNLOAD_FAILED">下载失败</button><button data-status="PRODUCTION_FAILED">制作失败</button><button data-status="SKIPPED">已忽略</button>
+          <button class="active" data-status="">全部</button><button data-status="DISCOVERED">待筛选</button><button data-status="DOWNLOADED">待制作</button><button data-status="READY_FOR_REVIEW">待审核</button><button data-status="APPROVED">审核通过</button><button data-status="DOWNLOAD_FAILED">下载失败</button><button data-status="PRODUCTION_FAILED">制作失败</button>
         </div>
         <span class="muted" id="inventoryCount"></span>
       </div>
       <div class="batch-toolbar">
         <label class="selection-control"><input id="selectVisible" type="checkbox"> 选择当前列表</label>
         <span id="selectionCount">已选 0 条</span>
-        <div class="batch-actions"><button class="secondary-button" id="batchDownload" type="button" disabled>批量下载</button><button class="secondary-button" id="batchProduce" type="button" disabled>批量制作</button><button class="secondary-button danger-button" id="batchSkip" type="button" disabled>批量忽略</button></div>
+        <div class="batch-actions"><button class="secondary-button" id="batchDownload" type="button" disabled>批量下载</button><button class="secondary-button" id="batchProduce" type="button" disabled>批量制作</button><button class="secondary-button danger-button" id="batchDelete" type="button" disabled>删除所选</button></div>
       </div>
       <div class="table-wrap inventory-table"><table><thead><tr><th class="check-column"></th><th>内容</th><th>平台</th><th>类型 / 策略</th><th>精彩度</th><th>评分</th><th>状态</th><th>更新时间</th><th></th></tr></thead><tbody id="inventoryTable"></tbody></table></div>
     </section>
@@ -272,6 +272,6 @@
   </dialog>
 
   <div class="toast" id="toast" role="status"></div>
-  <script src="/app.js?v=20260728-parent-output-actions"></script>
+  <script src="/app.js?v=20260729-delete-inventory"></script>
 </body>
 </html>
