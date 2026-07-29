@@ -82,6 +82,7 @@ def add_strategy_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--source-volume", type=float, default=0.72)
     parser.add_argument("--reaction-volume", type=float, default=1.0)
     parser.add_argument("--reaction-position", default="bottom_right", choices=("top_left", "top_right", "bottom_left", "bottom_right"))
+    parser.add_argument("--batch-label")
     parser.add_argument(
         "--rights-status",
         choices=("MANUAL_REVIEW", "OWNED", "LICENSED", "PUBLIC_DOMAIN", "CC_BY", "VERIFIED"),
@@ -92,7 +93,7 @@ def strategy_options(args: argparse.Namespace) -> dict[str, object]:
     fields = (
         "content_type", "segment_strategy", "audio_policy", "max_segments", "max_duration",
         "reaction_mode", "reaction_source", "source_volume", "reaction_volume", "reaction_position",
-        "rights_status",
+        "batch_label", "rights_status",
     )
     return {field: getattr(args, field) for field in fields if getattr(args, field, None) is not None}
 

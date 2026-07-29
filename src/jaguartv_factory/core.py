@@ -1614,11 +1614,19 @@ def next_inventory_index(config: dict[str, Any], date_label: str, source_label: 
     pattern = re.compile(rf"^{re.escape(date_label)}-{re.escape(source_label)}-(\d+)-.+\.mp4$")
     highest = 0
     root = inventory_root(config)
-    for path in root.glob(f"*/*/{date_label}-{source_label}-*.mp4"):
+    for path in root.glob(f"**/{date_label}-{source_label}-*.mp4"):
         match = pattern.match(path.name)
         if match:
             highest = max(highest, int(match.group(1)))
     return highest + 1
+
+
+def batch_label_for_output(options: dict[str, Any]) -> str:
+    label = str(options.get("batch_label") or "").strip()
+    if not label:
+        return ""
+    label = re.sub(r'[\\/:*?"<>|\s]+', "-", label).strip(".-")
+    return label[:36]
 
 
 def configured_remotion_asset(config: dict[str, Any], key: str) -> Path:
@@ -2104,9 +2112,11 @@ def produce_candidate(
         segment_total = int(segment["total"])
         package_id = row["id"] if segment_total == 1 else f"{row['id']}_part{segment_index:02d}"
         source_label = source_filename_label(str(row["platform"]))
+        batch_label = batch_label_for_output(options)
+        filename_source_label = f"{source_label}-{batch_label}" if batch_label else source_label
         date_label = candidate_date_label(row)
-        inventory_index = next_inventory_index(config, date_label, source_label)
-        filename_stem = f"{date_label}-{source_label}-{inventory_index}"
+        inventory_index = next_inventory_index(config, date_label, filename_source_label)
+        filename_stem = f"{date_label}-{filename_source_label}-{inventory_index}"
         output = work / f"{filename_stem}-通用版.mp4"
         progress(62 + int((segment_index - 1) * 24 / max(1, segment_total)), f"正在渲染第 {segment_index}/{segment_total} 个 Short")
         render_media = media
@@ -2153,7 +2163,7 @@ def produce_candidate(
                 info["mobile_format"] = mobile_format
                 info["duration"] = media_duration(variant_output)
                 info["size"] = variant_output.stat().st_size
-                inventory_dir = inventory_root(config) / variant / source_label
+                inventory_dir = inventory_root(config) / batch_label / variant / source_label if batch_label else inventory_root(config) / variant / source_label
                 inventory_dir.mkdir(parents=True, exist_ok=True)
                 inventory_path = inventory_dir / variant_output.name
                 shutil.copy2(variant_output, inventory_path)
@@ -2164,6 +2174,7 @@ def produce_candidate(
                     "inventory_path": str(inventory_path),
                     "qa": qa_variant,
                     "source_label": source_label,
+                    "batch_label": batch_label,
                 })
                 if not qa_variant["passed"]:
                     raise RuntimeError(f"QA failed for {package_id} {variant}: {qa_variant}")
@@ -2198,6 +2209,7 @@ def produce_candidate(
                 "size": output.stat().st_size,
                 "source_label": source_label,
                 "mobile_format": mobile_format,
+                "batch_label": batch_label,
             })
         qa = qa_video(output, config)
         qa["segment"] = {
@@ -2230,6 +2242,7 @@ def produce_candidate(
             "job_id": package_id,
             "source_job_id": row["id"],
             "source": {"platform": row["platform"], "url": row["url"], "title": row["title"]},
+            "batch_label": batch_label,
             "content_type": strategy.content_type,
             "content_type_confidence": strategy.content_type_confidence,
             "matched_rules": list(strategy.matched_rules),
