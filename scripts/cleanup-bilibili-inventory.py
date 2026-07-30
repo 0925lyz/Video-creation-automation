@@ -34,7 +34,8 @@ REJECT_TEXT = re.compile(
     r"BLG|NOVA|EDG|DRG|XLG|TYL|5FW|Boaster|K1ra|SiuFatBB|无畏契约|"
     r"奥丁|幻影|五杀|残局|排位|训练赛|POKEMON|Pokemon|Team Liquid|FaZe|"
     r"Ninjas In Pyjamas|弗拉门戈曲|FLAMENCO|Flamenco|弗拉明戈|恋人\\(Lover\\)|"
-    r"vlog|辩论|川沙中学|foryoupage|fypviral|red light|红灯街|贱人TV",
+    r"vlog|辩论|川沙中学|foryoupage|fypviral|red light|红灯街|贱人TV|"
+    r"PES\\d*|实况足球|FIFA 游戏|FIFA游戏|二串|公推|野鸡|这里是小妤|老家依旧|视频三连",
     re.I,
 )
 FOOTBALL_KEYWORDS = {
@@ -98,7 +99,19 @@ def job_info(config: dict[str, Any], candidate_id: str) -> dict[str, Any]:
         return {}
 
 
-def classify(title: str, description: str, keyword: str, category: str) -> tuple[bool, str]:
+def classify(
+    title: str,
+    description: str,
+    keyword: str,
+    category: str,
+    duration: Any,
+    max_duration: float,
+) -> tuple[bool, str]:
+    try:
+        if duration and float(duration) > max_duration:
+            return False, "too_long_for_source_gate"
+    except (TypeError, ValueError):
+        pass
     title_text = " ".join([title, description])
     all_text = " ".join([title, description, keyword, category])
     if REJECT_TEXT.search(all_text):
@@ -145,6 +158,7 @@ def main() -> None:
     parser.add_argument("--apply", action="store_true", help="write title/thumbnail metadata changes")
     parser.add_argument("--delete", action="store_true", help="delete rows classified as non-football")
     parser.add_argument("--fetch-timeout", type=int, default=25)
+    parser.add_argument("--max-duration", type=float, default=1800.0)
     parser.add_argument("--report", default="/tmp/bili_cleanup_report.json")
     args = parser.parse_args()
 
@@ -182,7 +196,7 @@ def main() -> None:
 
         keyword = str(metadata.get("keyword") or "")
         category = str(metadata.get("category") or "")
-        keep, reason = classify(title, description, keyword, category)
+        keep, reason = classify(title, description, keyword, category, duration, args.max_duration)
         if not keep:
             delete_ids.append(str(row["id"]))
 
