@@ -14,6 +14,7 @@ from jaguartv_factory.core import (
     ingest_uploaded_media,
     load_config,
     now_iso,
+    produce_top,
     render_overlay_assets,
     terms_for_platform,
     write_srt,
@@ -296,6 +297,30 @@ def test_inventory_parent_candidate_exposes_all_segment_outputs(tmp_path: Path):
     assert row["download_url"].endswith("&download=1")
     assert row["server_url"].endswith("/review/source1_part01/video.mp4")
     assert row["output_assets"][1]["filename"] == "source1_part02.mp4"
+
+
+def test_produce_keeps_ready_status_when_partial_outputs_exist(tmp_path: Path, monkeypatch):
+    config = make_config(tmp_path)
+    insert_candidate(config, "partial-candidate", "DOWNLOADED")
+    review = tmp_path / "workspace" / "ready_for_review" / "partial-candidate_part01"
+    review.mkdir(parents=True)
+    (review / "video.mp4").write_bytes(b"already-rendered")
+
+    def fail_after_partial(*_args, **_kwargs):
+        raise RuntimeError("later segment failed")
+
+    monkeypatch.setattr("jaguartv_factory.core.produce_candidate", fail_after_partial)
+    result = produce_top(config, 1, "partial-candidate")
+
+    assert result == {"selected": 1, "produced": 0, "failed": 1}
+    connection = connect_db(config)
+    row = connection.execute("SELECT status FROM candidates WHERE id='partial-candidate'").fetchone()
+    event = connection.execute(
+        "SELECT event_type,payload_json FROM events WHERE candidate_id='partial-candidate' ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert row["status"] == "READY_FOR_REVIEW"
+    assert event["event_type"] == "PRODUCTION_PARTIAL_FAILED"
+    assert "later segment failed" in event["payload_json"]
 
 
 def test_inventory_exposes_dual_variant_outputs(tmp_path: Path):

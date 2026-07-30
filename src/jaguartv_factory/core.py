@@ -2528,6 +2528,20 @@ def analyze_candidate(
     return result
 
 
+def candidate_has_review_outputs(config: dict[str, Any], candidate_id: str) -> bool:
+    """Return true when at least one review package already has a rendered video."""
+    review_root = workspace_dir(config) / "ready_for_review"
+    package_dirs = [review_root / candidate_id, *review_root.glob(f"{candidate_id}_part*")]
+    for package in package_dirs:
+        if not package.is_dir():
+            continue
+        if (package / "video.mp4").is_file():
+            return True
+        if any(package.glob("*-通用版.mp4")) or any(package.glob("*-FB版.mp4")):
+            return True
+    return False
+
+
 def produce_top(
     config: dict[str, Any], limit: int, candidate: str | None = None,
     progress_callback: Callable[[int, str], None] | None = None,
@@ -2549,8 +2563,11 @@ def produce_top(
             stats["failed"] += 1
             blocked = isinstance(error, PermissionError) and str(error).startswith("BLOCKED_RIGHTS")
             status = "BLOCKED_RIGHTS" if blocked else "PRODUCTION_FAILED"
+            if not blocked and candidate_has_review_outputs(config, row["id"]):
+                status = "READY_FOR_REVIEW"
             connection.execute("UPDATE candidates SET status=?,updated_at=? WHERE id=?", (status, now_iso(), row["id"]))
-            append_event(connection, row["id"], status, {"error": str(error)})
+            event_type = "PRODUCTION_PARTIAL_FAILED" if status == "READY_FOR_REVIEW" else status
+            append_event(connection, row["id"], event_type, {"error": str(error)})
             print(f"WARN produce {row['id']}: {error}")
     return stats
 
