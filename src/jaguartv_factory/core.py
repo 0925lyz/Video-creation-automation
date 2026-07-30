@@ -53,12 +53,12 @@ def run_command(
 
 
 def require_binary(name: str) -> str:
-    path = shutil.which(name)
-    if path:
-        return path
     sibling = Path(sys.executable).parent / name
     if sibling.exists():
         return str(sibling)
+    path = shutil.which(name)
+    if path:
+        return path
     raise RuntimeError(f"Missing required binary: {name}")
 
 

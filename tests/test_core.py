@@ -11,6 +11,7 @@ from jaguartv_factory.core import (
     likely_language,
     load_config,
     mobile_review_format_needed,
+    require_binary,
     render_endcard,
     should_ocr_blur_source_subtitles,
     write_srt,
@@ -45,6 +46,16 @@ def test_demo_config_loads():
     assert config["selection"]["max_source_duration_sec"] == 1800
     assert config["brand"]["kits"]["jaguartv"]["endcard"]["mode"] == "orientation_image"
     assert config["mobile_review_format"]["target_resolution"] == [1080, 1440]
+
+
+def test_require_binary_prefers_virtualenv_sibling(tmp_path: Path, monkeypatch):
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    yt_dlp = venv_bin / "yt-dlp"
+    yt_dlp.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr("sys.executable", str(venv_bin / "python"))
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
+    assert require_binary("yt-dlp") == str(yt_dlp)
 
 
 def test_mobile_review_format_only_wraps_landscape_outputs():
