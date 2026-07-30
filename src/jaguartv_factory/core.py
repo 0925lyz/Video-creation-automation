@@ -374,7 +374,7 @@ def discover(
     platforms: Iterable[str] | None = None,
     limit: int | None = None,
     keyword_overrides: Iterable[str] | None = None,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     from .sources import SEARCHABLE_PLATFORMS, SourceError, get_adapter
 
     connection = connect_db(config)
@@ -400,7 +400,16 @@ def discover(
     stats = {
         "discovered": 0, "inserted": 0, "language_rejected": 0,
         "too_long": 0, "errors": 0, "categories_skipped": 0,
+        "error_details": [],
     }
+    for platform in enabled:
+        if platform not in SEARCHABLE_PLATFORMS:
+            stats["errors"] += 1
+            stats["error_details"].append({
+                "platform": platform,
+                "keyword": "",
+                "reason": f"{platform} does not support keyword discovery; paste a concrete video URL instead",
+            })
     for category, category_config in keywords.items():
         if not category_active_today(category_config or {}):
             stats["categories_skipped"] += 1
@@ -411,14 +420,18 @@ def discover(
                 adapter = get_adapter(platform, config)
             except SourceError as error:
                 stats["errors"] += 1
-                print(f"WARN {platform}: {error}")
+                detail = str(error)
+                stats["error_details"].append({"platform": platform, "keyword": "", "reason": detail})
+                print(f"WARN {platform}: {detail}")
                 continue
             for term in terms_for_platform(terms_by_language, platform, config):
                 try:
                     entries = adapter.search(str(term), per_query)
                 except Exception as error:
                     stats["errors"] += 1
-                    print(f"WARN {platform} search {term!r}: {error}")
+                    detail = str(error)
+                    stats["error_details"].append({"platform": platform, "keyword": str(term), "reason": detail})
+                    print(f"WARN {platform} search {term!r}: {detail}")
                     continue
                 for info in entries:
                     stats["discovered"] += 1
