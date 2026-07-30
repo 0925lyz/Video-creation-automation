@@ -35,7 +35,8 @@ REJECT_TEXT = re.compile(
     r"奥丁|幻影|五杀|残局|排位|训练赛|POKEMON|Pokemon|Team Liquid|FaZe|"
     r"Ninjas In Pyjamas|弗拉门戈曲|FLAMENCO|Flamenco|弗拉明戈|恋人\\(Lover\\)|"
     r"vlog|辩论|川沙中学|foryoupage|fypviral|red light|红灯街|贱人TV|"
-    r"PES\\d*|实况足球|FIFA 游戏|FIFA游戏|二串|公推|野鸡|这里是小妤|老家依旧|视频三连",
+    r"PES\\d*|实况足球|FIFA 游戏|FIFA游戏|二串|公推|野鸡|这里是小妤|老家依旧|视频三连|"
+    r"刀群舞|疯狂卡点",
     re.I,
 )
 FOOTBALL_KEYWORDS = {
