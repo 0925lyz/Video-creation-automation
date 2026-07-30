@@ -21,14 +21,20 @@ from jaguartv_factory.dashboard import delete_candidates
 
 FOOTBALL_TEXT = re.compile(
     r"足球|巴西|巴甲|巴乙|世界杯|内马尔|小罗|罗纳尔多|贝利|维尼修斯|罗德里戈|"
-    r"进球|集锦|球星|flamengo|palmeiras|brasileir|são paulo|sao paulo|santos|"
+    r"梅西|姆巴佩|亚马尔|瓜迪奥拉|曼城|欧冠|解放者杯|进球|集锦|球星|"
+    r"flamengo|palmeiras|brasileir|são paulo|sao paulo|santos|corinthians|"
+    r"atlético mineiro|atletico mineiro|"
     r"corinthians|vasco|botafogo|fluminense|neymar|arrascaeta|cazé|caze|gol|gols|"
     r"football|futebol",
     re.I,
 )
 REJECT_TEXT = re.compile(
     r"王者荣耀|和平精英|电竞|ag超玩会|成都ag|旅行|旅游|美食|穿搭|小说|短剧|"
-    r"电影解说|电视剧|动画|音乐|舞蹈|原神|崩坏|搞笑|生活技巧|科普|奇闻",
+    r"电影解说|电视剧|动画|音乐|舞蹈|原神|崩坏|搞笑|生活技巧|科普|奇闻|"
+    r"BLG|NOVA|EDG|DRG|XLG|TYL|5FW|Boaster|K1ra|SiuFatBB|无畏契约|"
+    r"奥丁|幻影|五杀|残局|排位|训练赛|POKEMON|Pokemon|Team Liquid|FaZe|"
+    r"Ninjas In Pyjamas|弗拉门戈曲|FLAMENCO|Flamenco|弗拉明戈|恋人\\(Lover\\)|"
+    r"vlog|辩论|川沙中学|foryoupage|fypviral|red light|红灯街|贱人TV",
     re.I,
 )
 FOOTBALL_KEYWORDS = {
@@ -93,15 +99,16 @@ def job_info(config: dict[str, Any], candidate_id: str) -> dict[str, Any]:
 
 
 def classify(title: str, description: str, keyword: str, category: str) -> tuple[bool, str]:
-    text = " ".join([title, description, keyword, category])
-    if REJECT_TEXT.search(text):
+    title_text = " ".join([title, description])
+    all_text = " ".join([title, description, keyword, category])
+    if REJECT_TEXT.search(all_text):
         return False, "reject_keyword"
-    if FOOTBALL_TEXT.search(title) or FOOTBALL_TEXT.search(description):
+    if FOOTBALL_TEXT.search(title_text):
         return True, "football_title_or_description"
-    if keyword.strip().lower() in FOOTBALL_KEYWORDS and title:
-        return True, "football_keyword_with_title"
     if not title:
         return False, "missing_title_after_enrich"
+    if keyword.strip().lower() in FOOTBALL_KEYWORDS:
+        return False, "keyword_only_not_enough"
     return False, "no_brazil_football_signal"
 
 
