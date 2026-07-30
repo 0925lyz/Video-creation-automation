@@ -981,6 +981,48 @@ def mobile_review_format_needed(width: int, height: int, config: dict[str, Any])
     return (width / height) >= min_aspect
 
 
+def mobile_review_target_size(config: dict[str, Any]) -> tuple[int, int]:
+    mobile = config.get("mobile_review_format", {}) or {}
+    target = mobile.get("target_resolution", [1080, 1440])
+    target_width = int(target[0]) if isinstance(target, (list, tuple)) and len(target) >= 2 else 1080
+    target_height = int(target[1]) if isinstance(target, (list, tuple)) and len(target) >= 2 else 1440
+    target_width = max(360, target_width - target_width % 2)
+    target_height = max(480, target_height - target_height % 2)
+    return target_width, target_height
+
+
+def remotion_canvas_for_source(config: dict[str, Any], width: int, height: int) -> dict[str, Any]:
+    if mobile_review_format_needed(width, height, config):
+        target_width, target_height = mobile_review_target_size(config)
+        return {
+            "width": target_width,
+            "height": target_height,
+            "source_fit": "contain",
+            "overlay_placement": "mobile_top_band",
+            "mobile_format": {
+                "applied": True,
+                "mode": "landscape_to_3x4_black_letterbox_remotion",
+                "source_width": width,
+                "source_height": height,
+                "target_width": target_width,
+                "target_height": target_height,
+            },
+        }
+    return {
+        "width": width,
+        "height": height,
+        "source_fit": "cover",
+        "overlay_placement": "video_corners",
+        "mobile_format": {
+            "applied": False,
+            "mode": "unchanged",
+            "source_width": width,
+            "source_height": height,
+            "reason": "not_landscape_or_disabled",
+        },
+    }
+
+
 def normalize_mobile_review_video(path: Path, config: dict[str, Any]) -> dict[str, Any]:
     mobile = config.get("mobile_review_format", {}) or {}
     width, height = media_dimensions(path)
@@ -993,11 +1035,7 @@ def normalize_mobile_review_video(path: Path, config: dict[str, Any]) -> dict[st
             "reason": "not_landscape_or_disabled",
         }
 
-    target = mobile.get("target_resolution", [1080, 1440])
-    target_width = int(target[0]) if isinstance(target, (list, tuple)) and len(target) >= 2 else 1080
-    target_height = int(target[1]) if isinstance(target, (list, tuple)) and len(target) >= 2 else 1440
-    target_width = max(360, target_width - target_width % 2)
-    target_height = max(480, target_height - target_height % 2)
+    target_width, target_height = mobile_review_target_size(config)
     background = str(mobile.get("background", "#000000")).strip() or "#000000"
     timeout = float((config.get("run", {}) or {}).get("timeout_sec", 120))
     tmp = path.with_name(f".mobile3x4-{os.getpid()}-{threading.get_ident()}-{random.randrange(1_000_000)}.mp4")
@@ -1807,7 +1845,9 @@ def render_video_remotion_variant(
     clean_media = clean_media.expanduser().resolve()
     output = output.expanduser().resolve()
     runtime = ensure_remotion_runtime(config)
-    width, height = media_dimensions(clean_media)
+    source_width, source_height = media_dimensions(clean_media)
+    canvas = remotion_canvas_for_source(config, source_width, source_height)
+    width, height = int(canvas["width"]), int(canvas["height"])
     content_duration = media_duration(clean_media)
     remotion_settings = config.get("remotion", {}) or {}
     promo_seconds = max(1.0, min(6.0, float(remotion_settings.get("promo_duration_sec", 1.5))))
@@ -1827,8 +1867,13 @@ def render_video_remotion_variant(
         "promoSeconds": promo_seconds if variant == "通用版" else 0,
         "durationSeconds": content_duration + (promo_seconds if variant == "通用版" else 0),
         "overlayMaxWidthRatio": float(remotion_settings.get("overlay_max_width_ratio", 0.18)),
+        "overlayLeftMaxWidthRatio": float(remotion_settings.get("mobile_overlay_left_width_ratio", 0.22)),
+        "overlayRightMaxWidthRatio": float(remotion_settings.get("mobile_overlay_right_width_ratio", 0.36)),
         "overlayMarginHRatio": float(remotion_settings.get("overlay_margin_h_ratio", 0.03)),
         "overlayMarginVRatio": float(remotion_settings.get("overlay_margin_v_ratio", 0.05)),
+        "sourceFit": str(canvas["source_fit"]),
+        "overlayPlacement": str(canvas["overlay_placement"]),
+        "sourceAspectRatio": source_width / max(1, source_height),
     }
     endcard_class = ""
     if variant == "通用版":
@@ -1836,7 +1881,7 @@ def render_video_remotion_variant(
         tu_er = configured_remotion_asset(config, "tu_er")
         props["imgTuYi"] = copy_remotion_public_asset(tu_yi, public_dir, f"tu_yi{tu_yi.suffix or '.png'}")
         props["imgTuEr"] = copy_remotion_public_asset(tu_er, public_dir, f"tu_er{tu_er.suffix or '.png'}")
-        endcard_path, endcard_class = selected_endcard_asset(config, width, height)
+        endcard_path, endcard_class = selected_endcard_asset(config, source_width, source_height)
         props["imgEndcard"] = copy_remotion_public_asset(endcard_path, public_dir, f"endcard{endcard_path.suffix or '.png'}")
 
     props_path = output.with_name(f"{output.stem}_remotion_props.json")
@@ -1864,6 +1909,7 @@ def render_video_remotion_variant(
         "endcard_class": endcard_class,
         "duration": media_duration(output),
         "size": output.stat().st_size,
+        "mobile_format": canvas["mobile_format"],
     }
 
 
@@ -2228,6 +2274,8 @@ def produce_candidate(
                         content_duration=float(segment["duration"]),
                     )
                 mobile_format = normalize_mobile_review_video(variant_output, config)
+                if not mobile_format.get("applied") and info.get("mobile_format", {}).get("applied"):
+                    mobile_format = dict(info["mobile_format"])
                 info["mobile_format"] = mobile_format
                 info["duration"] = media_duration(variant_output)
                 info["size"] = variant_output.stat().st_size

@@ -90,6 +90,8 @@ audio:
 remotion:
   promo_duration_sec: 1.5
   overlay_max_width_ratio: 0.18
+  mobile_overlay_left_width_ratio: 0.22
+  mobile_overlay_right_width_ratio: 0.36
   overlay_margin_h_ratio: 0.03
   overlay_margin_v_ratio: 0.05
   dual_variant:

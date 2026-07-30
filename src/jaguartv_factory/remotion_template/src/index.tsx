@@ -23,8 +23,13 @@ type BrandProps = {
   contentSeconds: number;
   promoSeconds: number;
   overlayMaxWidthRatio: number;
+  overlayLeftMaxWidthRatio?: number;
+  overlayRightMaxWidthRatio?: number;
   overlayMarginHRatio: number;
   overlayMarginVRatio: number;
+  sourceFit?: "cover" | "contain";
+  overlayPlacement?: "video_corners" | "mobile_top_band";
+  sourceAspectRatio?: number;
 };
 
 const fallbackProps: BrandProps = {
@@ -40,8 +45,13 @@ const fallbackProps: BrandProps = {
   contentSeconds: 28.5,
   promoSeconds: 1.5,
   overlayMaxWidthRatio: 0.18,
+  overlayLeftMaxWidthRatio: 0.22,
+  overlayRightMaxWidthRatio: 0.36,
   overlayMarginHRatio: 0.03,
   overlayMarginVRatio: 0.05,
+  sourceFit: "cover",
+  overlayPlacement: "video_corners",
+  sourceAspectRatio: 16 / 9,
 };
 
 const assetSrc = (value?: string) => {
@@ -64,7 +74,7 @@ function JaguarTVVariant(props: BrandProps) {
   return (
     <AbsoluteFill style={{backgroundColor: "#000"}}>
       <Sequence durationInFrames={contentFrames}>
-        <OffthreadVideo src={assetSrc(p.sourceVideo)} style={{width, height, objectFit: "cover"}} muted={false} />
+        <OffthreadVideo src={assetSrc(p.sourceVideo)} style={{width, height, objectFit: p.sourceFit || "cover"}} muted={false} />
         {isGeneric ? <CornerOverlays {...p} /> : null}
       </Sequence>
       {isGeneric && p.imgEndcard ? (
@@ -78,21 +88,27 @@ function JaguarTVVariant(props: BrandProps) {
 
 function CornerOverlays(p: BrandProps) {
   const {width, height} = useVideoConfig();
-  const maxWidth = Math.round(width * p.overlayMaxWidthRatio);
+  const isMobileTopBand = p.overlayPlacement === "mobile_top_band";
+  const sourceAspect = Math.max(0.1, p.sourceAspectRatio || width / height);
+  const containedHeight = Math.min(height, Math.round(width / sourceAspect));
+  const topBand = Math.max(0, Math.floor((height - containedHeight) / 2));
+  const leftWidth = Math.round(width * (isMobileTopBand ? (p.overlayLeftMaxWidthRatio || 0.22) : p.overlayMaxWidthRatio));
+  const rightWidth = Math.round(width * (isMobileTopBand ? (p.overlayRightMaxWidthRatio || 0.36) : p.overlayMaxWidthRatio));
   const marginX = Math.round(width * p.overlayMarginHRatio);
-  const marginY = Math.round(height * p.overlayMarginVRatio);
+  const marginY = isMobileTopBand && topBand > 80
+    ? Math.max(18, Math.round(topBand * 0.18))
+    : Math.round(height * p.overlayMarginVRatio);
   const common: React.CSSProperties = {
     position: "absolute",
     top: marginY,
-    width: maxWidth,
     height: "auto",
     objectFit: "contain",
   };
 
   return (
     <AbsoluteFill>
-      {p.imgTuYi ? <Img src={assetSrc(p.imgTuYi)} style={{...common, left: marginX}} /> : null}
-      {p.imgTuEr ? <Img src={assetSrc(p.imgTuEr)} style={{...common, right: marginX}} /> : null}
+      {p.imgTuYi ? <Img src={assetSrc(p.imgTuYi)} style={{...common, width: leftWidth, left: marginX}} /> : null}
+      {p.imgTuEr ? <Img src={assetSrc(p.imgTuEr)} style={{...common, width: rightWidth, right: marginX}} /> : null}
     </AbsoluteFill>
   );
 }

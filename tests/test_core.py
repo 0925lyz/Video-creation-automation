@@ -14,6 +14,7 @@ from jaguartv_factory.core import (
     load_config,
     mobile_review_format_needed,
     require_binary,
+    remotion_canvas_for_source,
     render_endcard,
     should_ocr_blur_source_subtitles,
     source_filename_label,
@@ -95,6 +96,26 @@ def test_mobile_review_format_only_wraps_landscape_outputs():
     assert mobile_review_format_needed(1080, 1440, config) is False
     assert mobile_review_format_needed(720, 1280, config) is False
     assert mobile_review_format_needed(1920, 1080, {"mobile_review_format": {"enabled": False}}) is False
+
+
+def test_remotion_canvas_uses_3x4_black_letterbox_for_landscape():
+    config = {
+        "mobile_review_format": {
+            "enabled": True,
+            "landscape_min_aspect": 1.2,
+            "target_resolution": [1080, 1440],
+        }
+    }
+    landscape = remotion_canvas_for_source(config, 1920, 1080)
+    assert landscape["width"] == 1080
+    assert landscape["height"] == 1440
+    assert landscape["source_fit"] == "contain"
+    assert landscape["overlay_placement"] == "mobile_top_band"
+    assert landscape["mobile_format"]["mode"] == "landscape_to_3x4_black_letterbox_remotion"
+    vertical = remotion_canvas_for_source(config, 720, 1280)
+    assert vertical["width"] == 720
+    assert vertical["height"] == 1280
+    assert vertical["source_fit"] == "cover"
 
 
 def test_ocr_blur_runs_for_chinese_platform_even_without_external_subtitles():
