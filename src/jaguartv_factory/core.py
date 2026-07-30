@@ -830,6 +830,25 @@ def localization_profile_for_candidate(row: sqlite3.Row, metadata: dict[str, Any
     }
 
 
+def should_ocr_blur_source_subtitles(
+    cleanup_mode: str,
+    *,
+    platform: str,
+    detected_language: str,
+    title_text: str,
+    localization_profile: dict[str, Any],
+) -> bool:
+    if str(cleanup_mode).strip().lower() != "ocr_blur":
+        return False
+    if str(localization_profile.get("subtitle_mode") or "") == "ptbr_subtitles":
+        return True
+    if str(detected_language or "").lower().startswith("zh"):
+        return True
+    if re.search(r"[\u4e00-\u9fff]", title_text or ""):
+        return True
+    return str(platform or "").strip().lower() in {"bilibili", "douyin", "xiaohongshu"}
+
+
 DEFAULT_HOOK = "Olha só o que aconteceu aqui."
 PUBLISH_PLATFORMS = ("youtube", "tiktok", "kwai", "facebook")
 
@@ -2127,11 +2146,17 @@ def produce_candidate(
             "reason": "not_requested",
             "media": str(media),
         }
-        if (
-            audio_mode == "localized"
-            and localization_profile.get("subtitle_mode") == "ptbr_subtitles"
-            and cleanup_mode == "ocr_blur"
-        ):
+        should_ocr_cleanup = should_ocr_blur_source_subtitles(
+            cleanup_mode,
+            platform=str(row["platform"]),
+            detected_language=str(row["detected_language"] or candidate_metadata.get("language") or ""),
+            title_text=(
+                f"{row['title']} {row['description']} "
+                f"{candidate_metadata.get('title') or ''} {candidate_metadata.get('description') or ''}"
+            ),
+            localization_profile=localization_profile,
+        )
+        if should_ocr_cleanup:
             preprocessed = work / f"ocr_blurred_part{segment_index:02d}.mp4"
             ocr_cleanup = prepare_ocr_blurred_segment(
                 media,

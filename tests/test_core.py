@@ -12,6 +12,7 @@ from jaguartv_factory.core import (
     load_config,
     mobile_review_format_needed,
     render_endcard,
+    should_ocr_blur_source_subtitles,
     write_srt,
 )
 
@@ -58,6 +59,30 @@ def test_mobile_review_format_only_wraps_landscape_outputs():
     assert mobile_review_format_needed(1080, 1440, config) is False
     assert mobile_review_format_needed(720, 1280, config) is False
     assert mobile_review_format_needed(1920, 1080, {"mobile_review_format": {"enabled": False}}) is False
+
+
+def test_ocr_blur_runs_for_chinese_platform_even_without_external_subtitles():
+    assert should_ocr_blur_source_subtitles(
+        "ocr_blur",
+        platform="bilibili",
+        detected_language="unknown",
+        title_text="巴西足球中文字幕",
+        localization_profile={"subtitle_mode": "none"},
+    ) is True
+    assert should_ocr_blur_source_subtitles(
+        "ocr_blur",
+        platform="youtube",
+        detected_language="en",
+        title_text="Brazil football highlights",
+        localization_profile={"subtitle_mode": "none"},
+    ) is False
+    assert should_ocr_blur_source_subtitles(
+        "crop",
+        platform="bilibili",
+        detected_language="zh",
+        title_text="巴西足球",
+        localization_profile={"subtitle_mode": "none"},
+    ) is False
 
 
 def test_generate_funk_bgm(tmp_path: Path):
