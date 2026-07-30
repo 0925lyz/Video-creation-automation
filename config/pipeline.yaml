@@ -3,6 +3,8 @@ run:
   output_language: pt-BR
   workspace: workspace
   timeout_sec: 360
+  source_search_timeout_sec: 90
+  source_download_timeout_sec: 300
 
 sources:
   enabled: [youtube, bilibili, douyin, xiaohongshu, tiktok, facebook]

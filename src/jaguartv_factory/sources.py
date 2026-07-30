@@ -38,8 +38,8 @@ def yt_dlp_binary() -> str:
     raise SourceError("yt-dlp binary is missing")
 
 
-def run(args: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(args, check=False, text=True, capture_output=True)
+def run(args: list[str], *, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(args, check=False, text=True, capture_output=True, timeout=timeout)
 
 
 def http_json(url: str, timeout: int = 30) -> Any:
@@ -140,10 +140,14 @@ class YtDlpAdapter:
         prefix = self.search_prefixes.get(self.platform)
         if not prefix:
             raise SourceError(f"{self.platform} has no yt-dlp search support")
-        result = run([
-            yt_dlp, "--force-ipv4", "--flat-playlist", "--dump-single-json",
-            "--no-warnings", *self._cookie_args(), *self._js_runtime_args(), f"{prefix}{limit}:{term}",
-        ])
+        timeout = float(self.options.get("search_timeout_sec") or 90)
+        try:
+            result = run([
+                yt_dlp, "--force-ipv4", "--flat-playlist", "--dump-single-json",
+                "--no-warnings", *self._cookie_args(), *self._js_runtime_args(), f"{prefix}{limit}:{term}",
+            ], timeout=timeout)
+        except subprocess.TimeoutExpired as error:
+            raise SourceError(f"{self.platform} search timed out after {error.timeout}s") from error
         if result.returncode != 0:
             raise SourceError(result.stderr.strip()[-500:] or f"{self.platform} search failed")
         payload = json.loads(result.stdout)
@@ -156,7 +160,11 @@ class YtDlpAdapter:
             "-f", "bv*[height<=1080]+ba/b[height<=1080]/b", "--merge-output-format", "mp4",
             "-o", output_template, url,
         ]
-        result = run(args)
+        timeout = float(self.options.get("download_timeout_sec") or 300)
+        try:
+            result = run(args, timeout=timeout)
+        except subprocess.TimeoutExpired as error:
+            raise SourceError(f"{self.platform} download timed out after {error.timeout}s") from error
         if result.returncode != 0:
             raise SourceError(result.stderr.strip()[-1000:] or "download failed")
 
@@ -282,6 +290,9 @@ def get_adapter(platform: str, config: dict[str, Any]) -> Any:
     if not factory:
         raise SourceError(f"unsupported platform: {platform}")
     options = dict((config.get("sources", {}).get("adapters") or {}).get(platform) or {})
+    run_config = config.get("run", {}) or {}
+    options.setdefault("search_timeout_sec", run_config.get("source_search_timeout_sec", 90))
+    options.setdefault("download_timeout_sec", run_config.get("source_download_timeout_sec", 300))
     options["_root"] = str(config.get("_root") or "")
     options["_workspace"] = str((config.get("run", {}) or {}).get("workspace") or "workspace")
     return factory(platform, options)
