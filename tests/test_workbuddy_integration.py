@@ -5,7 +5,7 @@ import pytest
 
 from jaguartv_factory.core import connect_db
 from jaguartv_factory.mediacrawler import ingest_mediacrawler_jsonl, parse_metric
-from jaguartv_factory.workbuddy_adapter import _merge_regions
+from jaguartv_factory.workbuddy_adapter import _merge_regions, prepare_ocr_blurred_segment
 
 
 def make_config(tmp_path: Path) -> dict:
@@ -63,3 +63,35 @@ def test_ocr_regions_merge_into_stable_horizontal_bands():
     bottom = max(regions, key=lambda item: item[1])
     assert bottom[0] == pytest.approx(0.09)
     assert bottom[2] >= 0.56
+
+
+def test_ocr_blur_uses_fallback_regions_when_detection_misses(tmp_path: Path, monkeypatch):
+    media = tmp_path / "source.mp4"
+    media.write_bytes(b"video")
+    output = tmp_path / "blurred.mp4"
+    fallback = [[0.04, 0.70, 0.96, 0.94]]
+
+    def fake_run(args, *, check=False):
+        extracted = Path(args[-1])
+        extracted.write_bytes(b"segment")
+        return type("Result", (), {"returncode": 0, "stderr": "", "stdout": ""})()
+
+    def fake_blur_static_regions(extracted, destination, regions, *, sigma=28):
+        destination.write_bytes(b"blurred")
+        assert regions == fallback
+        return destination
+
+    monkeypatch.setattr("jaguartv_factory.workbuddy_adapter._run", fake_run)
+    monkeypatch.setattr("jaguartv_factory.workbuddy_adapter.detect_chinese_text_regions", lambda _path: [])
+    monkeypatch.setattr("jaguartv_factory.workbuddy_adapter.blur_static_regions", fake_blur_static_regions)
+
+    info = prepare_ocr_blurred_segment(
+        media,
+        output,
+        start=0,
+        duration=3,
+        fallback_regions=fallback,
+    )
+    assert info["used"] is True
+    assert info["regions"] == fallback
+    assert info["reason"] == "fallback_regions_blurred_no_chinese_regions_detected"

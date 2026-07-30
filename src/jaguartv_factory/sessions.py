@@ -101,6 +101,10 @@ def normalize_storage_state(raw_text: str) -> dict[str, Any]:
     for cookie in cookies:
         if not isinstance(cookie, dict) or not cookie.get("name") or not cookie.get("value"):
             raise ValueError("each cookie must include name and value")
+        if not cookie.get("domain") and not cookie.get("url"):
+            raise ValueError("each cookie must include domain or url")
+        if cookie.get("domain") and "." not in str(cookie.get("domain")):
+            raise ValueError("cookie domain is invalid")
         cookie.setdefault("path", "/")
     parsed["cookies"] = cookies
     parsed.setdefault("origins", [])
@@ -125,24 +129,35 @@ def parse_cookie_text(raw_text: str) -> list[dict[str, Any]]:
     cookies: list[dict[str, Any]] = []
     for raw_line in raw_text.splitlines():
         line = raw_line.strip()
-        if not line or line.startswith("#"):
+        if not line:
             continue
+        http_only_prefix = "#HttpOnly_"
+        http_only = line.startswith(http_only_prefix)
+        if line.startswith("#") and not http_only:
+            continue
+        if http_only:
+            raw_line = raw_line.replace(http_only_prefix, "", 1)
+            line = line.replace(http_only_prefix, "", 1)
         fields = raw_line.split("\t")
         if len(fields) >= 7 and fields[1].upper() in {"TRUE", "FALSE"}:
             domain, _include_subdomains, path, secure, expires, name, value = fields[:7]
+            if not domain or "." not in domain or not path.startswith("/") or not name:
+                raise ValueError("invalid Netscape cookie row")
             cookies.append({
                 "name": name,
                 "value": value,
                 "domain": domain,
                 "path": path or "/",
                 "expires": parse_cookie_expires(expires),
-                "httpOnly": False,
+                "httpOnly": http_only,
                 "secure": secure.upper() == "TRUE",
                 "sameSite": "Lax",
             })
             continue
         if len(fields) >= 5 and "." in fields[2]:
             name, value, domain, path, expires = fields[:5]
+            if not domain or not path.startswith("/") or not name:
+                raise ValueError("invalid Chrome cookie row")
             flags = fields[5:]
             same_site = next((item for item in flags if item in {"Strict", "Lax", "None"}), "Lax")
             cookies.append({

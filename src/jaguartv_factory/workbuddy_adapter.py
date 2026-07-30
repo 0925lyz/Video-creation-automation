@@ -75,7 +75,7 @@ def classify_chinese_audio(media: Path, *, model_name: str = "base", threshold: 
 def _sample_frames(media: Path, destination: Path, count: int = 8) -> list[Path]:
     destination.mkdir(parents=True, exist_ok=True)
     result = _run([
-        "ffmpeg", "-y", "-i", str(media), "-vf", f"fps=1/4,scale=-2:480", "-frames:v", str(count),
+        "ffmpeg", "-y", "-i", str(media), "-vf", f"fps=1/4,scale=-2:720", "-frames:v", str(count),
         str(destination / "frame-%03d.png"),
     ])
     if result.returncode != 0:
@@ -107,7 +107,7 @@ def _merge_regions(regions: Sequence[tuple[float, float, float, float]]) -> list
 
 
 def detect_chinese_text_regions(
-    media: Path, *, confidence: float = 40.0, sample_count: int = 8
+    media: Path, *, confidence: float = 25.0, sample_count: int = 8
 ) -> list[list[float]]:
     if not shutil.which("tesseract"):
         raise RuntimeError("tesseract is not installed")
@@ -173,7 +173,13 @@ def blur_static_regions(
 
 
 def prepare_ocr_blurred_segment(
-    media: Path, output: Path, *, start: float, duration: float, sigma: int = 28
+    media: Path,
+    output: Path,
+    *,
+    start: float,
+    duration: float,
+    sigma: int = 28,
+    fallback_regions: Sequence[Sequence[float]] | None = None,
 ) -> dict[str, Any]:
     output.parent.mkdir(parents=True, exist_ok=True)
     extracted = output.with_name(f"{output.stem}_source.mp4")
@@ -187,8 +193,26 @@ def prepare_ocr_blurred_segment(
     try:
         regions = detect_chinese_text_regions(extracted)
     except RuntimeError as error:
+        regions = [list(region) for region in (fallback_regions or [])]
+        if regions:
+            blur_static_regions(extracted, output, regions, sigma=sigma)
+            return {
+                "used": True,
+                "regions": regions,
+                "reason": f"fallback_regions_blurred_after_ocr_error:{error}",
+                "media": str(output),
+            }
         shutil.copy2(extracted, output)
         return {"used": False, "regions": [], "reason": str(error), "media": str(output)}
+    if not regions and fallback_regions:
+        regions = [list(region) for region in fallback_regions]
+        blur_static_regions(extracted, output, regions, sigma=sigma)
+        return {
+            "used": True,
+            "regions": regions,
+            "reason": "fallback_regions_blurred_no_chinese_regions_detected",
+            "media": str(output),
+        }
     blur_static_regions(extracted, output, regions, sigma=sigma)
     return {
         "used": bool(regions),

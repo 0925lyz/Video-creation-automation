@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from jaguartv_factory.core import connect_db, now_iso
 from jaguartv_factory.dashboard import dashboard_overview, save_metrics, save_publication, save_review
 from jaguartv_factory.sessions import check_session, list_sessions, save_session
@@ -115,3 +117,17 @@ def test_session_manager_accepts_chrome_cookie_table_text(tmp_path: Path):
     assert saved["status"] == "READY"
     assert saved["cookie_count"] == 2
     assert cookie_file.read_text(encoding="utf-8").count(".youtube.com") == 2
+
+
+def test_session_manager_rejects_cookie_objects_without_domain(tmp_path: Path):
+    config = dashboard_config(tmp_path)
+    broken_state = {"cookies": [{"name": "whole-table-pasted-here", "value": "demo"}], "origins": []}
+    with pytest.raises(ValueError, match="domain or url"):
+        save_session(
+            config,
+            {
+                "platform": "douyin",
+                "account": "broken",
+                "cookies_json": json.dumps(broken_state),
+            },
+        )

@@ -2158,12 +2158,17 @@ def produce_candidate(
         )
         if should_ocr_cleanup:
             preprocessed = work / f"ocr_blurred_part{segment_index:02d}.mp4"
+            fallback_regions = (
+                config.get("edit", {}).get("ocr_fallback_regions")
+                or [[0.04, 0.70, 0.96, 0.94]]
+            )
             ocr_cleanup = prepare_ocr_blurred_segment(
                 media,
                 preprocessed,
                 start=render_start,
                 duration=float(segment["duration"]),
                 sigma=int(config.get("edit", {}).get("ocr_blur_sigma", 28)),
+                fallback_regions=fallback_regions,
             )
             render_media = preprocessed
             render_start = 0.0
