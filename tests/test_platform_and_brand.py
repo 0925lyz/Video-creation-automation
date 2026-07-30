@@ -18,7 +18,15 @@ from jaguartv_factory.core import (
     terms_for_platform,
     write_srt,
 )
-from jaguartv_factory.dashboard import DashboardApplication, candidate_rows, delete_candidates, skip_candidate
+from jaguartv_factory.dashboard import (
+    DashboardApplication,
+    candidate_rows,
+    delete_candidates,
+    download_claim_rows,
+    save_download_claim,
+    skip_candidate,
+    update_download_claim_metrics,
+)
 from jaguartv_factory.scoring import score_candidate_v2
 from jaguartv_factory.server_store import (
     archive_review_package,
@@ -351,6 +359,36 @@ def test_media_download_forces_candidate_filename(tmp_path: Path):
         server.shutdown()
         thread.join(timeout=5)
         server.server_close()
+
+
+def test_download_claim_records_owner_and_metrics(tmp_path: Path):
+    config = make_config(tmp_path)
+    insert_candidate(config, candidate_id="claim1", status="APPROVED")
+    claim = save_download_claim(config, {
+        "candidate_id": "claim1:0730-TikTok-1-通用版",
+        "asset_id": "claim1:0730-TikTok-1-通用版",
+        "filename": "0730-TikTok-1-通用版.mp4",
+        "variant": "通用版",
+        "publisher": "Lucas",
+        "publish_platform": "facebook",
+    })
+    assert claim["candidate_id"] == "claim1"
+
+    rows = download_claim_rows(config)
+    assert rows[0]["publisher"] == "Lucas"
+    assert rows[0]["variant"] == "通用版"
+    assert rows[0]["filename"] == "0730-TikTok-1-通用版.mp4"
+
+    update_download_claim_metrics(config, {
+        "claim_id": claim["id"],
+        "views": 1200,
+        "clicks": 34,
+        "registrations": 5,
+    })
+    connection = connect_db(config)
+    snapshot = connection.execute("SELECT * FROM performance_snapshots WHERE candidate_id='claim1'").fetchone()
+    assert snapshot["platform"] == "facebook"
+    assert snapshot["views"] == 1200
 
 
 def test_skip_candidate_and_inventory_fields(tmp_path: Path):

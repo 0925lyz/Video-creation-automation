@@ -143,7 +143,7 @@ brand:
         title: "Jaguar TV"
         tagline: "O melhor app de TV ao vivo e esportes"
         site: "Jarg.top"
-        duration_sec: 2
+        duration_sec: 1.5
         background: "#04220E"
         accent: "#8CE522"
         features:
@@ -168,10 +168,12 @@ trends:
   enabled: true
   pytrends_path: /opt/pytrends
   cron: "0 8 * * *"
+  schedule_timezone: America/Sao_Paulo
   geo: BR
   keywords: ["futebol Brasil"]
   top_n: 10
   source: google_trends
+  sync_keywords_group: google_trends_br_daily
 
 compliance:
   require_verified_rights: false

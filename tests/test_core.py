@@ -1,11 +1,13 @@
 from pathlib import Path
 import wave
 
+import pytest
 from PIL import Image
 
 from jaguartv_factory.core import (
     brand_kit,
     choose_audio_strategy,
+    enforce_dual_variant_remotion,
     format_srt_time,
     generate_funk_bgm,
     likely_language,
@@ -14,6 +16,7 @@ from jaguartv_factory.core import (
     require_binary,
     render_endcard,
     should_ocr_blur_source_subtitles,
+    source_filename_label,
     write_srt,
 )
 
@@ -45,7 +48,29 @@ def test_demo_config_loads():
     assert config["edit"]["short_video_threshold_sec"] == 75
     assert config["selection"]["max_source_duration_sec"] == 1800
     assert config["brand"]["kits"]["jaguartv"]["endcard"]["mode"] == "orientation_image"
+    assert config["brand"]["kits"]["jaguartv"]["endcard"]["duration_sec"] == 1.5
     assert config["mobile_review_format"]["target_resolution"] == [1080, 1440]
+
+
+def test_standard_production_requires_remotion_dual_variant_assets():
+    config = load_config(Path("config/pipeline.yaml"))
+    enforce_dual_variant_remotion(config)
+    broken = {
+        **config,
+        "edit": {**config["edit"], "render_engine": "ffmpeg"},
+    }
+    with pytest.raises(RuntimeError, match="render_engine=remotion"):
+        enforce_dual_variant_remotion(broken)
+    broken = {
+        **config,
+        "remotion": {**config["remotion"], "promo_duration_sec": 2},
+    }
+    with pytest.raises(RuntimeError, match="promo_duration_sec=1.5"):
+        enforce_dual_variant_remotion(broken)
+
+
+def test_tiktok_source_filename_label_is_clean():
+    assert source_filename_label("tiktok") == "TikTok"
 
 
 def test_require_binary_prefers_virtualenv_sibling(tmp_path: Path, monkeypatch):

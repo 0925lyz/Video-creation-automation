@@ -49,11 +49,12 @@ from .server_store import (
     save_upload_chunk,
     storage_root,
 )
-from .trends import list_hot_keywords, start_trends_scheduler
+from .trends import list_hot_keywords, run_trends_job, start_trends_scheduler
 
 
 WEB_ROOT = Path(__file__).resolve().parent / "web"
 PLATFORMS = ("youtube", "facebook", "tiktok", "kwai")
+PUBLISH_TARGETS = (*PLATFORMS, "instagram", "other")
 EVENT_TYPES = ("landing_click", "download_started", "install", "registration", "first_watch")
 REVIEW_DECISIONS = ("APPROVED", "REVISION_REQUIRED")
 PART_PACKAGE_PATTERN = re.compile(r"^(?P<parent>.+)_part(?P<number>\d+)$")
@@ -381,6 +382,101 @@ def review_output_index(config: dict[str, Any]) -> dict[str, list[dict[str, Any]
 
 def public_output_asset(asset: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in asset.items() if not key.startswith("_")}
+
+
+def download_claim_rows(config: dict[str, Any], limit: int = 200) -> list[dict[str, Any]]:
+    connection = connect_db(config)
+    return [
+        dict(row)
+        for row in connection.execute(
+            """
+            SELECT dc.*,c.title
+            FROM download_claims dc
+            LEFT JOIN candidates c ON c.id=dc.candidate_id
+            ORDER BY dc.downloaded_at DESC,id DESC LIMIT ?
+            """,
+            (limit,),
+        )
+    ]
+
+
+def save_download_claim(config: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    candidate = str(payload.get("candidate_id") or "").split(":", 1)[0].strip()
+    asset_id = str(payload.get("asset_id") or candidate).strip()
+    filename = Path(str(payload.get("filename") or "")).name
+    variant = str(payload.get("variant") or "").strip()
+    publisher = str(payload.get("publisher") or "").strip()
+    publish_platform = str(payload.get("publish_platform") or "").strip().lower()
+    if not candidate or not publisher:
+        raise ValueError("candidate_id and publisher are required before downloading")
+    if publish_platform and publish_platform not in PUBLISH_TARGETS:
+        raise ValueError(f"publish_platform must be one of {PUBLISH_TARGETS}")
+    connection = connect_db(config)
+    row = connection.execute("SELECT id FROM candidates WHERE id=?", (candidate,)).fetchone()
+    server_package = storage_root(config) / "review" / candidate
+    local_package = workspace_dir(config) / "ready_for_review" / candidate
+    if not row and not server_package.exists() and not local_package.exists():
+        raise ValueError("candidate does not exist")
+    timestamp = now_iso()
+    cursor = connection.execute(
+        """
+        INSERT INTO download_claims(
+          candidate_id,asset_id,filename,variant,publisher,publish_platform,note,downloaded_at
+        ) VALUES(?,?,?,?,?,?,?,?)
+        """,
+        (
+            candidate,
+            asset_id,
+            filename,
+            variant,
+            publisher,
+            publish_platform,
+            str(payload.get("note") or "").strip(),
+            timestamp,
+        ),
+    )
+    connection.commit()
+    return {"id": int(cursor.lastrowid), "candidate_id": candidate, "downloaded_at": timestamp}
+
+
+def update_download_claim_metrics(config: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    claim_id = int_value(payload.get("claim_id"))
+    if not claim_id:
+        raise ValueError("claim_id is required")
+    metrics = {field: int_value(payload.get(field)) for field in ("views", "clicks", "registrations")}
+    extra = payload.get("extra_data") or {}
+    if not isinstance(extra, dict):
+        raise ValueError("extra_data must be an object")
+    connection = connect_db(config)
+    row = connection.execute("SELECT candidate_id,publish_platform FROM download_claims WHERE id=?", (claim_id,)).fetchone()
+    if not row:
+        raise ValueError("download claim does not exist")
+    timestamp = now_iso()
+    connection.execute(
+        """
+        UPDATE download_claims
+        SET views=?,clicks=?,registrations=?,extra_data=?,metrics_updated_at=?
+        WHERE id=?
+        """,
+        (
+            metrics["views"], metrics["clicks"], metrics["registrations"],
+            json.dumps(extra, ensure_ascii=False), timestamp, claim_id,
+        ),
+    )
+    if row["publish_platform"] in PLATFORMS:
+        connection.execute(
+            """
+            INSERT INTO performance_snapshots(
+              candidate_id,platform,captured_at,views,clicks,registrations
+            ) VALUES(?,?,?,?,?,?)
+            """,
+            (
+                row["candidate_id"], row["publish_platform"], timestamp,
+                metrics["views"], metrics["clicks"], metrics["registrations"],
+            ),
+        )
+    connection.commit()
+    return {"id": claim_id, "updated_at": timestamp}
 
 
 def safe_remove_tree(path: Path, allowed_roots: list[Path]) -> int:
@@ -1400,6 +1496,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return self.send_json(worker_rows(self.server.config))
             if parsed.path == "/api/feedback":
                 return self.send_json(feedback_rows(self.server.config))
+            if parsed.path == "/api/download-claims":
+                limit = int_value(query.get("limit", [200])[0], 200)
+                return self.send_json(download_claim_rows(self.server.config, limit))
             if parsed.path == "/api/keywords":
                 return self.send_json(load_keyword_groups(self.server.config))
             if parsed.path == "/api/hot-keywords":
@@ -1523,10 +1622,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return self.send_json({"id": save_publication(self.server.config, payload)}, HTTPStatus.CREATED)
             if parsed.path == "/api/publications/status":
                 return self.send_json(update_publication_status(self.server.config, payload), HTTPStatus.OK)
+            if parsed.path == "/api/download-claims":
+                return self.send_json(save_download_claim(self.server.config, payload), HTTPStatus.CREATED)
+            if parsed.path == "/api/download-claims/metrics":
+                return self.send_json(update_download_claim_metrics(self.server.config, payload), HTTPStatus.OK)
             if parsed.path == "/api/callback":
                 return self.send_json(save_callback(self.server.config, payload), HTTPStatus.OK)
             if parsed.path == "/api/metrics":
                 return self.send_json({"id": save_metrics(self.server.config, payload)}, HTTPStatus.CREATED)
+            if parsed.path == "/api/trends/run":
+                return self.send_json(run_trends_job(self.server.config), HTTPStatus.OK)
             if parsed.path == "/api/move-to-review":
                 return self.send_json(
                     move_candidate_to_review(

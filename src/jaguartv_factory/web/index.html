@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>JaguarTV Content OS</title>
-  <link rel="stylesheet" href="/styles.css?v=20260729-delete-inventory">
+  <link rel="stylesheet" href="/styles.css?v=20260730-download-claims">
 </head>
 <body>
   <aside class="sidebar">
@@ -96,7 +96,7 @@
 
     <section class="view" id="view-analytics">
       <div class="analytics-summary" id="analyticsSummary"></div>
-      <div class="section-heading"><div><p class="eyebrow">GOOGLE TRENDS</p><h2>巴西今日热词</h2></div><span class="muted">点击热词可直接拉取候选</span></div>
+      <div class="section-heading"><div><p class="eyebrow">GOOGLE TRENDS</p><h2>巴西今日热词</h2></div><button class="secondary-button" id="runTrendsNow" type="button">立即同步</button></div>
       <div class="hot-keyword-strip" id="hotKeywordStrip"></div>
       <div class="two-column analytics-columns">
         <section class="data-section">
@@ -134,6 +134,9 @@
           <button class="primary-button" type="submit">保存快照</button>
         </form>
       </div>
+
+      <div class="section-heading"><div><p class="eyebrow">DOWNLOAD CLAIMS</p><h2>下载发布记录</h2></div><span class="muted">谁下载谁负责发布，发布后在这里回传数据</span></div>
+      <div class="table-wrap"><table><thead><tr><th>下载人</th><th>成片</th><th>下载时间</th><th>播放</th><th>点击</th><th>注册</th><th></th></tr></thead><tbody id="downloadClaimTable"></tbody></table></div>
     </section>
 
     <section class="view" id="view-nodes">
@@ -272,7 +275,35 @@
     </form>
   </dialog>
 
+  <dialog id="downloadClaimDialog">
+    <form method="dialog" id="downloadClaimForm">
+      <div class="dialog-heading"><div><p class="eyebrow">DOWNLOAD CLAIM</p><h2>登记下载人</h2></div><button class="icon-button" id="closeDownloadClaimDialog" type="button" title="关闭" aria-label="关闭">×</button></div>
+      <p class="dialog-note">成片：<strong id="downloadClaimAsset">成片</strong></p>
+      <div class="settings-grid">
+        <label>下载人 / 发布人<input id="downloadClaimPublisher" placeholder="例如 Lucas" required></label>
+        <label>计划发布平台<select id="downloadClaimPlatform"><option value="facebook">Facebook</option><option value="tiktok">TikTok</option><option value="youtube">YouTube</option><option value="kwai">Kwai</option><option value="instagram">Instagram</option><option value="other">其他</option></select></label>
+        <label>备注<input id="downloadClaimNote" placeholder="账号、发布时间或其他说明"></label>
+      </div>
+      <p class="dialog-note">登记后才会开始下载；后续播放量、点击和注册由下载人负责回传。</p>
+      <div class="dialog-actions"><button class="secondary-button" id="cancelDownloadClaimDialog" type="button">取消</button><button class="primary-button" type="submit">登记并下载</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="claimMetricsDialog">
+    <form method="dialog" id="claimMetricsForm">
+      <div class="dialog-heading"><div><p class="eyebrow">PUBLISH METRICS</p><h2>回传发布数据</h2></div><button class="icon-button" id="closeClaimMetricsDialog" type="button" title="关闭" aria-label="关闭">×</button></div>
+      <input id="claimMetricsId" type="hidden">
+      <p class="dialog-note" id="claimMetricsLabel">下载记录</p>
+      <div class="settings-grid three">
+        <label>播放量<input id="claimMetricsViews" type="number" min="0" value="0"></label>
+        <label>点击量<input id="claimMetricsClicks" type="number" min="0" value="0"></label>
+        <label>注册量<input id="claimMetricsRegistrations" type="number" min="0" value="0"></label>
+      </div>
+      <div class="dialog-actions"><button class="secondary-button" id="cancelClaimMetricsDialog" type="button">取消</button><button class="primary-button" type="submit">保存回传</button></div>
+    </form>
+  </dialog>
+
   <div class="toast" id="toast" role="status"></div>
-  <script src="/app.js?v=20260729-delete-inventory"></script>
+  <script src="/app.js?v=20260730-download-claims"></script>
 </body>
 </html>

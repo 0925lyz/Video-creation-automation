@@ -234,6 +234,24 @@ def connect_db(config: dict[str, Any]) -> sqlite3.Connection:
           ON callback_logs(candidate_id);
         CREATE INDEX IF NOT EXISTS callback_at
           ON callback_logs(callback_at);
+        CREATE TABLE IF NOT EXISTS download_claims (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          candidate_id TEXT NOT NULL,
+          asset_id TEXT NOT NULL DEFAULT '',
+          filename TEXT NOT NULL DEFAULT '',
+          variant TEXT NOT NULL DEFAULT '',
+          publisher TEXT NOT NULL,
+          publish_platform TEXT NOT NULL DEFAULT '',
+          note TEXT NOT NULL DEFAULT '',
+          downloaded_at TEXT NOT NULL,
+          metrics_updated_at TEXT,
+          views INTEGER NOT NULL DEFAULT 0,
+          clicks INTEGER NOT NULL DEFAULT 0,
+          registrations INTEGER NOT NULL DEFAULT 0,
+          extra_data TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE INDEX IF NOT EXISTS download_claim_candidate
+          ON download_claims(candidate_id, downloaded_at DESC);
         """
     )
     candidate_columns = {
@@ -1596,7 +1614,7 @@ def ensure_remotion_runtime(config: dict[str, Any]) -> Path:
 
 
 SOURCE_FILENAME_LABELS = {
-    "tiktok": "TikTko",
+    "tiktok": "TikTok",
     "xiaohongshu": "小红书",
     "douyin": "抖音",
     "bilibili": "B站",
@@ -1670,6 +1688,25 @@ def selected_endcard_asset(config: dict[str, Any], width: int, height: int) -> t
     if aspect < 1.0:
         return configured_remotion_asset(config, "lv_tu"), "9:16_fallback"
     return configured_remotion_asset(config, "lan_tu"), "16:9_fallback"
+
+
+def enforce_dual_variant_remotion(config: dict[str, Any]) -> None:
+    """The production contract requires Remotion-rendered 通用版 + FB版 outputs.
+
+    通用版 carries corner overlays and a 1.5s full-frame endcard. FB版 is clean
+    throughout. Falling back to the old FFmpeg copy path would silently ship the
+    wrong package, so fail loudly instead.
+    """
+    if str(config.get("edit", {}).get("render_engine", "ffmpeg")).strip().lower() != "remotion":
+        raise RuntimeError("standard production requires edit.render_engine=remotion")
+    remotion_settings = config.get("remotion", {}) or {}
+    if not (remotion_settings.get("dual_variant", {}) or {}).get("enabled", False):
+        raise RuntimeError("standard production requires remotion.dual_variant.enabled=true")
+    promo = float(remotion_settings.get("promo_duration_sec", 1.5))
+    if abs(promo - 1.5) > 0.01:
+        raise RuntimeError("standard production requires remotion.promo_duration_sec=1.5")
+    for key in ("tu_yi", "tu_er", "lv_tu", "lan_tu"):
+        configured_remotion_asset(config, key)
 
 
 def render_clean_segment(
@@ -2083,6 +2120,7 @@ def produce_candidate(
         for stale in (work / "voice_ptbr.aiff", work / "subtitles_ptbr.srt"):
             stale.unlink(missing_ok=True)
     render_engine = str(config.get("edit", {}).get("render_engine", "ffmpeg")).strip().lower()
+    enforce_dual_variant_remotion(config)
     if (
         audio_mode == "preserve_source"
         and strategy.audio_policy in {
@@ -2174,91 +2212,41 @@ def produce_candidate(
             render_start = 0.0
         variant_outputs: list[dict[str, Any]] = []
         if render_engine == "remotion" and (config.get("remotion", {}).get("dual_variant", {}) or {}).get("enabled", False):
-            try:
-                clean = work / f"{filename_stem}_clean_input.mp4"
-                render_clean_segment(
-                    config, render_media, voice, bgm, clean, float(segment["duration"]),
-                    audio_mode=audio_mode, start_time=render_start,
-                )
-                for variant in ("通用版", "FB版"):
-                    variant_output = work / f"{filename_stem}-{variant}.mp4"
-                    info = render_video_remotion_variant(config, clean, variant_output, variant=variant)
-                    if reaction.mode != "none":
-                        compose_reaction(
-                            variant_output,
-                            variant_output,
-                            reaction,
-                            content_duration=float(segment["duration"]),
-                        )
-                    mobile_format = normalize_mobile_review_video(variant_output, config)
-                    info["mobile_format"] = mobile_format
-                    info["duration"] = media_duration(variant_output)
-                    info["size"] = variant_output.stat().st_size
-                    inventory_dir = inventory_root(config) / batch_label / variant / source_label if batch_label else inventory_root(config) / variant / source_label
-                    inventory_dir.mkdir(parents=True, exist_ok=True)
-                    inventory_path = inventory_dir / variant_output.name
-                    shutil.copy2(variant_output, inventory_path)
-                    qa_variant = qa_video(variant_output, config)
-                    qa_variant["variant"] = variant
-                    info.update({
-                        "path": str(variant_output),
-                        "inventory_path": str(inventory_path),
-                        "qa": qa_variant,
-                        "source_label": source_label,
-                        "batch_label": batch_label,
-                    })
-                    if not qa_variant["passed"]:
-                        raise RuntimeError(f"QA failed for {package_id} {variant}: {qa_variant}")
-                    variant_outputs.append(info)
-            except RuntimeError as error:
-                fallback_reason = str(error)
-                output = work / f"{filename_stem}-通用版.mp4"
-                render_video_ffmpeg(
-                    config, render_media, voice, bgm, subtitles, output, float(segment["duration"]),
-                    audio_mode=audio_mode, start_time=render_start,
-                )
+            clean = work / f"{filename_stem}_clean_input.mp4"
+            render_clean_segment(
+                config, render_media, voice, bgm, clean, float(segment["duration"]),
+                audio_mode=audio_mode, start_time=render_start,
+            )
+            for variant in ("通用版", "FB版"):
+                variant_output = work / f"{filename_stem}-{variant}.mp4"
+                info = render_video_remotion_variant(config, clean, variant_output, variant=variant)
                 if reaction.mode != "none":
-                    endcard_seconds = max(
-                        1.0,
-                        min(
-                            6.0,
-                            float(brand_kit(config).get("endcard", {}).get("duration_sec", 3)),
-                            max(1.0, float(segment["duration"]) - 1.0),
-                        ),
-                    )
                     compose_reaction(
-                        output,
-                        output,
+                        variant_output,
+                        variant_output,
                         reaction,
-                        content_duration=max(1.0, float(segment["duration"]) - endcard_seconds),
+                        content_duration=float(segment["duration"]),
                     )
-                for variant in ("通用版", "FB版"):
-                    variant_output = output if variant == "通用版" else work / f"{filename_stem}-{variant}.mp4"
-                    if variant != "通用版":
-                        shutil.copy2(output, variant_output)
-                    mobile_format = normalize_mobile_review_video(variant_output, config)
-                    qa_variant = qa_video(variant_output, config)
-                    qa_variant["variant"] = variant
-                    inventory_dir = inventory_root(config) / batch_label / variant / source_label if batch_label else inventory_root(config) / variant / source_label
-                    inventory_dir.mkdir(parents=True, exist_ok=True)
-                    inventory_path = inventory_dir / variant_output.name
-                    shutil.copy2(variant_output, inventory_path)
-                    if not qa_variant["passed"]:
-                        raise RuntimeError(f"QA failed for {package_id} {variant}: {qa_variant}") from error
-                    variant_outputs.append({
-                        "variant": variant,
-                        "path": str(variant_output),
-                        "filename": variant_output.name,
-                        "duration": media_duration(variant_output),
-                        "size": variant_output.stat().st_size,
-                        "source_label": source_label,
-                        "mobile_format": mobile_format,
-                        "batch_label": batch_label,
-                        "inventory_path": str(inventory_path),
-                        "qa": qa_variant,
-                        "render_fallback": "ffmpeg",
-                        "fallback_reason": fallback_reason[-1000:],
-                    })
+                mobile_format = normalize_mobile_review_video(variant_output, config)
+                info["mobile_format"] = mobile_format
+                info["duration"] = media_duration(variant_output)
+                info["size"] = variant_output.stat().st_size
+                inventory_dir = inventory_root(config) / batch_label / variant / source_label if batch_label else inventory_root(config) / variant / source_label
+                inventory_dir.mkdir(parents=True, exist_ok=True)
+                inventory_path = inventory_dir / variant_output.name
+                shutil.copy2(variant_output, inventory_path)
+                qa_variant = qa_video(variant_output, config)
+                qa_variant["variant"] = variant
+                info.update({
+                    "path": str(variant_output),
+                    "inventory_path": str(inventory_path),
+                    "qa": qa_variant,
+                    "source_label": source_label,
+                    "batch_label": batch_label,
+                })
+                if not qa_variant["passed"]:
+                    raise RuntimeError(f"QA failed for {package_id} {variant}: {qa_variant}")
+                variant_outputs.append(info)
             output = Path(str(variant_outputs[0]["path"]))
         else:
             render_video(

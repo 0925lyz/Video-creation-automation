@@ -4,6 +4,7 @@ const state = {
   publications: [],
   workers: [],
   feedback: [],
+  downloadClaims: [],
   keywordGroups: [],
   hotKeywords: [],
   settings: null,
@@ -15,6 +16,7 @@ const state = {
   status: "",
   search: "",
   pendingProductionIds: [],
+  pendingDownloadAsset: null,
 };
 
 const views = {
@@ -92,11 +94,11 @@ async function refreshAll(showToast = false) {
   button.disabled = true;
   try {
     const token = storedUploadToken();
-    const [overview, candidates, publications, workers, feedback, keywordGroups, hotKeywords, tasks, settings, sessions, health, uploads] = await Promise.all([
-      api("/api/overview"), api("/api/candidates?limit=200"), api("/api/publications"), api("/api/workers"), api("/api/feedback"), api("/api/keywords"), api("/api/hot-keywords?date=today"), api("/api/tasks"), api("/api/settings"), api("/api/sessions"), api("/api/health"),
+    const [overview, candidates, publications, workers, feedback, downloadClaims, keywordGroups, hotKeywords, tasks, settings, sessions, health, uploads] = await Promise.all([
+      api("/api/overview"), api("/api/candidates?limit=200"), api("/api/publications"), api("/api/workers"), api("/api/feedback"), api("/api/download-claims"), api("/api/keywords"), api("/api/hot-keywords?date=today"), api("/api/tasks"), api("/api/settings"), api("/api/sessions"), api("/api/health"),
       token ? api("/api/uploads", { headers: { "X-Upload-Token": token } }).catch(() => []) : Promise.resolve([]),
     ]);
-    Object.assign(state, { overview, candidates, publications, workers, feedback, keywordGroups, hotKeywords, tasks, settings, sessions, health, uploads });
+    Object.assign(state, { overview, candidates, publications, workers, feedback, downloadClaims, keywordGroups, hotKeywords, tasks, settings, sessions, health, uploads });
     renderAll();
     document.querySelector("#serviceTime").textContent = `更新于 ${dateText(overview.generated_at)}`;
     if (showToast) toast("数据已刷新");
@@ -116,6 +118,7 @@ function renderAll() {
   renderInventory();
   renderPublications();
   renderAnalytics();
+  renderDownloadClaims();
   renderHotKeywords();
   renderKeywordGroups();
   renderWorkers();
@@ -209,6 +212,7 @@ function renderInventory() {
   document.querySelectorAll("[data-candidate-action]").forEach((button) => button.addEventListener("click", () => runCandidateAction(button.dataset.candidateAction, button.dataset.candidateId)));
   document.querySelectorAll("[data-delete-id]").forEach((button) => button.addEventListener("click", () => deleteCandidates([button.dataset.deleteId])));
   document.querySelectorAll("[data-review-decision]").forEach((button) => button.addEventListener("click", () => submitReview(button.dataset.reviewDecision, button.dataset.candidateId)));
+  document.querySelectorAll("[data-download-asset]").forEach((button) => button.addEventListener("click", () => openDownloadClaimDialog(button.dataset.downloadAsset)));
   updateBatchToolbar();
 }
 
@@ -282,7 +286,8 @@ function outputActionLinks(asset) {
   const downloadUrl = String(asset.download_url || `${videoUrl}${videoUrl.includes("?") ? "&" : "?"}download=1`);
   const serverUrl = String(asset.server_url || videoUrl);
   const filename = String(asset.filename || `${asset.id || "jaguartv-video"}.mp4`).replace(/[^0-9A-Za-z_.-]+/g, "_");
-  return `<a class="table-action" href="${escapeHtml(videoUrl)}" target="_blank" rel="noopener">预览</a><a class="table-action" href="${escapeHtml(downloadUrl)}" download="${escapeHtml(filename)}">下载成片</a><a class="table-action" href="${escapeHtml(serverUrl)}" target="_blank" rel="noopener">服务器成片</a>`;
+  const payload = escapeHtml(JSON.stringify({ ...asset, download_url: downloadUrl, server_url: serverUrl, filename }));
+  return `<a class="table-action" href="${escapeHtml(videoUrl)}" target="_blank" rel="noopener">预览</a><button class="table-action" data-download-asset='${payload}' type="button">登记下载</button><a class="table-action" href="${escapeHtml(serverUrl)}" target="_blank" rel="noopener">服务器成片</a>`;
 }
 
 function approvedOutputActions(item) {
@@ -388,6 +393,48 @@ function renderAnalytics() {
   document.querySelector("#feedbackList").innerHTML = state.feedback.length ? state.feedback.map((item) => `<div class="feedback-item"><strong>${escapeHtml(item.action_type)} · ${escapeHtml(item.keyword || item.candidate_id || "内容")}</strong><span>${escapeHtml(item.reason)} · 信号分 ${Number(item.score).toFixed(2)}</span></div>`).join("") : `<div class="empty-state">当视频达到最低播放量且注册率或分享率突出时，系统会在这里提出关键词增强建议。<br>建议先审核，再应用到发现配置。</div>`;
 }
 
+function renderDownloadClaims() {
+  const table = document.querySelector("#downloadClaimTable");
+  if (!table) return;
+  table.innerHTML = state.downloadClaims.length ? state.downloadClaims.map((item) => `
+    <tr>
+      <td><strong>${escapeHtml(item.publisher)}</strong><small>${escapeHtml(item.publish_platform || "未指定平台")}</small></td>
+      <td title="${escapeHtml(item.title || item.candidate_id)}">${escapeHtml((item.title || item.candidate_id).slice(0, 48))}<small>${escapeHtml(item.variant || "")} · ${escapeHtml(item.filename || "")}</small></td>
+      <td>${dateText(item.downloaded_at)}</td>
+      <td>${number(item.views)}</td>
+      <td>${number(item.clicks)}</td>
+      <td>${number(item.registrations)}</td>
+      <td><button class="table-action" data-claim-metrics="${item.id}" type="button">回传数据</button></td>
+    </tr>
+  `).join("") : `<tr><td colspan="7"><div class="empty-state">还没有下载登记。审核通过的视频点击“登记下载”后会出现在这里。</div></td></tr>`;
+  table.querySelectorAll("[data-claim-metrics]").forEach((button) => button.addEventListener("click", () => openClaimMetricsDialog(button.dataset.claimMetrics)));
+}
+
+function openDownloadClaimDialog(rawAsset) {
+  try {
+    state.pendingDownloadAsset = JSON.parse(rawAsset || "{}");
+  } catch {
+    state.pendingDownloadAsset = null;
+  }
+  if (!state.pendingDownloadAsset?.download_url) return toast("这个成片没有可下载链接", "error");
+  document.querySelector("#downloadClaimAsset").textContent = state.pendingDownloadAsset.label || state.pendingDownloadAsset.filename || "成片";
+  document.querySelector("#downloadClaimPublisher").value = localStorage.getItem("jaguartvPublisherName") || "";
+  document.querySelector("#downloadClaimPlatform").value = "facebook";
+  document.querySelector("#downloadClaimNote").value = "";
+  document.querySelector("#downloadClaimDialog").showModal();
+}
+
+function openClaimMetricsDialog(claimId) {
+  const claim = state.downloadClaims.find((item) => String(item.id) === String(claimId));
+  if (!claim) return toast("找不到下载记录", "error");
+  document.querySelector("#claimMetricsId").value = claim.id;
+  document.querySelector("#claimMetricsLabel").textContent = `${claim.publisher} · ${claim.publish_platform || "未指定平台"}`;
+  document.querySelector("#claimMetricsViews").value = claim.views || "";
+  document.querySelector("#claimMetricsClicks").value = claim.clicks || "";
+  document.querySelector("#claimMetricsRegistrations").value = claim.registrations || "";
+  document.querySelector("#claimMetricsDialog").showModal();
+}
+
 function renderHotKeywords() {
   const element = document.querySelector("#hotKeywordStrip");
   if (!element) return;
@@ -413,6 +460,16 @@ async function discoverWithHotKeyword(keyword) {
     pollTask(result.task_id);
   } catch (error) {
     toast(`热词发现失败：${error.message}`, "error");
+  }
+}
+
+async function runTrendsNow() {
+  try {
+    const result = await api("/api/trends/run", { method: "POST", body: JSON.stringify({}) });
+    toast(`Google Trends 已同步 ${result.count || 0} 个热词`);
+    await refreshAll();
+  } catch (error) {
+    toast(`同步失败：${error.message}`, "error");
   }
 }
 
@@ -723,6 +780,10 @@ document.querySelector("#refreshButton").addEventListener("click", () => refresh
 document.querySelector("#discoverButton").addEventListener("click", () => document.querySelector("#discoverDialog").showModal());
 document.querySelector("#closeDiscoverDialog").addEventListener("click", () => document.querySelector("#discoverDialog").close());
 document.querySelector("#cancelDiscoverDialog").addEventListener("click", () => document.querySelector("#discoverDialog").close());
+document.querySelector("#closeDownloadClaimDialog").addEventListener("click", () => document.querySelector("#downloadClaimDialog").close());
+document.querySelector("#cancelDownloadClaimDialog").addEventListener("click", () => document.querySelector("#downloadClaimDialog").close());
+document.querySelector("#closeClaimMetricsDialog").addEventListener("click", () => document.querySelector("#claimMetricsDialog").close());
+document.querySelector("#cancelClaimMetricsDialog").addEventListener("click", () => document.querySelector("#claimMetricsDialog").close());
 document.querySelector("#globalSearch").addEventListener("input", (event) => { state.search = event.target.value; renderInventory(); });
 document.querySelector("#selectVisible").addEventListener("change", (event) => {
   filteredCandidates().forEach((item) => event.target.checked ? state.selectedCandidates.add(item.id) : state.selectedCandidates.delete(item.id));
@@ -735,11 +796,56 @@ document.querySelector("#batchProduce").addEventListener("click", () => {
   openProductionDialog(ids);
 });
 document.querySelector("#batchDelete").addEventListener("click", () => deleteCandidates(selectedRows().map((item) => item.id)));
+document.querySelector("#runTrendsNow").addEventListener("click", runTrendsNow);
 document.querySelectorAll("#statusFilters button").forEach((button) => button.addEventListener("click", () => {
   document.querySelectorAll("#statusFilters button").forEach((item) => item.classList.toggle("active", item === button));
   state.status = button.dataset.status;
   renderInventory();
 }));
+
+document.querySelector("#downloadClaimForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const asset = state.pendingDownloadAsset;
+  if (!asset?.download_url) return toast("这个成片没有可下载链接", "error");
+  const publisher = document.querySelector("#downloadClaimPublisher").value.trim();
+  const publishPlatform = document.querySelector("#downloadClaimPlatform").value;
+  if (!publisher) return toast("请先填写下载人/发布人", "error");
+  try {
+    localStorage.setItem("jaguartvPublisherName", publisher);
+    await api("/api/download-claims", { method: "POST", body: JSON.stringify({
+      candidate_id: asset.id,
+      asset_id: asset.id,
+      filename: asset.filename,
+      variant: asset.variant || "",
+      publisher,
+      publish_platform: publishPlatform,
+      note: document.querySelector("#downloadClaimNote").value.trim(),
+    }) });
+    document.querySelector("#downloadClaimDialog").close();
+    toast("已登记下载人，开始下载");
+    window.location.assign(asset.download_url);
+    await refreshAll();
+  } catch (error) {
+    toast(`登记失败：${error.message}`, "error");
+  }
+});
+
+document.querySelector("#claimMetricsForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    await api("/api/download-claims/metrics", { method: "POST", body: JSON.stringify({
+      claim_id: document.querySelector("#claimMetricsId").value,
+      views: document.querySelector("#claimMetricsViews").value,
+      clicks: document.querySelector("#claimMetricsClicks").value,
+      registrations: document.querySelector("#claimMetricsRegistrations").value,
+    }) });
+    document.querySelector("#claimMetricsDialog").close();
+    toast("发布表现已回传");
+    await refreshAll();
+  } catch (error) {
+    toast(`回传失败：${error.message}`, "error");
+  }
+});
 
 function updateDiscoverMode() {
   const platform = document.querySelector("#discoverPlatform").value;
