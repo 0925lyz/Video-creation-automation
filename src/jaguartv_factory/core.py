@@ -1050,7 +1050,7 @@ def normalize_mobile_review_video(path: Path, config: dict[str, Any]) -> dict[st
 
     target_width, target_height = mobile_review_target_size(config)
     background = str(mobile.get("background", "#000000")).strip() or "#000000"
-    timeout = float((config.get("run", {}) or {}).get("timeout_sec", 120))
+    timeout = float((config.get("run", {}) or {}).get("timeout_sec", 360))
     tmp = path.with_name(f".mobile3x4-{os.getpid()}-{threading.get_ident()}-{random.randrange(1_000_000)}.mp4")
     vf = (
         f"scale={target_width}:{target_height}:force_original_aspect_ratio=decrease,"
@@ -1907,7 +1907,7 @@ def render_video_remotion_variant(
         result = run_command([
             str(remotion_bin), "render", "src/index.tsx", "JaguarTVVariant",
             str(render_target), "--props", json.dumps(props, ensure_ascii=False), "--log", "error",
-        ], cwd=runtime, check=False, timeout=float((config.get("run", {}) or {}).get("timeout_sec", 120)))
+        ], cwd=runtime, check=False, timeout=float((config.get("run", {}) or {}).get("timeout_sec", 360)))
     except subprocess.TimeoutExpired as error:
         raise RuntimeError(f"Remotion render timed out after {error.timeout}s") from error
     if result.returncode != 0:

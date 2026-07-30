@@ -2,7 +2,7 @@ run:
   timezone: Asia/Shanghai
   output_language: pt-BR
   workspace: workspace
-  timeout_sec: 120
+  timeout_sec: 360
 
 sources:
   enabled: [youtube, bilibili, douyin, xiaohongshu, tiktok, facebook]
