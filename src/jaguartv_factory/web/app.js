@@ -201,7 +201,7 @@ function filteredCandidates() {
 function inventoryRows() {
   return state.candidates.flatMap((item) => {
     const assets = outputAssetsFor(item);
-    if (item.status !== "APPROVED" || assets.length <= 1) return [item];
+    if (!["READY_FOR_REVIEW", "APPROVED"].includes(item.status) || assets.length <= 1) return [item];
     return assets.map((asset) => ({
       ...item,
       row_key: `${item.id}:${asset.id || asset.filename || asset.variant || "asset"}`,
@@ -340,8 +340,7 @@ function candidateAction(item) {
   if (item.status === "PRODUCTION_FAILED") return `${sourceLink}${deleteButton}`;
   if (["DOWNLOADED", "REVISION_REQUIRED", "BLOCKED_RIGHTS"].includes(item.status)) return `<button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">制作</button>${deleteButton}`;
   if (item.status === "READY_FOR_REVIEW") {
-    const preview = item.video_url ? `<button class="table-action" onclick="window.open('${item.video_url}','_blank')">预览</button>` : "";
-    return `${preview}<button class="table-action" data-review-decision="APPROVED" data-candidate-id="${item.id}">通过</button><button class="table-action" data-review-decision="REVISION_REQUIRED" data-candidate-id="${item.id}">返工</button>${deleteButton}`;
+    return `${approvedOutputActions(item)}<button class="table-action" data-review-decision="APPROVED" data-candidate-id="${item.id}">通过</button><button class="table-action" data-review-decision="REVISION_REQUIRED" data-candidate-id="${item.id}">返工</button>${deleteButton}`;
   }
   if (item.status === "APPROVED") return `${approvedOutputActions(item)}${deleteButton}`;
   return deleteButton;
