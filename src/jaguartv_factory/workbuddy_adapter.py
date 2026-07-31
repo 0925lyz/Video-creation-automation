@@ -106,6 +106,25 @@ def _merge_regions(regions: Sequence[tuple[float, float, float, float]]) -> list
     ]
 
 
+def _subtitle_band_regions(regions: Sequence[Sequence[float]]) -> list[list[float]]:
+    bands: list[list[float]] = []
+    for x0, y0, x1, y1 in regions:
+        width = x1 - x0
+        height = y1 - y0
+        center_y = (y0 + y1) / 2
+        if center_y < 0.48:
+            continue
+        if width < 0.18 or height < 0.015 or height > 0.18:
+            continue
+        bands.append([
+            max(0.0, x0 - 0.015),
+            max(0.0, y0 - 0.008),
+            min(1.0, x1 + 0.015),
+            min(1.0, y1 + 0.008),
+        ])
+    return sorted(bands, key=lambda item: (item[1], item[0]))[:3]
+
+
 def detect_chinese_text_regions(
     media: Path, *, confidence: float = 25.0, sample_count: int = 8
 ) -> list[list[float]]:
@@ -138,7 +157,7 @@ def detect_chinese_text_regions(
                     continue
                 x, y, w, h = normalized
                 regions.append((x, y, x + w, y + h))
-    return _merge_regions(regions)
+    return _subtitle_band_regions(_merge_regions(regions))
 
 
 def blur_static_regions(

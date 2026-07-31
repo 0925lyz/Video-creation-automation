@@ -181,7 +181,21 @@ function renderRecent() {
 
 function filteredCandidates() {
   const query = state.search.toLowerCase();
-  return state.candidates.filter((item) => (!state.status || item.status === state.status) && (!query || item.title.toLowerCase().includes(query) || item.id.toLowerCase().includes(query)));
+  return state.candidates
+    .filter((item) => {
+      const haystack = `${item.display_title || ""} ${item.title || ""} ${item.id || ""} ${(item.output_assets || []).map((asset) => asset.filename || "").join(" ")}`.toLowerCase();
+      return (!state.status || item.status === state.status) && (!query || haystack.includes(query));
+    })
+    .sort((a, b) => {
+      const aVariant = (a.output_assets || [])[0]?.variant || "";
+      const bVariant = (b.output_assets || [])[0]?.variant || "";
+      const variantOrder = (value) => value === "通用版" ? 0 : value === "FB版" ? 1 : 2;
+      const variantDelta = variantOrder(aVariant) - variantOrder(bVariant);
+      if (variantDelta) return variantDelta;
+      const sourceDelta = String(a.platform || "").localeCompare(String(b.platform || ""), "zh-CN");
+      if (sourceDelta) return sourceDelta;
+      return new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime();
+    });
 }
 
 function renderInventory() {
@@ -194,8 +208,8 @@ function renderInventory() {
     const failure = item.failure_detail ? `<small class="failure-reason" title="${escapeHtml(item.failure_detail)}">${escapeHtml(failureReason(item.failure_detail))}</small>` : "";
     return `
     <tr>
-      <td class="check-column"><input class="candidate-checkbox" type="checkbox" data-candidate-select="${item.id}" ${state.selectedCandidates.has(item.id) ? "checked" : ""} aria-label="选择 ${escapeHtml(item.title || item.id)}"></td>
-      <td><div class="content-cell">${thumb ? `<img class="mini-cover" src="${thumb}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<div class="mini-cover"></div>`}<div><strong title="${escapeHtml(item.title)}">${escapeHtml(item.title || "未命名内容")}${item.published_flag ? `<span class="badge-published">Published</span>` : ""}</strong><small>${item.id}${item.keyword ? ` · ${escapeHtml(item.keyword)}` : ""}</small></div></div></td>
+      <td class="check-column"><input class="candidate-checkbox" type="checkbox" data-candidate-select="${item.id}" ${state.selectedCandidates.has(item.id) ? "checked" : ""} aria-label="选择 ${escapeHtml(item.display_title || item.title || item.id)}"></td>
+      <td><div class="content-cell">${thumb ? `<img class="mini-cover" src="${thumb}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<div class="mini-cover"></div>`}<div><strong title="${escapeHtml(item.display_title || item.title)}">${escapeHtml(item.display_title || item.title || "未命名内容")}${item.published_flag ? `<span class="badge-published">Published</span>` : ""}</strong><small>${escapeHtml(item.platform)} · ${item.id}${item.keyword ? ` · ${escapeHtml(item.keyword)}` : ""}</small></div></div></td>
       <td>${escapeHtml(item.platform)}</td>
       <td><strong>${escapeHtml(item.content_type || "unknown")}</strong><small>${escapeHtml(item.segment_strategy || "未分析")} · ${escapeHtml(item.audio_policy || "自动")}</small></td>
       <td>${Number(item.highlight_score || 0).toFixed(1)}</td>

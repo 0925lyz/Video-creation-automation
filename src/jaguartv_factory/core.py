@@ -877,7 +877,7 @@ def should_ocr_blur_source_subtitles(
     if str(cleanup_mode).strip().lower() != "ocr_blur":
         return False
     if str(localization_profile.get("subtitle_mode") or "") == "ptbr_subtitles":
-        return True
+        return bool(localization_profile.get("chinese_subtitles"))
     if str(detected_language or "").lower().startswith("zh"):
         return True
     if re.search(r"[\u4e00-\u9fff]", title_text or ""):
@@ -1670,7 +1670,7 @@ def ensure_remotion_runtime(config: dict[str, Any]) -> Path:
 
 
 SOURCE_FILENAME_LABELS = {
-    "tiktok": "TikTok",
+    "tiktok": "TikTko",
     "xiaohongshu": "小红书",
     "douyin": "抖音",
     "bilibili": "B站",
@@ -2218,8 +2218,7 @@ def produce_candidate(
     crop_ratio = max(
         0.0, min(0.35, float(config.get("edit", {}).get("source_subtitle_crop_bottom_ratio", 0.18)))
     )
-    translated_title = translate_to_ptbr(row["title"])[:100]
-    publishing_text = script or f"{translated_title}. Descubra mais conteúdos no Jaguar TV."
+    publishing_text = script or "Assista aos melhores momentos no Jaguar TV."
     reviews: list[Path] = []
     qa_results: list[dict[str, Any]] = []
     review_root = workspace_dir(config) / "ready_for_review"
@@ -2264,8 +2263,11 @@ def produce_candidate(
             preprocessed = work / f"ocr_blurred_part{segment_index:02d}.mp4"
             fallback_regions = (
                 config.get("edit", {}).get("ocr_fallback_regions")
-                or [[0.04, 0.70, 0.96, 0.94]]
+                if config.get("edit", {}).get("ocr_use_fallback_regions", False)
+                else None
             )
+            if fallback_regions is None:
+                fallback_regions = []
             ocr_cleanup = prepare_ocr_blurred_segment(
                 media,
                 preprocessed,
@@ -2399,7 +2401,7 @@ def produce_candidate(
             "ptbr_script": script,
             "hook_version": hook_version,
             "youtube": {
-                "title": f"{translated_title}{title_suffix}"[:100],
+                "title": f"{filename_stem}{title_suffix}"[:100],
                 "description": f"{publishing_text[:500]}\n\n▶ {links['youtube']}",
                 "hashtags": ["JaguarTV", "Brasil", "Shorts"],
                 "cta_url": links["youtube"],

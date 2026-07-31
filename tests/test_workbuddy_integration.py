@@ -5,7 +5,7 @@ import pytest
 
 from jaguartv_factory.core import connect_db
 from jaguartv_factory.mediacrawler import ingest_mediacrawler_jsonl, parse_metric
-from jaguartv_factory.workbuddy_adapter import _merge_regions, prepare_ocr_blurred_segment
+from jaguartv_factory.workbuddy_adapter import _merge_regions, _subtitle_band_regions, prepare_ocr_blurred_segment
 
 
 def make_config(tmp_path: Path) -> dict:
@@ -63,6 +63,15 @@ def test_ocr_regions_merge_into_stable_horizontal_bands():
     bottom = max(regions, key=lambda item: item[1])
     assert bottom[0] == pytest.approx(0.09)
     assert bottom[2] >= 0.56
+
+
+def test_ocr_subtitle_filter_drops_top_and_tiny_regions():
+    regions = _subtitle_band_regions([
+        [0.04, 0.10, 0.30, 0.16],
+        [0.82, 0.70, 0.86, 0.74],
+        [0.20, 0.72, 0.72, 0.80],
+    ])
+    assert regions == [[0.185, 0.712, 0.735, 0.808]]
 
 
 def test_ocr_blur_uses_fallback_regions_when_detection_misses(tmp_path: Path, monkeypatch):

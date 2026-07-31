@@ -657,6 +657,10 @@ def candidate_rows(config: dict[str, Any], status: str | None = None, limit: int
         primary_output = outputs[0] if outputs else {}
         item["output_assets"] = [public_output_asset(asset) for asset in outputs]
         item["output_count"] = len(outputs)
+        item["display_title"] = (
+            str(primary_output.get("filename") or "").removesuffix(".mp4")
+            if primary_output else str(item.get("title") or "")
+        )
         item["cover_url"] = str(primary_output.get("cover_url") or "")
         item["video_url"] = str(primary_output.get("video_url") or "")
         item["download_url"] = str(primary_output.get("download_url") or "")
@@ -672,8 +676,6 @@ def candidate_rows(config: dict[str, Any], status: str | None = None, limit: int
                 item["segment_strategy"] = str(review_metadata.get("segment_strategy") or item["segment_strategy"])
                 item["audio_policy"] = str(review_metadata.get("audio_policy") or item["audio_policy"])
                 item["batch_label"] = str(review_metadata.get("batch_label") or "")
-                if item["batch_label"] and item["batch_label"] not in str(item.get("title") or ""):
-                    item["title"] = f"{item['title']} · {item['batch_label']}"
                 item["highlight_score"] = float(
                     review_metadata.get("segment", {}).get("highlight_score") or item["highlight_score"]
                 )
@@ -749,11 +751,8 @@ def server_review_rows(config: dict[str, Any], exclude: set[str] | None = None) 
             "platform": str(source.get("platform") or "server"),
             "source_id": str(metadata.get("source_job_id") or ""),
             "url": str(source.get("url") or ""),
-            "title": (
-                f"{source.get('title') or candidate} · {metadata.get('batch_label')}"
-                if metadata.get("batch_label") and str(metadata.get("batch_label")) not in str(source.get("title") or candidate)
-                else str(source.get("title") or candidate)
-            ),
+            "title": str(source.get("title") or candidate),
+            "display_title": str(primary_output.get("filename") or candidate).removesuffix(".mp4"),
             "description": "",
             "duration": float(segment.get("duration_sec") or 0),
             "view_count": 0,

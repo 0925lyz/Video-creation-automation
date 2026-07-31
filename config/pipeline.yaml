@@ -61,6 +61,7 @@ edit:
   resolution: [1080, 1920]         # used only when layout_mode=vertical
   source_subtitle_cleanup: "ocr_blur"  # localized clips only; protected corners are excluded
   source_subtitle_crop_bottom_ratio: 0.18
+  ocr_use_fallback_regions: false
   ocr_blur_sigma: 28
   default_segment_strategy: auto
 

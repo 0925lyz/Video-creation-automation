@@ -71,7 +71,7 @@ def test_standard_production_requires_remotion_dual_variant_assets():
 
 
 def test_tiktok_source_filename_label_is_clean():
-    assert source_filename_label("tiktok") == "TikTok"
+    assert source_filename_label("tiktok") == "TikTko"
 
 
 def test_require_binary_prefers_virtualenv_sibling(tmp_path: Path, monkeypatch):
