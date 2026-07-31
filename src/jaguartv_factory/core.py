@@ -1885,6 +1885,7 @@ def render_video_remotion_variant(
         "overlayMarginHRatio": float(remotion_settings.get("overlay_margin_h_ratio", 0.03)),
         "overlayMarginVRatio": float(remotion_settings.get("overlay_margin_v_ratio", 0.05)),
         "sourceFit": str(canvas["source_fit"]),
+        "endcardFit": "contain" if (canvas.get("mobile_format") or {}).get("applied") else "cover",
         "overlayPlacement": str(canvas["overlay_placement"]),
         "sourceAspectRatio": source_width / max(1, source_height),
     }

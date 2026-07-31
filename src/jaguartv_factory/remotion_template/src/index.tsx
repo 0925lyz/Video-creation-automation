@@ -28,6 +28,7 @@ type BrandProps = {
   overlayMarginHRatio: number;
   overlayMarginVRatio: number;
   sourceFit?: "cover" | "contain";
+  endcardFit?: "cover" | "contain";
   overlayPlacement?: "video_corners" | "mobile_top_band";
   sourceAspectRatio?: number;
 };
@@ -50,6 +51,7 @@ const fallbackProps: BrandProps = {
   overlayMarginHRatio: 0.03,
   overlayMarginVRatio: 0.05,
   sourceFit: "cover",
+  endcardFit: "cover",
   overlayPlacement: "video_corners",
   sourceAspectRatio: 16 / 9,
 };
@@ -79,7 +81,9 @@ function JaguarTVVariant(props: BrandProps) {
       </Sequence>
       {isGeneric && p.imgEndcard ? (
         <Sequence from={contentFrames} durationInFrames={endcardFrames}>
-          <Img src={assetSrc(p.imgEndcard)} style={{width, height, objectFit: "cover"}} />
+          <AbsoluteFill style={{backgroundColor: "#000", alignItems: "center", justifyContent: "center"}}>
+            <Img src={assetSrc(p.imgEndcard)} style={{width, height, objectFit: p.endcardFit || "cover"}} />
+          </AbsoluteFill>
         </Sequence>
       ) : null}
     </AbsoluteFill>
