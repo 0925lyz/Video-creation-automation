@@ -6,6 +6,7 @@ from PIL import Image
 
 from jaguartv_factory.core import (
     brand_kit,
+    candidate_market_rejection,
     choose_audio_strategy,
     enforce_dual_variant_remotion,
     format_srt_time,
@@ -124,8 +125,15 @@ def test_ocr_blur_runs_for_chinese_platform_even_without_external_subtitles():
         platform="bilibili",
         detected_language="unknown",
         title_text="巴西足球中文字幕",
-        localization_profile={"subtitle_mode": "none"},
+        localization_profile={"subtitle_mode": "ptbr_subtitles", "chinese_subtitles": True},
     ) is True
+    assert should_ocr_blur_source_subtitles(
+        "ocr_blur",
+        platform="bilibili",
+        detected_language="zh",
+        title_text="巴西足球中文字幕",
+        localization_profile={"subtitle_mode": "none"},
+    ) is False
     assert should_ocr_blur_source_subtitles(
         "ocr_blur",
         platform="youtube",
@@ -140,6 +148,16 @@ def test_ocr_blur_runs_for_chinese_platform_even_without_external_subtitles():
         title_text="巴西足球",
         localization_profile={"subtitle_mode": "none"},
     ) is False
+
+
+def test_market_filter_rejects_betting_but_keeps_brazil_football():
+    config = {"selection": {"market_filter": {"enabled": True}}}
+    assert candidate_market_rejection(
+        config, {"title": "巴甲比分预测 稳胆 串关"}, keyword="巴甲"
+    ) == "prediction_or_betting_content"
+    assert candidate_market_rejection(
+        config, {"title": "Flamengo gols melhores momentos"}, keyword="#brasileirao"
+    ) == ""
 
 
 def test_generate_funk_bgm(tmp_path: Path):

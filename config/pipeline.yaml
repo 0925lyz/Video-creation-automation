@@ -49,6 +49,9 @@ selection:
   max_source_duration_sec: 1800
   min_height: 360
   duplicate_threshold: 0.90
+  market_filter:
+    enabled: true
+    target: brazil_football
 
 edit:
   render_engine: remotion           # dual-variant overlays/endcards require Remotion

@@ -39,12 +39,22 @@ def test_mediacrawler_jsonl_filters_and_deduplicates(tmp_path: Path):
             "liked_count": "10",
             "desc": "低热度样本",
         },
+        {
+            "aweme_id": "a3",
+            "aweme_url": "https://www.douyin.com/video/a3",
+            "video_download_url": "https://media.example/a3.mp4",
+            "liked_count": "3万",
+            "desc": "巴甲比分预测 稳胆串关",
+        },
     ]
     source.write_text("\n".join(json.dumps(item, ensure_ascii=False) for item in records), encoding="utf-8")
     config = make_config(tmp_path)
     first = ingest_mediacrawler_jsonl(config, source, min_likes=2_000)
     second = ingest_mediacrawler_jsonl(config, source, min_likes=2_000)
-    assert first == {"read": 2, "inserted": 1, "duplicate": 0, "filtered": 1, "invalid": 0}
+    assert first == {
+        "read": 3, "inserted": 1, "duplicate": 0,
+        "filtered": 1, "market_rejected": 1, "invalid": 0,
+    }
     assert second["duplicate"] == 1
     row = connect_db(config).execute("SELECT * FROM candidates").fetchone()
     metadata = json.loads(row["metadata_json"])

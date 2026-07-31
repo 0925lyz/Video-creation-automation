@@ -399,7 +399,7 @@ def discover(
     }
     stats = {
         "discovered": 0, "inserted": 0, "language_rejected": 0,
-        "too_long": 0, "errors": 0, "categories_skipped": 0,
+        "market_rejected": 0, "too_long": 0, "errors": 0, "categories_skipped": 0,
         "error_details": [],
     }
     for platform in enabled:
@@ -440,6 +440,10 @@ def discover(
                     actual_platform = infer_platform(info) or platform
                     cid = candidate_id(actual_platform, source_id, url)
                     title = str(info.get("title") or "")
+                    market_rejection = candidate_market_rejection(config, info, keyword=str(term))
+                    if market_rejection:
+                        stats["market_rejected"] += 1
+                        continue
                     language, confidence = likely_language(f"{title} {info.get('description') or ''}")
                     rejected = language.lower() in excluded_languages and confidence >= 0.7
                     too_long = candidate_too_long(config, info.get("duration"))
@@ -876,13 +880,10 @@ def should_ocr_blur_source_subtitles(
 ) -> bool:
     if str(cleanup_mode).strip().lower() != "ocr_blur":
         return False
-    if str(localization_profile.get("subtitle_mode") or "") == "ptbr_subtitles":
-        return bool(localization_profile.get("chinese_subtitles"))
-    if str(detected_language or "").lower().startswith("zh"):
-        return True
-    if re.search(r"[\u4e00-\u9fff]", title_text or ""):
-        return True
-    return str(platform or "").strip().lower() in {"bilibili", "douyin", "xiaohongshu"}
+    return (
+        str(localization_profile.get("subtitle_mode") or "") == "ptbr_subtitles"
+        and bool(localization_profile.get("chinese_subtitles"))
+    )
 
 
 DEFAULT_HOOK = "Olha só o que aconteceu aqui."
@@ -2011,6 +2012,46 @@ def candidate_too_long(config: dict[str, Any], duration: float | int | None) -> 
         return bool(duration and float(duration) > source_duration_limit(config))
     except (TypeError, ValueError):
         return False
+
+
+MARKET_INCLUDE_TERMS = (
+    "brasileirão", "brasileirao", "flamengo", "palmeiras", "corinthians", "santos",
+    "são paulo", "sao paulo", "botafogo", "vasco", "grêmio", "gremio", "fluminense",
+    "arrascaeta", "neymar", "vinicius", "vinícius", "futebol", "gols", "gol ",
+    "melhores momentos", "cazétv", "cazetv", "tempo real cazé", "tempo real caze",
+    "巴甲", "巴西足球", "弗拉门戈", "帕尔梅拉斯", "科林蒂安", "桑托斯", "圣保罗",
+    "内马尔", "足球", "进球", "集锦",
+)
+
+MARKET_REJECT_TERMS = (
+    "竞彩", "足彩", "盘口", "比分预测", "稳胆", "串关", "单关", "推荐比分", "剧本参考",
+    "命中", "红单", "黑单", "不中返", "亚盘", "大小球", "投注技巧", "赛前观察",
+    "betting", "odds", "tips", "predictions", "palpite", "aposta", "apostas",
+)
+
+
+def candidate_market_rejection(
+    config: dict[str, Any], info: dict[str, Any], *, keyword: str = ""
+) -> str:
+    """Reject low-value/non-football finds before they pollute the inventory."""
+    market_filter = (config.get("selection") or {}).get("market_filter") or {}
+    if market_filter.get("enabled") is False:
+        return ""
+    text = " ".join(
+        str(value or "")
+        for value in (
+            keyword,
+            info.get("title"),
+            info.get("description"),
+            info.get("desc"),
+            " ".join(str(tag) for tag in (info.get("tags") or []) if tag),
+        )
+    ).lower()
+    if any(term.lower() in text for term in MARKET_REJECT_TERMS):
+        return "prediction_or_betting_content"
+    if any(term.lower() in text for term in MARKET_INCLUDE_TERMS):
+        return ""
+    return "not_brazil_football"
 
 
 def edge_rate_from_config(config: dict[str, Any]) -> str:

@@ -181,21 +181,40 @@ function renderRecent() {
 
 function filteredCandidates() {
   const query = state.search.toLowerCase();
-  return state.candidates
+  return inventoryRows()
     .filter((item) => {
       const haystack = `${item.display_title || ""} ${item.title || ""} ${item.id || ""} ${(item.output_assets || []).map((asset) => asset.filename || "").join(" ")}`.toLowerCase();
       return (!state.status || item.status === state.status) && (!query || haystack.includes(query));
     })
     .sort((a, b) => {
-      const aVariant = (a.output_assets || [])[0]?.variant || "";
-      const bVariant = (b.output_assets || [])[0]?.variant || "";
-      const variantOrder = (value) => value === "通用版" ? 0 : value === "FB版" ? 1 : 2;
+      const aVariant = a.variant_group || (a.output_assets || [])[0]?.variant || "";
+      const bVariant = b.variant_group || (b.output_assets || [])[0]?.variant || "";
+      const variantOrder = (value) => value === "FB版" ? 0 : value === "通用版" ? 1 : 2;
       const variantDelta = variantOrder(aVariant) - variantOrder(bVariant);
       if (variantDelta) return variantDelta;
       const sourceDelta = String(a.platform || "").localeCompare(String(b.platform || ""), "zh-CN");
       if (sourceDelta) return sourceDelta;
       return new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime();
     });
+}
+
+function inventoryRows() {
+  return state.candidates.flatMap((item) => {
+    const assets = outputAssetsFor(item);
+    if (item.status !== "APPROVED" || assets.length <= 1) return [item];
+    return assets.map((asset) => ({
+      ...item,
+      row_key: `${item.id}:${asset.id || asset.filename || asset.variant || "asset"}`,
+      display_title: String(asset.filename || item.display_title || item.title || "").replace(/\.mp4$/i, ""),
+      variant_group: asset.variant || "",
+      output_assets: [asset],
+      output_count: 1,
+      video_url: asset.video_url || "",
+      download_url: asset.download_url || "",
+      server_url: asset.server_url || "",
+      cover_url: asset.cover_url || item.cover_url || "",
+    }));
+  });
 }
 
 function renderInventory() {

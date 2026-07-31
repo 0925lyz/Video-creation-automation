@@ -5,7 +5,16 @@ import re
 from pathlib import Path
 from typing import Any, Iterable
 
-from .core import candidate_id, candidate_too_long, connect_db, likely_language, now_iso, scoring_config_path, source_duration_limit
+from .core import (
+    candidate_id,
+    candidate_market_rejection,
+    candidate_too_long,
+    connect_db,
+    likely_language,
+    now_iso,
+    scoring_config_path,
+    source_duration_limit,
+)
 from .scoring import score_candidate_v2
 
 
@@ -76,7 +85,10 @@ def ingest_mediacrawler_jsonl(
     normalized_platform = infer_jsonl_platform(path, platform)
     fields = PLATFORM_FIELDS[normalized_platform]
     connection = connect_db(config)
-    stats = {"read": 0, "inserted": 0, "duplicate": 0, "filtered": 0, "invalid": 0}
+    stats = {
+        "read": 0, "inserted": 0, "duplicate": 0, "filtered": 0,
+        "market_rejected": 0, "invalid": 0,
+    }
     with path.open("r", encoding="utf-8", errors="replace") as handle:
         for line in handle:
             if not line.strip():
@@ -117,6 +129,12 @@ def ingest_mediacrawler_jsonl(
                 "ingest_source": "mediacrawler_jsonl",
                 "ingest_file": str(path),
             }
+            market_rejection = candidate_market_rejection(
+                config, info, keyword=str(record.get("source_keyword") or "")
+            )
+            if market_rejection:
+                stats["market_rejected"] += 1
+                continue
             language, _ = likely_language(f"{title} {description}")
             score, breakdown = score_candidate_v2(info, title, scoring_config_path(config))
             too_long = candidate_too_long(config, duration)
