@@ -20,6 +20,15 @@ PLATFORM_LOGIN_URLS = {
     "facebook": "https://www.facebook.com/",
 }
 
+PLATFORM_COOKIE_DOMAINS = {
+    "douyin": ".douyin.com",
+    "xiaohongshu": ".xiaohongshu.com",
+    "bilibili": ".bilibili.com",
+    "youtube": ".youtube.com",
+    "tiktok": ".tiktok.com",
+    "facebook": ".facebook.com",
+}
+
 SESSION_PLATFORMS = tuple(PLATFORM_LOGIN_URLS)
 
 
@@ -83,12 +92,12 @@ def load_storage_state(path: Path) -> dict[str, Any]:
     return data
 
 
-def normalize_storage_state(raw_text: str) -> dict[str, Any]:
+def normalize_storage_state(raw_text: str, default_domain: str = "") -> dict[str, Any]:
     try:
         parsed = json.loads(raw_text)
     except json.JSONDecodeError as error:
         try:
-            return {"cookies": parse_cookie_text(raw_text), "origins": []}
+            return {"cookies": parse_cookie_text(raw_text, default_domain=default_domain), "origins": []}
         except ValueError:
             raise ValueError(f"cookies_json is not valid JSON or cookie table text: {error}") from error
     if isinstance(parsed, list):
@@ -102,7 +111,9 @@ def normalize_storage_state(raw_text: str) -> dict[str, Any]:
         if not isinstance(cookie, dict) or not cookie.get("name") or not cookie.get("value"):
             raise ValueError("each cookie must include name and value")
         if not cookie.get("domain") and not cookie.get("url"):
-            raise ValueError("each cookie must include domain or url")
+            if not default_domain:
+                raise ValueError("each cookie must include domain or url")
+            cookie["domain"] = default_domain
         if cookie.get("domain") and "." not in str(cookie.get("domain")):
             raise ValueError("cookie domain is invalid")
         cookie.setdefault("path", "/")
@@ -125,9 +136,40 @@ def parse_cookie_expires(value: str) -> float:
         raise ValueError(f"unsupported cookie expiry: {value}") from error
 
 
-def parse_cookie_text(raw_text: str) -> list[dict[str, Any]]:
+def parse_cookie_header_line(line: str, default_domain: str) -> list[dict[str, Any]]:
+    if not default_domain:
+        return []
+    ignored = {
+        "path", "domain", "expires", "max-age", "samesite", "secure", "httponly",
+        "priority", "partitioned",
+    }
     cookies: list[dict[str, Any]] = []
-    for raw_line in raw_text.splitlines():
+    for part in line.split(";"):
+        if "=" not in part:
+            continue
+        name, value = part.split("=", 1)
+        name = name.strip()
+        if not name or name.lower() in ignored:
+            continue
+        cookies.append({
+            "name": name,
+            "value": value.strip(),
+            "domain": default_domain,
+            "path": "/",
+            "expires": -1,
+            "httpOnly": False,
+            "secure": True,
+            "sameSite": "Lax",
+        })
+    return cookies
+
+
+def parse_cookie_text(raw_text: str, default_domain: str = "") -> list[dict[str, Any]]:
+    cookies: list[dict[str, Any]] = []
+    text = raw_text.replace("\\t", "\t")
+    if "\\n" in text and "\n" not in text:
+        text = text.replace("\\n", "\n")
+    for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line:
             continue
@@ -139,10 +181,15 @@ def parse_cookie_text(raw_text: str) -> list[dict[str, Any]]:
             raw_line = raw_line.replace(http_only_prefix, "", 1)
             line = line.replace(http_only_prefix, "", 1)
         fields = raw_line.split("\t")
-        if len(fields) >= 7 and fields[1].upper() in {"TRUE", "FALSE"}:
+        if (
+            len(fields) >= 7
+            and fields[1].upper() in {"TRUE", "FALSE"}
+            and fields[2].startswith("/")
+            and fields[3].upper() in {"TRUE", "FALSE"}
+        ):
             domain, _include_subdomains, path, secure, expires, name, value = fields[:7]
             if not domain or "." not in domain or not path.startswith("/") or not name:
-                raise ValueError("invalid Netscape cookie row")
+                continue
             cookies.append({
                 "name": name,
                 "value": value,
@@ -157,7 +204,7 @@ def parse_cookie_text(raw_text: str) -> list[dict[str, Any]]:
         if len(fields) >= 5 and "." in fields[2]:
             name, value, domain, path, expires = fields[:5]
             if not domain or not path.startswith("/") or not name:
-                raise ValueError("invalid Chrome cookie row")
+                continue
             flags = fields[5:]
             same_site = next((item for item in flags if item in {"Strict", "Lax", "None"}), "Lax")
             cookies.append({
@@ -171,7 +218,11 @@ def parse_cookie_text(raw_text: str) -> list[dict[str, Any]]:
                 "sameSite": same_site,
             })
             continue
-        raise ValueError("cookie text must be JSON, Netscape cookies.txt, or tab-separated Chrome cookie rows")
+        header_cookies = parse_cookie_header_line(line, default_domain)
+        if header_cookies:
+            cookies.extend(header_cookies)
+            continue
+        continue
     if not cookies:
         raise ValueError("no cookies found")
     return cookies
@@ -251,7 +302,7 @@ def save_session(config: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
     cookies_json = str(payload.get("cookies_json") or "").strip()
     cookie_count = 0
     if cookies_json:
-        storage_state = normalize_storage_state(cookies_json)
+        storage_state = normalize_storage_state(cookies_json, default_domain=PLATFORM_COOKIE_DOMAINS.get(platform, ""))
         state_path.write_text(json.dumps(storage_state, ensure_ascii=False, indent=2), encoding="utf-8")
         cookie_count = write_netscape_cookie_file(storage_state, cookie_path)
     elif state_path.exists():

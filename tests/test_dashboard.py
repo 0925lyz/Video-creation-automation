@@ -119,15 +119,51 @@ def test_session_manager_accepts_chrome_cookie_table_text(tmp_path: Path):
     assert cookie_file.read_text(encoding="utf-8").count(".youtube.com") == 2
 
 
-def test_session_manager_rejects_cookie_objects_without_domain(tmp_path: Path):
+def test_session_manager_fills_default_domain_for_cookie_objects(tmp_path: Path):
     config = dashboard_config(tmp_path)
-    broken_state = {"cookies": [{"name": "whole-table-pasted-here", "value": "demo"}], "origins": []}
-    with pytest.raises(ValueError, match="domain or url"):
-        save_session(
-            config,
-            {
-                "platform": "douyin",
-                "account": "broken",
-                "cookies_json": json.dumps(broken_state),
-            },
-        )
+    state = {"cookies": [{"name": "sessionid", "value": "demo"}], "origins": []}
+    saved = save_session(
+        config,
+        {
+            "platform": "douyin",
+            "account": "douyin_default_domain",
+            "cookies_json": json.dumps(state),
+        },
+    )
+    cookie_file = tmp_path / saved["cookie_file_path"]
+
+    assert saved["status"] == "READY"
+    assert ".douyin.com" in cookie_file.read_text(encoding="utf-8")
+
+
+def test_session_manager_accepts_escaped_tab_cookie_table(tmp_path: Path):
+    config = dashboard_config(tmp_path)
+    row = "sid_guard\\tdemo-value\\t.tiktok.com\\t/\\t2027-08-31T13:37:30.096Z\\t20\\t✓\\t✓\\tNone"
+    saved = save_session(
+        config,
+        {
+            "platform": "tiktok",
+            "account": "tiktok_escaped_tabs",
+            "cookies_json": row,
+        },
+    )
+
+    assert saved["status"] == "READY"
+    assert saved["cookie_count"] == 1
+
+
+def test_session_manager_accepts_cookie_header_text(tmp_path: Path):
+    config = dashboard_config(tmp_path)
+    saved = save_session(
+        config,
+        {
+            "platform": "xiaohongshu",
+            "account": "xhs_header",
+            "cookies_json": "a1=demo-a1; web_session=demo-session; path=/; secure",
+        },
+    )
+    cookie_file = tmp_path / saved["cookie_file_path"]
+
+    assert saved["status"] == "READY"
+    assert saved["cookie_count"] == 2
+    assert cookie_file.read_text(encoding="utf-8").count(".xiaohongshu.com") == 2

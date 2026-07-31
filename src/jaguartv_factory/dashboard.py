@@ -1453,7 +1453,13 @@ class DashboardApplication(ThreadingHTTPServer):
                 if not url:
                     raise ValueError("url is required")
                 self.update_task(task_id, progress=15, message="正在读取视频信息")
-                result = {"candidate_id": inspect_url(self.config, url)}
+                result = {
+                    "candidate_id": inspect_url(
+                        self.config,
+                        url,
+                        requested_platform=str(payload.get("platform") or ""),
+                    )
+                }
             elif action in {"download", "produce", "skip"}:
                 result = self.run_candidate_batch(
                     task_id, action, payload.get("candidate_ids") or [], payload.get("options") or {}

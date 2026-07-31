@@ -737,6 +737,15 @@ function setUploadProgress(percent, message) {
   document.querySelector("#assetUploadBar").style.width = `${Math.max(0, Math.min(100, percent))}%`;
 }
 
+function setDiscoverUploadProgress(percent, message) {
+  const panel = document.querySelector("#discoverUploadProgress");
+  if (!panel) return;
+  panel.hidden = false;
+  document.querySelector("#discoverUploadMessage").textContent = message;
+  document.querySelector("#discoverUploadPercent").textContent = `${percent}%`;
+  document.querySelector("#discoverUploadBar").style.width = `${Math.max(0, Math.min(100, percent))}%`;
+}
+
 document.querySelector("#assetUploadForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   const button = document.querySelector("#assetUploadButton");
@@ -777,7 +786,12 @@ document.querySelector("#assetUploadToken").addEventListener("change", async (ev
 document.querySelectorAll(".nav-item").forEach((button) => button.addEventListener("click", () => openView(button.dataset.view)));
 document.querySelectorAll("[data-open-view]").forEach((button) => button.addEventListener("click", () => openView(button.dataset.openView)));
 document.querySelector("#refreshButton").addEventListener("click", () => refreshAll(true));
-document.querySelector("#discoverButton").addEventListener("click", () => document.querySelector("#discoverDialog").showModal());
+document.querySelector("#discoverButton").addEventListener("click", () => {
+  document.querySelector("#discoverUploadToken").value = storedUploadToken();
+  document.querySelector("#discoverUploadProgress").hidden = true;
+  updateDiscoverMode();
+  document.querySelector("#discoverDialog").showModal();
+});
 document.querySelector("#closeDiscoverDialog").addEventListener("click", () => document.querySelector("#discoverDialog").close());
 document.querySelector("#cancelDiscoverDialog").addEventListener("click", () => document.querySelector("#discoverDialog").close());
 document.querySelector("#closeDownloadClaimDialog").addEventListener("click", () => document.querySelector("#downloadClaimDialog").close());
@@ -848,9 +862,16 @@ document.querySelector("#claimMetricsForm").addEventListener("submit", async (ev
 });
 
 function updateDiscoverMode() {
+  const mode = document.querySelector("#discoverMode").value;
   const platform = document.querySelector("#discoverPlatform").value;
-  document.querySelector("#discoverLimitField").hidden = platform === "xiaohongshu";
-  document.querySelector("#discoverUrl").required = platform === "xiaohongshu";
+  document.querySelector("#discoverPlatformField").hidden = mode === "upload";
+  document.querySelector("#discoverLimitField").hidden = mode !== "keyword";
+  document.querySelector("#discoverUrlField").hidden = mode !== "url";
+  document.querySelector("#discoverUploadFields").hidden = mode !== "upload";
+  document.querySelector("#discoverLimit").required = mode === "keyword";
+  document.querySelector("#discoverUrl").required = mode === "url";
+  document.querySelector("#discoverUploadToken").required = mode === "upload";
+  document.querySelector("#discoverUploadFile").required = mode === "upload";
   const notes = {
     youtube: "可按关键词发现或粘贴视频 URL；巴甲词已内置，遇到登录验证时保存 YouTube 登录态。",
     bilibili: "可按关键词发现或粘贴视频 URL；登录态可提高稳定性和画质。",
@@ -859,9 +880,16 @@ function updateDiscoverMode() {
     tiktok: "请优先粘贴具体视频 URL；巴甲相关内容需要服务器 TikTok 登录态。",
     facebook: "请粘贴具体视频或 Reels URL；服务器登录态必须有权访问该视频。",
   };
-  document.querySelector("#discoverPlatformNote").textContent = notes[platform];
+  const modeNotes = {
+    keyword: notes[platform],
+    url: "粘贴单条视频 URL 后会先进入待筛选；点击制作时系统会自动下载、切片、遮挡字幕、渲染双版本并上传审核包。",
+    upload: "上传自有或已授权源视频后会直接进入待制作；后续制作规则与爬取视频完全一致。",
+  };
+  document.querySelector("#discoverPlatformNote").textContent = modeNotes[mode] || notes[platform];
+  document.querySelector("#submitDiscovery").textContent = mode === "upload" ? "上传并入库" : "开始运行";
 }
 
+document.querySelector("#discoverMode").addEventListener("change", updateDiscoverMode);
 document.querySelector("#discoverPlatform").addEventListener("change", updateDiscoverMode);
 updateDiscoverMode();
 
@@ -898,17 +926,35 @@ document.querySelector("#productionForm").addEventListener("submit", async (even
 
 document.querySelector("#discoverForm").addEventListener("submit", async (event) => {
   event.preventDefault();
-  document.querySelector("#discoverDialog").close();
+  const button = document.querySelector("#submitDiscovery");
+  button.disabled = true;
   try {
+    const mode = document.querySelector("#discoverMode").value;
     const platform = document.querySelector("#discoverPlatform").value;
+    if (mode === "upload") {
+      const file = document.querySelector("#discoverUploadFile").files[0];
+      const token = document.querySelector("#discoverUploadToken").value;
+      if (!file) throw new Error("请选择要上传的源视频");
+      const uploaded = await uploadServerFile(file, "source", token, setDiscoverUploadProgress);
+      document.querySelector("#assetUploadToken").value = rememberUploadToken(token);
+      document.querySelector("#productionUploadToken").value = storedUploadToken();
+      document.querySelector("#discoverUploadFile").value = "";
+      document.querySelector("#discoverDialog").close();
+      toast(`源视频已入库：${uploaded.candidate_id}，可在待制作中生成成片`);
+      state.status = "DOWNLOADED";
+      await refreshAll();
+      return;
+    }
+    document.querySelector("#discoverDialog").close();
     const url = document.querySelector("#discoverUrl").value.trim();
-    const payload = url
-      ? { action: "ingest", url }
+    const payload = mode === "url"
+      ? { action: "ingest", platform, url }
       : { action: "discover", platform, limit: Number(document.querySelector("#discoverLimit").value) };
     const result = await api("/api/actions", { method: "POST", body: JSON.stringify(payload) });
-    toast(`发现任务 ${result.task_id} 已启动`);
+    toast(`${mode === "url" ? "URL 导入" : "发现"}任务 ${result.task_id} 已启动`);
     pollTask(result.task_id);
   } catch (error) { toast(error.message, "error"); }
+  finally { button.disabled = false; }
 });
 
 document.querySelector("#scheduleForm").addEventListener("submit", async (event) => {

@@ -496,7 +496,7 @@ def list_candidates(config: dict[str, Any], status: str | None = None, limit: in
     ).fetchall()
 
 
-def inspect_url(config: dict[str, Any], url: str) -> str:
+def inspect_url(config: dict[str, Any], url: str, requested_platform: str | None = None) -> str:
     if "xiaohongshu.com" in url or "xhslink.com" in url:
         return inspect_xhs_url(config, url)
     yt_dlp = require_binary("yt-dlp")
@@ -508,6 +508,9 @@ def inspect_url(config: dict[str, Any], url: str) -> str:
         raise RuntimeError(result.stderr.strip() or "Unable to inspect URL")
     info = json.loads(result.stdout)
     platform = infer_platform(info)
+    requested_platform = str(requested_platform or "").strip().lower()
+    if requested_platform and platform == "unknown":
+        platform = requested_platform
     source_id = str(info.get("id") or "") or None
     cid = candidate_id(platform, source_id, url)
     title = str(info.get("title") or "")
@@ -524,6 +527,8 @@ def inspect_url(config: dict[str, Any], url: str) -> str:
             int(info.get("view_count") or 0), language, score, "DISCOVERED",
             json.dumps({
                 **info,
+                "requested_platform": requested_platform,
+                "detected_platform": platform,
                 "duration_gate": {
                     "max_source_duration_sec": source_duration_limit(config),
                     "too_long": candidate_too_long(config, info.get("duration")),
@@ -1671,6 +1676,7 @@ SOURCE_FILENAME_LABELS = {
     "bilibili": "B站",
     "youtube": "YouTube",
     "facebook": "Facebook",
+    "server_upload": "自传视频",
 }
 
 
