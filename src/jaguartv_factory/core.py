@@ -79,8 +79,8 @@ def platform_from_url(url: str) -> str:
     return ""
 
 
-def yt_dlp_extra_args(config: dict[str, Any], url: str = "") -> list[str]:
-    platform = platform_from_url(url)
+def yt_dlp_extra_args(config: dict[str, Any], url: str = "", platform_hint: str = "") -> list[str]:
+    platform = platform_from_url(url) or str(platform_hint or "").strip().lower()
     if not platform:
         return []
     try:
@@ -504,9 +504,10 @@ def inspect_url(config: dict[str, Any], url: str, requested_platform: str | None
     if "xiaohongshu.com" in url or "xhslink.com" in url:
         return inspect_xhs_url(config, url)
     yt_dlp = require_binary("yt-dlp")
+    platform_hint = str(requested_platform or "").strip().lower()
     result = run_command([
         yt_dlp, "--force-ipv4", "--dump-single-json", "--skip-download",
-        "--no-warnings", *yt_dlp_extra_args(config, url), url,
+        "--no-warnings", *yt_dlp_extra_args(config, url, platform_hint), url,
     ], check=False)
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "Unable to inspect URL")

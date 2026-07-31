@@ -187,6 +187,18 @@ function filteredCandidates() {
       return (!state.status || item.status === state.status) && (!query || haystack.includes(query));
     })
     .sort((a, b) => {
+      const aPart = Number(a.part_number || (a.output_assets || [])[0]?.part_number || 0);
+      const bPart = Number(b.part_number || (b.output_assets || [])[0]?.part_number || 0);
+      const aParent = aPart ? String(a.id || "").replace(/_part\d+$/, "") : "";
+      const bParent = bPart ? String(b.id || "").replace(/_part\d+$/, "") : "";
+      if (aParent || bParent) {
+        const slicedDelta = (aParent ? 0 : 1) - (bParent ? 0 : 1);
+        if (slicedDelta) return slicedDelta;
+        const parentDelta = aParent.localeCompare(bParent, "zh-CN");
+        if (parentDelta) return parentDelta;
+        const partDelta = aPart - bPart;
+        if (partDelta) return partDelta;
+      }
       const aVariant = a.variant_group || (a.output_assets || [])[0]?.variant || "";
       const bVariant = b.variant_group || (b.output_assets || [])[0]?.variant || "";
       const variantOrder = (value) => value === "FB版" ? 0 : value === "通用版" ? 1 : 2;
@@ -897,24 +909,21 @@ function updateDiscoverMode() {
   const mode = document.querySelector("#discoverMode").value;
   const platform = document.querySelector("#discoverPlatform").value;
   document.querySelector("#discoverPlatformField").hidden = mode === "upload";
-  document.querySelector("#discoverLimitField").hidden = mode !== "keyword";
   document.querySelector("#discoverUrlField").hidden = mode !== "url";
   document.querySelector("#discoverUploadFields").hidden = mode !== "upload";
-  document.querySelector("#discoverLimit").required = mode === "keyword";
   document.querySelector("#discoverUrl").required = mode === "url";
   document.querySelector("#discoverUploadToken").required = mode === "upload";
   document.querySelector("#discoverUploadFile").required = mode === "upload";
   const notes = {
-    youtube: "可按关键词发现或粘贴视频 URL；巴甲词已内置，遇到登录验证时保存 YouTube 登录态。",
-    bilibili: "可按关键词发现或粘贴视频 URL；登录态可提高稳定性和画质。",
-    douyin: "可按关键词发现或粘贴作品 URL；服务器采集服务和登录态必须可用。",
+    youtube: "粘贴 YouTube 视频 URL；系统会优先使用服务器保存的 YouTube 登录态解析。",
+    bilibili: "粘贴 Bilibili 视频 URL；登录态可提高稳定性和画质。",
+    douyin: "粘贴抖音作品 URL；服务器采集服务和登录态必须可用。",
     xiaohongshu: "小红书当前通过作品 URL 导入，需要先启动本机 5556 端口的 XHS 服务。",
-    tiktok: "请优先粘贴具体视频 URL；巴甲相关内容需要服务器 TikTok 登录态。",
+    tiktok: "粘贴 TikTok 具体视频 URL；服务器 TikTok 登录态会用于解析和下载。",
     facebook: "请粘贴具体视频或 Reels URL；服务器登录态必须有权访问该视频。",
   };
   const modeNotes = {
-    keyword: notes[platform],
-    url: "粘贴单条视频 URL 后会先进入待筛选；点击制作时系统会自动下载、切片、遮挡字幕、渲染双版本并上传审核包。",
+    url: "粘贴单条视频 URL 后会进入待筛选；超过 30 分钟的素材只允许删除，点击制作会自动下载、切片、渲染双版本并上传审核包。",
     upload: "上传自有或已授权源视频后会直接进入待制作；后续制作规则与爬取视频完全一致。",
   };
   document.querySelector("#discoverPlatformNote").textContent = modeNotes[mode] || notes[platform];
@@ -979,11 +988,9 @@ document.querySelector("#discoverForm").addEventListener("submit", async (event)
     }
     document.querySelector("#discoverDialog").close();
     const url = document.querySelector("#discoverUrl").value.trim();
-    const payload = mode === "url"
-      ? { action: "ingest", platform, url }
-      : { action: "discover", platform, limit: Number(document.querySelector("#discoverLimit").value) };
+    const payload = { action: "ingest", platform, url };
     const result = await api("/api/actions", { method: "POST", body: JSON.stringify(payload) });
-    toast(`${mode === "url" ? "URL 导入" : "发现"}任务 ${result.task_id} 已启动`);
+    toast(`URL 导入任务 ${result.task_id} 已启动`);
     pollTask(result.task_id);
   } catch (error) { toast(error.message, "error"); }
   finally { button.disabled = false; }

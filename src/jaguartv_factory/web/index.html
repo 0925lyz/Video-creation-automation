@@ -266,17 +266,16 @@
 
   <dialog id="discoverDialog">
     <form method="dialog" id="discoverForm">
-      <div class="dialog-heading"><div><p class="eyebrow">DISCOVERY JOB</p><h2>启动素材发现</h2></div><button class="icon-button" id="closeDiscoverDialog" type="button" title="关闭" aria-label="关闭">×</button></div>
-      <label>导入方式<select id="discoverMode"><option value="keyword">按关键词发现</option><option value="url">粘贴视频 URL</option><option value="upload">上传本地源视频</option></select></label>
+      <div class="dialog-heading"><div><p class="eyebrow">SOURCE IMPORT</p><h2>导入素材</h2></div><button class="icon-button" id="closeDiscoverDialog" type="button" title="关闭" aria-label="关闭">×</button></div>
+      <label>导入方式<select id="discoverMode"><option value="url" selected>粘贴视频 URL</option><option value="upload">上传本地源视频</option></select></label>
       <label id="discoverPlatformField">来源平台<select id="discoverPlatform"><option value="youtube">YouTube</option><option value="bilibili">Bilibili</option><option value="douyin">抖音</option><option value="xiaohongshu">小红书</option><option value="tiktok">TikTok</option><option value="facebook">Facebook</option></select></label>
-      <label id="discoverLimitField">每个关键词数量<input id="discoverLimit" type="number" min="1" max="20" value="3"></label>
       <label id="discoverUrlField">具体视频 URL（填写后直接导入并可下载）<input id="discoverUrl" type="url" placeholder="https://..."></label>
       <div id="discoverUploadFields" hidden>
         <label>服务器管理令牌<input id="discoverUploadToken" type="password" autocomplete="off" placeholder="JAGUARTV_UPLOAD_TOKEN"></label>
         <label>上传源视频<input id="discoverUploadFile" type="file" accept="video/mp4,video/quicktime,video/webm,.mkv,.m4v"></label>
         <div class="upload-progress compact-progress" id="discoverUploadProgress" hidden><div><span id="discoverUploadMessage">准备上传</span><strong id="discoverUploadPercent">0%</strong></div><div class="progress-track"><span id="discoverUploadBar" style="width:0%"></span></div></div>
       </div>
-      <p class="dialog-note" id="discoverPlatformNote">YouTube 可直接使用；Bilibili 建议配置 cookies。</p>
+      <p class="dialog-note" id="discoverPlatformNote">粘贴单条视频 URL 后会进入待筛选；超过 30 分钟的素材只允许删除，不会进入下载制作。</p>
       <div class="dialog-actions"><button class="secondary-button" id="cancelDiscoverDialog" type="button">取消</button><button class="primary-button" id="submitDiscovery" type="submit">开始运行</button></div>
     </form>
   </dialog>
@@ -310,6 +309,6 @@
   </dialog>
 
   <div class="toast" id="toast" role="status"></div>
-  <script src="/app.js?v=20260731-review-assets"></script>
+  <script src="/app.js?v=20260731-url-import"></script>
 </body>
 </html>
