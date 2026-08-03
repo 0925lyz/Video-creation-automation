@@ -693,7 +693,12 @@ def inspect_xhs_url(config: dict[str, Any], url: str) -> str:
     from .sources import get_adapter
 
     adapter = get_adapter("xiaohongshu", config)
-    payload = adapter._post("/xhs/detail", {"url": url, "download": False})
+    try:
+        payload = adapter._post("/xhs/detail", {"url": url, "download": False})
+    except Exception:
+        from .browser_scraper import resolve_xiaohongshu_video
+
+        payload = {"data": resolve_xiaohongshu_video(config, url)}
     data = payload.get("data") or {}
     title = str(data.get("作品标题") or data.get("title") or "")
     description = str(data.get("作品描述") or data.get("desc") or "")
@@ -971,9 +976,21 @@ def should_ocr_blur_source_subtitles(
 ) -> bool:
     if str(cleanup_mode).strip().lower() != "ocr_blur":
         return False
-    return (
+    if (
         str(localization_profile.get("subtitle_mode") or "") == "ptbr_subtitles"
         and bool(localization_profile.get("chinese_on_screen", localization_profile.get("chinese_subtitles")))
+    ):
+        return True
+    chinese_platforms = {"bilibili", "douyin", "xiaohongshu"}
+    text_has_chinese = bool(re.search(r"[\u4e00-\u9fff]", title_text))
+    profile_has_chinese = bool(localization_profile.get("title_has_chinese"))
+    language_is_chinese = str(detected_language or localization_profile.get("detected_language") or "").lower().startswith("zh")
+    inferred_chinese_audio = int(localization_profile.get("class") or 0) == 3
+    return (
+        text_has_chinese
+        or profile_has_chinese
+        or language_is_chinese
+        or (platform.strip().lower() in chinese_platforms and inferred_chinese_audio)
     )
 
 
@@ -1038,6 +1055,21 @@ def build_ptbr_script(source: str, *, hook: str = DEFAULT_HOOK) -> str:
     clean_source = re.sub(r"https?://\S+", "", source)
     clean_source = re.sub(r"欢迎.{0,8}(订阅|关注).*$", "", clean_source).strip()
     translated = translate_to_ptbr(clean_source)
+    if re.search(r"[\u4e00-\u9fff]", translated):
+        candidates = [
+            part.strip()
+            for part in re.split(r"[\n\r#│|｜]+", clean_source)
+            if len(part.strip()) >= 8 and not re.search(r"(訂閱|订阅|追蹤|关注|粉絲團|频道|頻道|http)", part)
+        ]
+        for candidate in candidates[:4]:
+            translated = translate_to_ptbr(candidate)
+            if not re.search(r"[\u4e00-\u9fff]", translated):
+                break
+    if re.search(r"[\u4e00-\u9fff]", translated):
+        translated = (
+            "Uma história forte do futebol brasileiro ganhou atenção hoje. "
+            "O momento envolve uma grande figura do esporte e merece ser acompanhado até o final."
+        )
     words = translated.split()
     body = " ".join(words[:105])
     closing = "Gostou? Descubra mais conteúdos no JaguarTV Hoje."
@@ -2399,7 +2431,20 @@ def produce_candidate(
                 else None
             )
             if fallback_regions is None:
-                fallback_regions = []
+                chinese_hard_subtitle_hint = (
+                    bool(localization_profile.get("title_has_chinese"))
+                    or str(localization_profile.get("detected_language") or "").lower().startswith("zh")
+                )
+                if (
+                    chinese_hard_subtitle_hint
+                    and bool(config.get("edit", {}).get("ocr_auto_lower_third_fallback", True))
+                ):
+                    fallback_regions = config.get("edit", {}).get(
+                        "ocr_lower_third_fallback_regions",
+                        [[0.0, 0.68, 1.0, 0.96]],
+                    )
+                else:
+                    fallback_regions = []
             ocr_cleanup = prepare_ocr_blurred_segment(
                 media,
                 preprocessed,

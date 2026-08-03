@@ -48,8 +48,10 @@ def http_json(url: str, timeout: int = 30) -> Any:
         return json.loads(response.read().decode("utf-8"))
 
 
-def http_download(url: str, destination: Path, timeout: int = 300) -> None:
-    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+def http_download(url: str, destination: Path, timeout: int = 300, headers: dict[str, str] | None = None) -> None:
+    request_headers = {"User-Agent": "Mozilla/5.0"}
+    request_headers.update(headers or {})
+    request = urllib.request.Request(url, headers=request_headers)
     destination.parent.mkdir(parents=True, exist_ok=True)
     with urllib.request.urlopen(request, timeout=timeout) as response, destination.open("wb") as handle:
         shutil.copyfileobj(response, handle)
@@ -65,6 +67,12 @@ class YtDlpAdapter:
     def __init__(self, platform: str, options: dict[str, Any] | None = None):
         self.platform = platform
         self.options = options or {}
+
+    def _scrape_config(self) -> dict[str, Any]:
+        return {
+            "_root": str(self.options.get("_root") or ""),
+            "run": {"workspace": str(self.options.get("_workspace") or "workspace")},
+        }
 
     def _cookie_args(self) -> list[str]:
         cookies = str(self.options.get("cookies_file") or "").strip()
@@ -149,9 +157,26 @@ class YtDlpAdapter:
         except subprocess.TimeoutExpired as error:
             raise SourceError(f"{self.platform} search timed out after {error.timeout}s") from error
         if result.returncode != 0:
+            if self.platform == "tiktok":
+                try:
+                    from .browser_scraper import search_tiktok
+
+                    return search_tiktok(self._scrape_config(), term, limit)
+                except Exception as browser_error:
+                    raise SourceError(
+                        f"{result.stderr.strip()[-500:]}; browser fallback failed: {browser_error}"
+                    ) from browser_error
             raise SourceError(result.stderr.strip()[-500:] or f"{self.platform} search failed")
         payload = json.loads(result.stdout)
-        return [entry for entry in payload.get("entries", []) if entry]
+        entries = [entry for entry in payload.get("entries", []) if entry]
+        if not entries and self.platform == "tiktok":
+            try:
+                from .browser_scraper import search_tiktok
+
+                return search_tiktok(self._scrape_config(), term, limit)
+            except Exception as browser_error:
+                raise SourceError(f"tiktok search returned no entries; browser fallback failed: {browser_error}") from browser_error
+        return entries
 
     def download(self, url: str, output_template: str) -> None:
         args = [
@@ -176,14 +201,28 @@ class DouyinApiAdapter:
     def __init__(self, platform: str, options: dict[str, Any] | None = None):
         self.platform = platform
         options = options or {}
+        self.options = options
         self.api_base = str(options.get("api_base") or "http://127.0.0.1:8000").rstrip("/")
+
+    def _scrape_config(self) -> dict[str, Any]:
+        return {
+            "_root": str(self.options.get("_root") or ""),
+            "run": {"workspace": str(self.options.get("_workspace") or "workspace")},
+        }
 
     def search(self, term: str, limit: int) -> list[dict[str, Any]]:
         query = urllib.parse.urlencode({"keyword": term, "count": limit, "offset": 0})
         try:
             payload = http_json(f"{self.api_base}/api/douyin/web/fetch_general_search_result?{query}")
         except Exception as error:
-            raise SourceError(f"douyin search service unreachable: {error}") from error
+            try:
+                from .browser_scraper import search_douyin
+
+                return search_douyin(self._scrape_config(), term, limit)
+            except Exception as browser_error:
+                raise SourceError(
+                    f"douyin search service unreachable: {error}; browser fallback failed: {browser_error}"
+                ) from browser_error
         entries = []
         data = payload.get("data") or {}
         for item in (data.get("data") or [])[:limit]:
@@ -213,7 +252,13 @@ class DouyinApiAdapter:
         try:
             payload = http_json(f"{self.api_base}/api/hybrid/video_data?{query}")
         except Exception as error:
-            raise SourceError(f"douyin resolve service unreachable: {error}") from error
+            try:
+                YtDlpAdapter("douyin", self.options).download(url, output_template)
+                return
+            except Exception as fallback_error:
+                raise SourceError(
+                    f"douyin resolve service unreachable: {error}; yt-dlp fallback failed: {fallback_error}"
+                ) from fallback_error
         data = payload.get("data") or {}
         candidates = (
             [(data.get("video_data") or {}).get("nwm_video_url_HQ")]
@@ -236,7 +281,14 @@ class XhsApiAdapter:
     def __init__(self, platform: str, options: dict[str, Any] | None = None):
         self.platform = platform
         options = options or {}
+        self.options = options
         self.api_base = str(options.get("api_base") or "http://127.0.0.1:5556").rstrip("/")
+
+    def _scrape_config(self) -> dict[str, Any]:
+        return {
+            "_root": str(self.options.get("_root") or ""),
+            "run": {"workspace": str(self.options.get("_workspace") or "workspace")},
+        }
 
     def _post(self, path: str, body: dict[str, Any]) -> Any:
         request = urllib.request.Request(
@@ -249,16 +301,19 @@ class XhsApiAdapter:
             return json.loads(response.read().decode("utf-8"))
 
     def search(self, term: str, limit: int) -> list[dict[str, Any]]:
-        raise SourceError(
-            "xiaohongshu keyword search is not exposed by XHS-Downloader; "
-            "use `jaguartv ingest <note-url>` for XHS notes instead"
-        )
+        try:
+            from .browser_scraper import search_xiaohongshu
+
+            return search_xiaohongshu(self._scrape_config(), term, limit)
+        except Exception as error:
+            raise SourceError(f"xiaohongshu browser search failed: {error}") from error
 
     def download(self, url: str, output_template: str) -> None:
+        payload: Any = {}
         try:
             payload = self._post("/xhs/detail", {"url": url, "download": False})
-        except Exception as error:
-            raise SourceError(f"xhs service unreachable: {error}") from error
+        except Exception:
+            payload = {}
         data = payload.get("data") or {}
         video_url = ""
         downloads = data.get("下载地址") or data.get("download_url") or []
@@ -267,9 +322,19 @@ class XhsApiAdapter:
         elif isinstance(downloads, str):
             video_url = downloads
         if not video_url:
+            try:
+                from .browser_scraper import resolve_xiaohongshu_video
+
+                data = {**data, **resolve_xiaohongshu_video(self._scrape_config(), url)}
+                video_url = str(data.get("video_url") or "")
+            except Exception as error:
+                raise SourceError(
+                    f"xhs service returned no downloadable URL; browser fallback failed: {error}"
+                ) from error
+        if not video_url:
             raise SourceError("xhs service returned no downloadable URL (note may be image-only)")
         destination = Path(output_template.replace("%(ext)s", "mp4"))
-        http_download(video_url, destination)
+        http_download(video_url, destination, headers={"Referer": "https://www.xiaohongshu.com/"})
         destination.with_suffix(".info.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
 
@@ -282,7 +347,7 @@ ADAPTERS = {
     "xiaohongshu": XhsApiAdapter,
 }
 
-SEARCHABLE_PLATFORMS = ("youtube", "bilibili", "douyin", "tiktok", "facebook")
+SEARCHABLE_PLATFORMS = ("youtube", "bilibili", "douyin", "xiaohongshu", "tiktok", "facebook")
 
 
 def get_adapter(platform: str, config: dict[str, Any]) -> Any:

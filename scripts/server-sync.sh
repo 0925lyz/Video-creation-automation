@@ -40,6 +40,7 @@ if ! command -v deno >/dev/null 2>&1 || ! deno --version 2>/dev/null | head -n 1
 fi
 
 echo "==> Restarting service"
+bash "$APP_DIR/scripts/install-source-services.sh"
 sudo systemctl restart "$SERVICE_NAME"
 sudo systemctl status "$SERVICE_NAME" --no-pager
 

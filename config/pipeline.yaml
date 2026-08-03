@@ -65,6 +65,10 @@ edit:
   source_subtitle_cleanup: "ocr_blur"  # localized clips only; protected corners are excluded
   source_subtitle_crop_bottom_ratio: 0.18
   ocr_use_fallback_regions: false
+  ocr_auto_lower_third_fallback: true
+  ocr_lower_third_fallback_regions:
+    - [0.04, 0.04, 0.42, 0.20]
+    - [0.0, 0.68, 1.0, 0.96]
   ocr_blur_sigma: 28
   default_segment_strategy: auto
 

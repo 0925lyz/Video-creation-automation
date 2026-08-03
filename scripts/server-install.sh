@@ -147,6 +147,9 @@ sudo systemctl daemon-reload
 sudo systemctl enable "$SERVICE_NAME"
 sudo systemctl restart "$SERVICE_NAME"
 
+echo "==> Installing source helper services"
+bash scripts/install-source-services.sh
+
 echo "==> Running doctor"
 .venv/bin/jaguartv doctor
 

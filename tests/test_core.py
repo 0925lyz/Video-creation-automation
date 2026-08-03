@@ -47,6 +47,7 @@ def test_demo_config_loads():
     assert config["edit"]["render_engine"] == "remotion"
     assert config["edit"]["layout_mode"] == "original"
     assert config["edit"]["source_subtitle_cleanup"] == "ocr_blur"
+    assert config["edit"]["ocr_auto_lower_third_fallback"] is True
     assert config["edit"]["short_video_threshold_sec"] == 75
     assert config["selection"]["max_source_duration_sec"] == 1800
     assert config["brand"]["kits"]["jaguartv"]["endcard"]["mode"] == "orientation_image"
@@ -140,7 +141,14 @@ def test_ocr_blur_runs_for_chinese_platform_even_without_external_subtitles():
         detected_language="zh",
         title_text="巴西足球中文字幕",
         localization_profile={"subtitle_mode": "none", "class": 3},
-    ) is False
+    ) is True
+    assert should_ocr_blur_source_subtitles(
+        "ocr_blur",
+        platform="youtube",
+        detected_language="unknown",
+        title_text="阿根廷巴西球迷場上大鬥毆",
+        localization_profile={"subtitle_mode": "none", "title_has_chinese": True},
+    ) is True
     assert should_ocr_blur_source_subtitles(
         "ocr_blur",
         platform="youtube",

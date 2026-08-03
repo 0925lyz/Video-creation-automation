@@ -88,7 +88,7 @@ def classify_chinese_audio(media: Path, *, model_name: str = "base", threshold: 
 def _sample_frames(media: Path, destination: Path, count: int = 8, fps: float = 2.0) -> list[Path]:
     destination.mkdir(parents=True, exist_ok=True)
     result = _run([
-        "ffmpeg", "-y", "-i", str(media), "-vf", f"fps={fps:g},scale=-2:720", "-frames:v", str(count),
+        "ffmpeg", "-y", "-i", str(media), "-vf", f"fps={fps:g},scale=-2:1080", "-frames:v", str(count),
         str(destination / "frame-%03d.png"),
     ])
     if result.returncode != 0:
@@ -135,6 +135,12 @@ def _subtitle_band_regions(regions: Sequence[Sequence[float]]) -> list[list[floa
             min(1.0, x1 + 0.015),
             min(1.0, y1 + 0.008),
         ])
+    lower_ticker_regions = [region for region in regions if (region[1] + region[3]) / 2 >= 0.84]
+    if len(lower_ticker_regions) >= 2:
+        span_left = min(region[0] for region in lower_ticker_regions)
+        span_right = max(region[2] for region in lower_ticker_regions)
+        if span_right - span_left >= 0.20:
+            bands.append([0.18, 0.70, 0.98, 0.97])
     return sorted(bands, key=lambda item: (item[1], item[0]))[:3]
 
 

@@ -105,12 +105,31 @@ def test_source_adapters_resolve_and_fail_cleanly():
     with pytest.raises(SourceError):
         adapter.search("足球", 3)
     with pytest.raises(SourceError):
-        XhsApiAdapter("xiaohongshu", {}).search("足球", 3)
-    with pytest.raises(SourceError):
         get_adapter("facebook", config).search("football", 1)
     assert get_adapter("tiktok", config).platform == "tiktok"
     with pytest.raises(SourceError):
         get_adapter("unknown-platform", config)
+
+
+def test_xhs_adapter_uses_browser_search(monkeypatch):
+    monkeypatch.setattr(
+        "jaguartv_factory.browser_scraper.search_xiaohongshu",
+        lambda config, term, limit: [{"id": "note1", "webpage_url": "https://www.xiaohongshu.com/explore/note1"}],
+    )
+    adapter = XhsApiAdapter("xiaohongshu", {"_root": "/tmp/app", "_workspace": "workspace"})
+    assert adapter.search("弗拉门戈", 1)[0]["id"] == "note1"
+
+
+def test_douyin_adapter_falls_back_to_browser_search(monkeypatch):
+    monkeypatch.setattr(
+        "jaguartv_factory.browser_scraper.search_douyin",
+        lambda config, term, limit: [{"id": "123", "webpage_url": "https://www.douyin.com/video/123"}],
+    )
+    adapter = get_adapter(
+        "douyin",
+        {"_root": "/tmp/app", "run": {"workspace": "workspace"}, "sources": {"adapters": {"douyin": {"api_base": "http://127.0.0.1:1"}}}},
+    )
+    assert adapter.search("巴甲", 1)[0]["id"] == "123"
 
 
 def test_yt_dlp_adapter_supports_browser_cookie_env(monkeypatch):
