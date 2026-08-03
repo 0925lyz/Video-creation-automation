@@ -151,12 +151,15 @@ def detect_chinese_text_regions(
         for frame in _sample_frames(media, Path(temporary), sample_count, fps=sample_fps):
             with Image.open(frame) as image:
                 width, height = image.size
+            output_base = frame.with_suffix("")
             result = _run([
-                "tesseract", str(frame), "stdout", "-l", "chi_sim+chi_tra+eng", "--psm", "11", "--oem", "1", "tsv",
+                "tesseract", str(frame), str(output_base), "-l", "chi_sim+chi_tra+eng",
+                "--psm", "11", "--oem", "1", "tsv",
             ])
-            if result.returncode != 0:
+            tsv_path = output_base.with_suffix(".tsv")
+            if result.returncode != 0 or not tsv_path.is_file():
                 continue
-            for line in result.stdout.splitlines()[1:]:
+            for line in tsv_path.read_text(encoding="utf-8", errors="replace").splitlines()[1:]:
                 columns = line.split("\t", 11)
                 if len(columns) != 12:
                     continue
