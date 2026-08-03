@@ -129,10 +129,17 @@ def test_ocr_blur_runs_for_chinese_platform_even_without_external_subtitles():
     ) is True
     assert should_ocr_blur_source_subtitles(
         "ocr_blur",
+        platform="douyin",
+        detected_language="unknown",
+        title_text="巴西足球",
+        localization_profile={"subtitle_mode": "ptbr_subtitles", "chinese_on_screen": True},
+    ) is True
+    assert should_ocr_blur_source_subtitles(
+        "ocr_blur",
         platform="bilibili",
         detected_language="zh",
         title_text="巴西足球中文字幕",
-        localization_profile={"subtitle_mode": "none"},
+        localization_profile={"subtitle_mode": "none", "class": 3},
     ) is False
     assert should_ocr_blur_source_subtitles(
         "ocr_blur",

@@ -54,6 +54,19 @@ def _probe_dimensions(media: Path) -> tuple[int, int]:
     return int(stream["width"]), int(stream["height"])
 
 
+def _probe_duration(media: Path) -> float:
+    result = _run([
+        "ffprobe", "-v", "error", "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1", str(media),
+    ])
+    if result.returncode != 0:
+        return 0.0
+    try:
+        return max(0.0, float(result.stdout.strip() or 0.0))
+    except ValueError:
+        return 0.0
+
+
 def classify_chinese_audio(media: Path, *, model_name: str = "base", threshold: int = 3) -> dict[str, Any]:
     try:
         from faster_whisper import WhisperModel
@@ -72,10 +85,10 @@ def classify_chinese_audio(media: Path, *, model_name: str = "base", threshold: 
     }
 
 
-def _sample_frames(media: Path, destination: Path, count: int = 8) -> list[Path]:
+def _sample_frames(media: Path, destination: Path, count: int = 8, fps: float = 2.0) -> list[Path]:
     destination.mkdir(parents=True, exist_ok=True)
     result = _run([
-        "ffmpeg", "-y", "-i", str(media), "-vf", f"fps=1/4,scale=-2:720", "-frames:v", str(count),
+        "ffmpeg", "-y", "-i", str(media), "-vf", f"fps={fps:g},scale=-2:720", "-frames:v", str(count),
         str(destination / "frame-%03d.png"),
     ])
     if result.returncode != 0:
@@ -126,13 +139,16 @@ def _subtitle_band_regions(regions: Sequence[Sequence[float]]) -> list[list[floa
 
 
 def detect_chinese_text_regions(
-    media: Path, *, confidence: float = 25.0, sample_count: int = 8
+    media: Path, *, confidence: float = 40.0, sample_count: int | None = None, sample_fps: float = 2.0
 ) -> list[list[float]]:
     if not shutil.which("tesseract"):
         raise RuntimeError("tesseract is not installed")
+    if sample_count is None:
+        duration = _probe_duration(media)
+        sample_count = max(8, min(120, int(max(duration, 4.0) * sample_fps)))
     regions: list[tuple[float, float, float, float]] = []
     with tempfile.TemporaryDirectory(prefix="jaguartv-ocr-") as temporary:
-        for frame in _sample_frames(media, Path(temporary), sample_count):
+        for frame in _sample_frames(media, Path(temporary), sample_count, fps=sample_fps):
             with Image.open(frame) as image:
                 width, height = image.size
             result = _run([

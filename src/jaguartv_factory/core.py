@@ -29,7 +29,12 @@ from .reaction import compose_reaction, reaction_spec
 from .scoring import score_candidate_v2
 from .server_store import archive_review_package, storage_root
 from .strategy import render_audio_mode, resolve_production_strategy
-from .workbuddy_adapter import demucs_backing_track, edge_tts_ptbr, prepare_ocr_blurred_segment
+from .workbuddy_adapter import (
+    demucs_backing_track,
+    detect_chinese_text_regions,
+    edge_tts_ptbr,
+    prepare_ocr_blurred_segment,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -500,7 +505,67 @@ def list_candidates(config: dict[str, Any], status: str | None = None, limit: in
     ).fetchall()
 
 
-def inspect_url(config: dict[str, Any], url: str, requested_platform: str | None = None) -> str:
+def register_url_stub_candidate(
+    config: dict[str, Any],
+    url: str,
+    *,
+    requested_platform: str | None = None,
+    inspect_error: str = "",
+) -> str:
+    platform = platform_from_url(url) or str(requested_platform or "").strip().lower() or "unknown"
+    cid = candidate_id(platform, None, url)
+    parsed = urllib.parse.urlparse(url)
+    title = f"{platform} URL import".strip()
+    timestamp = now_iso()
+    metadata = {
+        "webpage_url": url,
+        "requested_platform": str(requested_platform or "").strip().lower(),
+        "detected_platform": platform,
+        "ingest_mode": "url_stub_after_inspect_failure",
+        "inspect_error": inspect_error[-2000:],
+        "duration_gate": {
+            "max_source_duration_sec": source_duration_limit(config),
+            "too_long": False,
+            "duration_unknown": True,
+        },
+        "score_breakdown": {"total": 50, "source": "manual_url_stub"},
+    }
+    connection = connect_db(config)
+    existing = connection.execute("SELECT created_at FROM candidates WHERE id=?", (cid,)).fetchone()
+    created_at = existing["created_at"] if existing else timestamp
+    connection.execute(
+        """INSERT OR REPLACE INTO candidates
+        (id,platform,source_id,url,title,description,duration,view_count,detected_language,score,status,metadata_json,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            cid,
+            platform,
+            None,
+            url,
+            title,
+            f"Manual URL import from {parsed.netloc or platform}; metadata probe failed.",
+            None,
+            0,
+            "",
+            50,
+            "DISCOVERED",
+            json.dumps(metadata, ensure_ascii=False),
+            created_at,
+            timestamp,
+        ),
+    )
+    append_event(connection, cid, "URL_STUB_INGESTED", {"url": url, "inspect_error": inspect_error[-2000:]})
+    connection.commit()
+    return cid
+
+
+def inspect_url(
+    config: dict[str, Any],
+    url: str,
+    requested_platform: str | None = None,
+    *,
+    allow_stub: bool = False,
+) -> str:
     if "xiaohongshu.com" in url or "xhslink.com" in url:
         return inspect_xhs_url(config, url)
     yt_dlp = require_binary("yt-dlp")
@@ -510,6 +575,13 @@ def inspect_url(config: dict[str, Any], url: str, requested_platform: str | None
         "--no-warnings", *yt_dlp_extra_args(config, url, platform_hint), url,
     ], check=False)
     if result.returncode != 0:
+        if allow_stub:
+            return register_url_stub_candidate(
+                config,
+                url,
+                requested_platform=requested_platform,
+                inspect_error=result.stderr.strip() or "Unable to inspect URL",
+            )
         raise RuntimeError(result.stderr.strip() or "Unable to inspect URL")
     info = json.loads(result.stdout)
     platform = infer_platform(info)
@@ -845,12 +917,27 @@ def localization_profile_for_candidate(row: sqlite3.Row, metadata: dict[str, Any
     title_text = f"{row['title']} {row['description']} {metadata.get('title') or ''} {metadata.get('description') or ''}"
     title_has_chinese = bool(re.search(r"[\u4e00-\u9fff]", title_text))
     has_audio = media_has_audio(media)
-    if chinese_subtitles:
+    platform = str(row["platform"] or "").strip().lower()
+    ocr_regions: list[list[float]] = []
+    ocr_reason = ""
+    if not chinese_subtitles and platform in {"bilibili", "douyin", "xiaohongshu"}:
+        try:
+            ocr_regions = detect_chinese_text_regions(media, sample_count=8)
+            ocr_reason = "ocr_screen_chinese_detected" if ocr_regions else "ocr_no_screen_chinese"
+        except RuntimeError as error:
+            ocr_reason = f"ocr_unavailable:{error}"
+    chinese_on_screen = chinese_subtitles or bool(ocr_regions)
+    chinese_audio_evidence = (
+        chinese_subtitles
+        or (platform in {"douyin", "xiaohongshu"} and chinese_on_screen)
+        or (has_audio and (detected_language.startswith("zh") or title_has_chinese))
+    )
+    if chinese_audio_evidence and chinese_on_screen:
         class_id = 1
         mode = "localized"
         subtitle_mode = "ptbr_subtitles"
-        reason = "chinese_subtitles_detected"
-    elif has_audio and (detected_language.startswith("zh") or title_has_chinese):
+        reason = "chinese_subtitles_detected" if chinese_subtitles else ocr_reason
+    elif chinese_audio_evidence:
         class_id = 3
         mode = "localized"
         subtitle_mode = "none"
@@ -865,6 +952,9 @@ def localization_profile_for_candidate(row: sqlite3.Row, metadata: dict[str, Any
         "audio_mode": mode,
         "subtitle_mode": subtitle_mode,
         "chinese_subtitles": chinese_subtitles,
+        "chinese_on_screen": chinese_on_screen,
+        "ocr_regions": ocr_regions,
+        "title_has_chinese": title_has_chinese,
         "detected_language": detected_language or "unknown",
         "subtitle_files": [path.name for path in subtitle_files],
         "reason": reason,
@@ -883,7 +973,7 @@ def should_ocr_blur_source_subtitles(
         return False
     return (
         str(localization_profile.get("subtitle_mode") or "") == "ptbr_subtitles"
-        and bool(localization_profile.get("chinese_subtitles"))
+        and bool(localization_profile.get("chinese_on_screen", localization_profile.get("chinese_subtitles")))
     )
 
 
@@ -1113,7 +1203,7 @@ def write_srt(text: str, duration: float, destination: Path) -> None:
         chunk: list[str] = []
         for word in words:
             proposed = " ".join([*chunk, word])
-            if chunk and (len(chunk) >= 9 or len(proposed) > 58):
+            if chunk and (len(chunk) >= 7 or len(proposed) > 30):
                 sentences.append(" ".join(chunk))
                 chunk = [word]
             else:

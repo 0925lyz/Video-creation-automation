@@ -1457,6 +1457,7 @@ class DashboardApplication(ThreadingHTTPServer):
                         self.config,
                         url,
                         requested_platform=str(payload.get("platform") or ""),
+                        allow_stub=True,
                     )
                 }
             elif action in {"download", "produce", "skip"}:
