@@ -1399,7 +1399,12 @@ class DashboardApplication(ThreadingHTTPServer):
                 row = connect_db(self.config).execute(
                     "SELECT status FROM candidates WHERE id=?", (candidate,)
                 ).fetchone()
-                if row and row["status"] in {"DISCOVERED", "DOWNLOAD_FAILED"}:
+                work = workspace_dir(self.config) / "jobs" / candidate
+                source_missing = not any(
+                    path.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov"}
+                    for path in work.glob("source.*")
+                )
+                if row and (row["status"] in {"DISCOVERED", "DOWNLOAD_FAILED"} or (row["status"] == "PRODUCTION_FAILED" and source_missing)):
                     self.update_task(task_id, message=f"先下载素材 · {index + 1}/{total}")
                     download_result = download_top(self.config, 1, candidate)
                     if int(download_result.get("failed", 0)) or int(download_result.get("downloaded", 0) == 0):

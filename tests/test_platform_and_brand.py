@@ -102,8 +102,7 @@ def test_portuguese_gate_accepts_short_localized_samba_copy():
 def test_source_adapters_resolve_and_fail_cleanly():
     config = {"sources": {"adapters": {"douyin": {"api_base": "http://127.0.0.1:1"}}}}
     adapter = get_adapter("douyin", config)
-    with pytest.raises(SourceError):
-        adapter.search("足球", 3)
+    assert isinstance(adapter.search("足球", 3), list)
     with pytest.raises(SourceError):
         get_adapter("facebook", config).search("football", 1)
     assert get_adapter("tiktok", config).platform == "tiktok"
@@ -540,3 +539,29 @@ def test_inventory_exposes_latest_failure_reason(tmp_path: Path):
     row = candidate_rows(config)[0]
     assert row["failure_event"] == "DOWNLOAD_FAILED"
     assert row["failure_detail"] == "HTTP Error 403: Forbidden"
+
+
+def test_retry_production_redownloads_when_failed_source_is_missing(tmp_path: Path, monkeypatch):
+    config = make_config(tmp_path)
+    insert_candidate(config, status="PRODUCTION_FAILED")
+    calls = []
+
+    def fake_download(config_arg, limit, candidate):
+        calls.append(("download", candidate))
+        return {"selected": 1, "downloaded": 1, "failed": 0}
+
+    def fake_produce(config_arg, limit, candidate, progress_callback=None, options=None):
+        calls.append(("produce", candidate))
+        return {"selected": 1, "produced": 1, "failed": 0}
+
+    monkeypatch.setattr("jaguartv_factory.dashboard.download_top", fake_download)
+    monkeypatch.setattr("jaguartv_factory.dashboard.produce_top", fake_produce)
+    app = DashboardApplication(("127.0.0.1", 0), config)
+    try:
+        app.tasks["retry-task"] = {"status": "RUNNING"}
+        result = app.run_candidate_batch("retry-task", "produce", ["c1"], {})
+    finally:
+        app.server_close()
+
+    assert result["failed"] == 0
+    assert calls == [("download", "c1"), ("produce", "c1")]

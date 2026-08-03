@@ -285,9 +285,11 @@ function selectedRows() {
 
 function updateBatchToolbar() {
   const rows = selectedRows();
+  const downloadableStatuses = ["DISCOVERED", "DOWNLOAD_FAILED"];
+  const producibleStatuses = ["DISCOVERED", "DOWNLOAD_FAILED", "DOWNLOADED", "PRODUCTION_FAILED", "REVISION_REQUIRED", "BLOCKED_RIGHTS"];
   document.querySelector("#selectionCount").textContent = `已选 ${rows.length} 条`;
-  document.querySelector("#batchDownload").disabled = !rows.some((item) => item.status === "DISCOVERED");
-  document.querySelector("#batchProduce").disabled = !rows.some((item) => ["DISCOVERED", "DOWNLOADED", "REVISION_REQUIRED", "BLOCKED_RIGHTS"].includes(item.status) || (item.status === "APPROVED" && !outputAssetsFor(item).length));
+  document.querySelector("#batchDownload").disabled = !rows.some((item) => downloadableStatuses.includes(item.status));
+  document.querySelector("#batchProduce").disabled = !rows.some((item) => producibleStatuses.includes(item.status) || (item.status === "APPROVED" && !outputAssetsFor(item).length));
   document.querySelector("#batchDelete").disabled = rows.length === 0;
   const visible = filteredCandidates();
   const selectVisible = document.querySelector("#selectVisible");
@@ -348,8 +350,8 @@ function candidateAction(item) {
   const sourceLink = item.url ? `<button class="table-action" onclick="window.open('${escapeHtml(item.url)}','_blank')">源页</button>` : "";
   const deleteButton = `<button class="table-action danger-action" data-delete-id="${item.id}">删除</button>`;
   if (item.status === "DISCOVERED") return `${sourceLink}<button class="table-action" data-candidate-action="download" data-candidate-id="${item.id}">下载</button><button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">制作</button>${deleteButton}`;
-  if (item.status === "DOWNLOAD_FAILED") return `${sourceLink}${deleteButton}`;
-  if (item.status === "PRODUCTION_FAILED") return `${sourceLink}${deleteButton}`;
+  if (item.status === "DOWNLOAD_FAILED") return `${sourceLink}<button class="table-action" data-candidate-action="download" data-candidate-id="${item.id}">重新下载</button><button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">下载并制作</button>${deleteButton}`;
+  if (item.status === "PRODUCTION_FAILED") return `${sourceLink}<button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">重新制作</button>${deleteButton}`;
   if (["DOWNLOADED", "REVISION_REQUIRED", "BLOCKED_RIGHTS"].includes(item.status)) return `<button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">制作</button>${deleteButton}`;
   if (item.status === "READY_FOR_REVIEW") {
     return `${approvedOutputActions(item)}<button class="table-action" data-review-decision="APPROVED" data-candidate-id="${item.id}">通过</button><button class="table-action" data-review-decision="REVISION_REQUIRED" data-candidate-id="${item.id}">返工</button>${deleteButton}`;
@@ -847,9 +849,9 @@ document.querySelector("#selectVisible").addEventListener("change", (event) => {
   filteredCandidates().forEach((item) => event.target.checked ? state.selectedCandidates.add(item.id) : state.selectedCandidates.delete(item.id));
   renderInventory();
 });
-document.querySelector("#batchDownload").addEventListener("click", () => runBatchAction("download", ["DISCOVERED"]));
+document.querySelector("#batchDownload").addEventListener("click", () => runBatchAction("download", ["DISCOVERED", "DOWNLOAD_FAILED"]));
 document.querySelector("#batchProduce").addEventListener("click", () => {
-  const ids = selectedRows().filter((item) => ["DISCOVERED", "DOWNLOADED", "REVISION_REQUIRED", "BLOCKED_RIGHTS"].includes(item.status) || (item.status === "APPROVED" && !outputAssetsFor(item).length)).map((item) => item.id);
+  const ids = selectedRows().filter((item) => ["DISCOVERED", "DOWNLOAD_FAILED", "DOWNLOADED", "PRODUCTION_FAILED", "REVISION_REQUIRED", "BLOCKED_RIGHTS"].includes(item.status) || (item.status === "APPROVED" && !outputAssetsFor(item).length)).map((item) => item.id);
   if (!ids.length) return toast("所选内容中没有可制作项目", "error");
   openProductionDialog(ids);
 });
