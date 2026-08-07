@@ -130,6 +130,7 @@ def connect_db(config: dict[str, Any]) -> sqlite3.Connection:
         """
         CREATE TABLE IF NOT EXISTS candidates (
           id TEXT PRIMARY KEY,
+          parent_id TEXT,
           platform TEXT NOT NULL,
           source_id TEXT,
           url TEXT NOT NULL,
@@ -2303,15 +2304,8 @@ def produce_candidate(
         script = build_ptbr_script(transcript or fallback_text, hook=hook_text)
         assert_script_is_portuguese(script)
         progress(32, "葡语脚本检查通过")
-        voice = work / "voice_ptbr.aiff"
-        tts_ptbr(
-            script,
-            voice,
-            provider=str(config.get("localization", {}).get("tts_provider", "auto")),
-            edge_voice=str(config.get("localization", {}).get("edge_tts_voice", "pt-BR-AntonioNeural")),
-            edge_rate=edge_rate_from_config(config),
-        )
-        progress(48, "葡语配音已生成")
+        voice = None
+        progress(48, "葡语脚本检查通过，按要求剔除固定配音")
         if bool(config.get("localization", {}).get("preserve_backing_track", False)):
             try:
                 bgm = demucs_backing_track(media, work)
