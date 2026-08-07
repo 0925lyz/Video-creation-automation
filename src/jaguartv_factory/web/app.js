@@ -211,21 +211,52 @@ function filteredCandidates() {
 }
 
 function inventoryRows() {
-  return state.candidates.flatMap((item) => {
+  const parents = [];
+  const childrenMap = {};
+
+  state.candidates.forEach(item => {
+    if (item.parent_id) {
+      if (!childrenMap[item.parent_id]) childrenMap[item.parent_id] = [];
+      childrenMap[item.parent_id].push(item);
+    } else {
+      parents.push(item);
+    }
+  });
+
+  return parents.flatMap((item) => {
     const assets = outputAssetsFor(item);
-    if (!["READY_FOR_REVIEW", "APPROVED"].includes(item.status) || assets.length <= 1) return [item];
-    return assets.map((asset) => ({
-      ...item,
-      row_key: `${item.id}:${asset.id || asset.filename || asset.variant || "asset"}`,
-      display_title: String(asset.filename || item.display_title || item.title || "").replace(/\.mp4$/i, ""),
-      variant_group: asset.variant || "",
-      output_assets: [asset],
-      output_count: 1,
-      video_url: asset.video_url || "",
-      download_url: asset.download_url || "",
-      server_url: asset.server_url || "",
-      cover_url: asset.cover_url || item.cover_url || "",
-    }));
+    const children = childrenMap[item.id] || [];
+    
+    item.is_parent = true;
+    item.children = children.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+    
+    const baseItems = [];
+    if (!["READY_FOR_REVIEW", "APPROVED"].includes(item.status) || assets.length <= 1) {
+      baseItems.push(item);
+    } else {
+      assets.forEach((asset) => {
+        baseItems.push({
+          ...item,
+          row_key: `${item.id}:${asset.id || asset.filename || asset.variant || "asset"}`,
+          display_title: String(asset.filename || item.display_title || item.title || "").replace(/\.mp4$/i, ""),
+          variant_group: asset.variant || "",
+          output_assets: [asset],
+          output_count: 1,
+          video_url: asset.video_url || "",
+          download_url: asset.download_url || "",
+          server_url: asset.server_url || "",
+          cover_url: asset.cover_url || item.cover_url || "",
+        });
+      });
+    }
+    
+    // Append children visually under the parent
+    children.forEach(child => {
+      child.is_child = true;
+      baseItems.push(child);
+    });
+    
+    return baseItems;
   });
 }
 
@@ -237,16 +268,18 @@ function renderInventory() {
     const task = activeTaskFor(item.id);
     const status = task ? `${task.action === "download" ? "下载" : task.action === "produce" ? "制作" : "处理"}中` : (statusLabels[item.status] || item.status);
     const failure = item.failure_detail ? `<small class="failure-reason" title="${escapeHtml(item.failure_detail)}">${escapeHtml(failureReason(item.failure_detail))}</small>` : "";
+    const isChild = !!item.is_child;
+    const isParent = !!item.is_parent;
     return `
-    <tr>
+    <tr class="${isChild ? 'child-slice-row' : ''}" style="${isChild ? 'background-color: var(--surface-hover);' : ''}">
       <td class="check-column"><input class="candidate-checkbox" type="checkbox" data-candidate-select="${item.id}" ${state.selectedCandidates.has(item.id) ? "checked" : ""} aria-label="选择 ${escapeHtml(item.display_title || item.title || item.id)}"></td>
-      <td><div class="content-cell">${thumb ? `<img class="mini-cover" src="${thumb}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<div class="mini-cover"></div>`}<div><strong title="${escapeHtml(item.display_title || item.title)}">${escapeHtml(item.display_title || item.title || "未命名内容")}${item.published_flag ? `<span class="badge-published">Published</span>` : ""}</strong><small>${escapeHtml(item.platform)} · ${item.id}${item.keyword ? ` · ${escapeHtml(item.keyword)}` : ""}</small></div></div></td>
+      <td style="${isChild ? 'padding-left: 2rem;' : ''}"><div class="content-cell">${thumb ? `<img class="mini-cover" src="${thumb}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<div class="mini-cover"></div>`}<div><strong title="${escapeHtml(item.display_title || item.title)}">${escapeHtml(item.display_title || item.title || "未命名内容")}${item.published_flag ? `<span class="badge-published">Published</span>` : ""}</strong><small>${escapeHtml(item.platform)} · ${item.id}${item.keyword ? ` · ${escapeHtml(item.keyword)}` : ""}</small></div></div></td>
       <td>${escapeHtml(item.platform)}</td>
       <td><strong>${escapeHtml(item.content_type || "unknown")}</strong><small>${escapeHtml(item.segment_strategy || "未分析")} · ${escapeHtml(item.audio_policy || "自动")}</small></td>
       <td>${Number(item.highlight_score || 0).toFixed(1)}</td>
       <td><span title="${escapeHtml(scoreTooltip(item.score_breakdown))}">${Number(item.score || 0).toFixed(1)}</span></td>
       <td><span class="status-pill ${task ? "running" : statusClass(item.status)}">${status}</span>${failure}</td><td>${dateText(item.updated_at)}</td>
-      <td>${task ? `<span class="row-progress">${task.progress || 0}%</span>` : candidateAction(item)}</td>
+      <td>${task ? `<span class="row-progress">${task.progress || 0}%</span>` : candidateAction(item) + (isParent && item.status !== 'DOWNLOAD_FAILED' ? ` <button class="secondary-button" style="margin-top: 4px;" onclick="openProductionDialog('${item.id}')">手动切片</button>` : '')}</td>
     </tr>`;
   }).join("") : `<tr><td colspan="9"><div class="empty-state">没有符合条件的内容</div></td></tr>`;
   document.querySelectorAll("[data-candidate-select]").forEach((checkbox) => checkbox.addEventListener("change", () => {

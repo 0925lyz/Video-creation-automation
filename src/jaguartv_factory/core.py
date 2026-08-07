@@ -2621,6 +2621,23 @@ def produce_candidate(
         storage_result = archive_review_package(config, package_id, review)
         append_event(connect_db(config), row["id"], "SERVER_ARCHIVED", storage_result)
         reviews.append(review)
+        
+        # Insert child candidate into database
+        conn = connect_db(config)
+        child_title = f"{row['title']} (Slice {segment_index})"
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO candidates
+            (id, parent_id, platform, source_id, url, title, description, duration, status, metadata_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'READY_FOR_REVIEW', ?, ?, ?)
+            """,
+            (
+                package_id, row["id"], row["platform"], f"{row['source_id']}_slice{segment_index}",
+                row["url"], child_title, row["description"], segment["duration"],
+                json.dumps(metadata, ensure_ascii=False), now_iso(), now_iso()
+            )
+        )
+        conn.commit()
 
     progress(94, "质量检查通过，正在打包")
     manifest = {
