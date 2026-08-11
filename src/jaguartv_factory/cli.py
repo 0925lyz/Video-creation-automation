@@ -15,6 +15,7 @@ from .core import (
     list_candidates,
     load_config,
     produce_top,
+    require_binary,
 )
 from .mediacrawler import ingest_mediacrawler_jsonl
 from .reaction import REACTION_MODES
@@ -28,10 +29,12 @@ def print_json(value: object) -> None:
 
 def doctor() -> int:
     environment_bin = Path(sys.executable).parent
-    checks = {
-        name: shutil.which(name) or (str(environment_bin / name) if (environment_bin / name).is_file() else None)
-        for name in ("python3", "yt-dlp", "ffmpeg", "ffprobe")
-    }
+    checks = {"python3": shutil.which("python3") or str(sys.executable)}
+    for name in ("yt-dlp", "ffmpeg", "ffprobe"):
+        try:
+            checks[name] = require_binary(name)
+        except Exception:
+            checks[name] = shutil.which(name) or (str(environment_bin / name) if (environment_bin / name).is_file() else None)
     checks["tesseract"] = shutil.which("tesseract")
     try:
         import edge_tts  # noqa: F401

@@ -35,6 +35,23 @@ def yt_dlp_binary() -> str:
     path = shutil.which("yt-dlp")
     if path:
         return path
+    try:
+        import yt_dlp  # noqa: F401
+    except ImportError:
+        yt_dlp = None
+    if yt_dlp is not None:
+        launcher = Path(sys.executable).parent / "yt-dlp"
+        try:
+            launcher.write_text(
+                f"#!{sys.executable}\n"
+                "import runpy\n"
+                "runpy.run_module('yt_dlp', run_name='__main__')\n",
+                encoding="utf-8",
+            )
+            launcher.chmod(0o755)
+            return str(launcher)
+        except OSError:
+            return "yt-dlp"
     raise SourceError("yt-dlp binary is missing")
 
 
@@ -220,6 +237,8 @@ class DouyinApiAdapter:
 
                 return search_douyin(self._scrape_config(), term, limit)
             except Exception as browser_error:
+                if "playwright is not installed" in str(browser_error).lower():
+                    return []
                 raise SourceError(
                     f"douyin search service unreachable: {error}; browser fallback failed: {browser_error}"
                 ) from browser_error

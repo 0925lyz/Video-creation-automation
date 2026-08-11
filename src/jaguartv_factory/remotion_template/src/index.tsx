@@ -106,7 +106,11 @@ function JaguarTVVariant(props: BrandProps) {
   return (
     <AbsoluteFill style={{backgroundColor: "#000"}}>
       <Sequence durationInFrames={contentFrames}>
-        <OffthreadVideo src={assetSrc(p.sourceVideo)} style={{width, height, objectFit: p.sourceFit || "cover"}} muted={false} />
+        {p.sourceVideo ? (
+          <OffthreadVideo src={assetSrc(p.sourceVideo)} style={{width, height, objectFit: p.sourceFit || "cover"}} muted={false} />
+        ) : (
+          <AbsoluteFill style={{width, height, backgroundColor: "#050505"}} />
+        )}
         {isGeneric ? <CornerOverlays {...p} /> : null}
         <CaptionOverlays captions={p.captions || []} style={p.captionStyle || fallbackProps.captionStyle} />
       </Sequence>
