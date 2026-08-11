@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import math
 import os
 import random
 import re
+import selectors
 import shutil
 import sqlite3
 import struct
 import subprocess
 import sys
 import threading
+import time
 import urllib.parse
 import urllib.request
 import wave
@@ -194,6 +197,22 @@ def connect_db(config: dict[str, Any]) -> sqlite3.Connection:
           last_seen TEXT NOT NULL,
           metadata_json TEXT NOT NULL DEFAULT '{}'
         );
+        CREATE TABLE IF NOT EXISTS render_jobs (
+          id TEXT PRIMARY KEY,
+          candidate_id TEXT NOT NULL,
+          variant TEXT NOT NULL DEFAULT '',
+          engine TEXT NOT NULL,
+          status TEXT NOT NULL,
+          progress REAL NOT NULL DEFAULT 0,
+          output_path TEXT NOT NULL DEFAULT '',
+          cancel_file TEXT NOT NULL DEFAULT '',
+          error TEXT NOT NULL DEFAULT '',
+          metadata_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS render_jobs_candidate
+          ON render_jobs(candidate_id, updated_at DESC);
         CREATE TABLE IF NOT EXISTS conversion_events (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           candidate_id TEXT NOT NULL,
@@ -277,6 +296,94 @@ def append_event(connection: sqlite3.Connection, candidate_id: str, event_type: 
         (candidate_id, event_type, json.dumps(payload, ensure_ascii=False), now_iso()),
     )
     connection.commit()
+
+
+def upsert_render_job(
+    config: dict[str, Any],
+    job_id: str,
+    *,
+    candidate_id: str,
+    variant: str,
+    engine: str,
+    status: str,
+    progress: float = 0.0,
+    output_path: str = "",
+    cancel_file: str = "",
+    error: str = "",
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    timestamp = now_iso()
+    connection = connect_db(config)
+    connection.execute(
+        """
+        INSERT INTO render_jobs
+          (id,candidate_id,variant,engine,status,progress,output_path,cancel_file,error,metadata_json,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(id) DO UPDATE SET
+          candidate_id=excluded.candidate_id,
+          variant=excluded.variant,
+          engine=excluded.engine,
+          status=excluded.status,
+          progress=excluded.progress,
+          output_path=excluded.output_path,
+          cancel_file=excluded.cancel_file,
+          error=excluded.error,
+          metadata_json=excluded.metadata_json,
+          updated_at=excluded.updated_at
+        """,
+        (
+            job_id,
+            candidate_id,
+            variant,
+            engine,
+            status,
+            max(0.0, min(1.0, float(progress))),
+            output_path,
+            cancel_file,
+            error,
+            json.dumps(metadata or {}, ensure_ascii=False),
+            timestamp,
+            timestamp,
+        ),
+    )
+    connection.commit()
+    connection.close()
+
+
+def update_render_job(
+    config: dict[str, Any],
+    job_id: str,
+    *,
+    status: str | None = None,
+    progress: float | None = None,
+    error: str | None = None,
+    metadata_patch: dict[str, Any] | None = None,
+) -> None:
+    connection = connect_db(config)
+    row = connection.execute("SELECT * FROM render_jobs WHERE id=?", (job_id,)).fetchone()
+    if not row:
+        connection.close()
+        return
+    metadata = json.loads(row["metadata_json"] or "{}")
+    if metadata_patch:
+        metadata.update(metadata_patch)
+    connection.execute(
+        """
+        UPDATE render_jobs
+        SET status=?,progress=?,error=?,metadata_json=?,updated_at=?
+        WHERE id=?
+        """,
+        (
+            status or row["status"],
+            max(0.0, min(1.0, float(progress if progress is not None else row["progress"]))),
+            error if error is not None else row["error"],
+            json.dumps(metadata, ensure_ascii=False),
+            now_iso(),
+            job_id,
+        ),
+    )
+    connection.commit()
+    connection.close()
 
 
 def candidate_id(platform: str, source_id: str | None, url: str) -> str:
@@ -1392,6 +1499,270 @@ def parse_srt_time(value: str) -> float:
     return int(hours) * 3600 + int(minutes) * 60 + float(remainder)
 
 
+def remotion_caption_cues(
+    subtitles: Path | None,
+    *,
+    max_end: float | None = None,
+    max_cues: int = 500,
+    max_text_chars: int = 180,
+) -> list[dict[str, Any]]:
+    if not subtitles:
+        return []
+    path = subtitles.expanduser()
+    if not path.is_file():
+        return []
+
+    try:
+        blocks = parse_srt_blocks(path)
+    except (OSError, ValueError):
+        return []
+
+    cues: list[dict[str, Any]] = []
+    for start, end, text in blocks:
+        if not math.isfinite(start) or not math.isfinite(end):
+            continue
+        if max_end is not None:
+            if start >= max_end:
+                continue
+            end = min(end, max_end)
+        if end <= start:
+            continue
+        cleaned = re.sub(r"\s+", " ", text).strip()
+        if not cleaned:
+            continue
+        cues.append({
+            "startSeconds": round(max(0.0, start), 3),
+            "endSeconds": round(max(0.0, end), 3),
+            "text": cleaned[:max_text_chars],
+        })
+        if len(cues) >= max_cues:
+            break
+    return cues
+
+
+def clamp_float(value: Any, default: float, minimum: float, maximum: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, min(maximum, parsed))
+
+
+def remotion_caption_style(config: dict[str, Any]) -> dict[str, Any]:
+    captions = ((config.get("remotion", {}) or {}).get("captions", {}) or {})
+    position = str(captions.get("position", "bottom")).strip().lower()
+    if position not in {"top", "bottom"}:
+        position = "bottom"
+    return {
+        "position": position,
+        "maxWidthRatio": clamp_float(captions.get("max_width_ratio"), 0.82, 0.45, 0.96),
+        "fontSizeRatio": clamp_float(captions.get("font_size_ratio"), 0.044, 0.02, 0.075),
+        "backgroundOpacity": clamp_float(captions.get("background_opacity"), 0.74, 0.0, 0.95),
+        "maxLines": int(clamp_float(captions.get("max_lines"), 3, 1, 4)),
+        "textColor": str(captions.get("text_color", "#ffffff")).strip() or "#ffffff",
+        "backgroundColor": str(captions.get("background_color", "#050505")).strip() or "#050505",
+        "accentColor": str(captions.get("accent_color", "#f2d14b")).strip() or "#f2d14b",
+    }
+
+
+def remotion_captions_enabled_for_variant(config: dict[str, Any], variant: str) -> bool:
+    captions = ((config.get("remotion", {}) or {}).get("captions", {}) or {})
+    if not bool(captions.get("enabled", False)):
+        return False
+    variants = captions.get("variants", ["通用版"])
+    if isinstance(variants, str):
+        variants = [part.strip() for part in variants.split(",")]
+    if not isinstance(variants, list):
+        return False
+    return variant in {str(item).strip() for item in variants}
+
+
+def hyperframes_packaging_enabled(config: dict[str, Any]) -> bool:
+    settings = config.get("hyperframes", {}) or {}
+    return bool(settings.get("enabled", False))
+
+
+def safe_hyperframes_dir_name(value: Any, *, default: str = "hyperframes") -> str:
+    name = str(value or default).strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+        raise ValueError("hyperframes.project_dir must be a simple directory name")
+    return name
+
+
+def write_hyperframes_package(
+    config: dict[str, Any],
+    work: Path,
+    package_id: str,
+    clean_media: Path,
+    subtitles: Path | None,
+    title: str,
+    publishing_text: str,
+    duration: float,
+) -> dict[str, Any]:
+    settings = config.get("hyperframes", {}) or {}
+    project_root = work / safe_hyperframes_dir_name(settings.get("project_dir"))
+    safe_package_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", package_id).strip("._-") or "package"
+    project = project_root / safe_package_id
+    media_dir = project / "media"
+    vendor_dir = project / "vendor"
+    media_dir.mkdir(parents=True, exist_ok=True)
+    vendor_dir.mkdir(parents=True, exist_ok=True)
+    source_copy = media_dir / "source.mp4"
+    shutil.copy2(clean_media, source_copy)
+    gsap_asset = local_hyperframes_gsap_asset()
+    if not gsap_asset:
+        raise RuntimeError("Hyperframes packaging requires a local gsap.min.js asset from installed skills")
+    shutil.copy2(gsap_asset, vendor_dir / "gsap.min.js")
+
+    cues = remotion_caption_cues(subtitles, max_end=duration)
+    manifest = {
+        "engine": "hyperframes",
+        "status": "project_ready",
+        "variant": str(settings.get("variant_label", "HF包装版")),
+        "project_dir": str(project),
+        "index": str(project / "index.html"),
+        "source": "media/source.mp4",
+        "gsap": "vendor/gsap.min.js",
+        "durationSeconds": round(max(0.0, float(duration)), 3),
+        "title": title[:140],
+        "captionCount": len(cues),
+        "allowExternalRender": bool(settings.get("allow_external_render", False)),
+    }
+    (project / "manifest.json").write_text(json.dumps({**manifest, "captions": cues}, ensure_ascii=False, indent=2), encoding="utf-8")
+    (project / "index.html").write_text(
+        render_hyperframes_html(manifest, cues, publishing_text),
+        encoding="utf-8",
+    )
+    return manifest
+
+
+def local_hyperframes_gsap_asset() -> Path | None:
+    candidates = [
+        ROOT / ".agents" / "skills" / "talking-head-recut" / "assets" / "vendor" / "gsap.min.js",
+        ROOT / ".agents" / "skills" / "music-to-video" / "references" / "motion-primitives" / "assets" / "gsap.min.js",
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def render_hyperframes_html(manifest: dict[str, Any], cues: list[dict[str, Any]], publishing_text: str) -> str:
+    title = html.escape(str(manifest.get("title") or "JaguarTV"))
+    text = html.escape(publishing_text[:260])
+    duration = max(1.0, float(manifest.get("durationSeconds") or 0))
+    gsap_src = html.escape(str(manifest.get("gsap") or ""))
+    gsap_tag = f'<script src="{gsap_src}"></script>' if gsap_src else ""
+    title_duration = min(4.0, duration)
+    dek_start = max(0.0, duration - min(4.0, duration))
+    caption_clips = "\n".join(
+        (
+            f'    <section id="hf-caption-{index}" class="clip caption" '
+            f'data-start="{max(0.0, float(cue["startSeconds"])):.3f}" '
+            f'data-duration="{max(0.001, float(cue["endSeconds"]) - float(cue["startSeconds"])):.3f}" '
+            f'data-track-index="3">{html.escape(str(cue["text"]))}</section>'
+        )
+        for index, cue in enumerate(cues)
+    )
+    return f"""<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=1080, height=1920" />
+  <title>{title}</title>
+  {gsap_tag}
+  <style>
+    html, body {{
+      width: 1080px;
+      height: 1920px;
+      margin: 0;
+      overflow: hidden;
+      background: #050505;
+      font-family: Arial, Helvetica, sans-serif;
+    }}
+    #root {{
+      position: relative;
+      width: 1080px;
+      height: 1920px;
+      overflow: hidden;
+      color: #fff;
+    }}
+    .clip {{
+      position: absolute;
+      box-sizing: border-box;
+    }}
+    .base {{
+      inset: 0;
+      width: 1080px;
+      height: 1920px;
+      background: #050505;
+    }}
+    video {{
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      background: #000;
+    }}
+    .title {{
+      left: 54px;
+      top: 82px;
+      width: 820px;
+      font-size: 66px;
+      line-height: 1.04;
+      font-weight: 900;
+      text-shadow: 0 3px 12px rgba(0,0,0,.72);
+    }}
+    .caption {{
+      left: 50%;
+      bottom: 134px;
+      transform: translateX(-50%);
+      width: 886px;
+      border-left: 12px solid #f2d14b;
+      padding: 28px 34px;
+      background: rgba(5, 5, 5, .74);
+      font-size: 48px;
+      line-height: 1.18;
+      font-weight: 800;
+      text-align: center;
+      text-shadow: 0 2px 6px rgba(0,0,0,.55);
+      overflow: hidden;
+    }}
+    .dek {{
+      right: 44px;
+      bottom: 58px;
+      width: 470px;
+      font-size: 24px;
+      line-height: 1.22;
+      opacity: .88;
+      text-align: right;
+      text-shadow: 0 2px 8px rgba(0,0,0,.72);
+    }}
+  </style>
+</head>
+<body>
+  <div id="root" data-composition-id="jaguartv-hf" data-start="0" data-width="1080" data-height="1920" data-duration="{duration:.3f}">
+    <section id="hf-base" class="clip base" data-start="0" data-duration="{duration:.3f}" data-track-index="0"></section>
+    <video id="hf-video" class="clip" src="media/source.mp4" data-start="0" data-duration="{duration:.3f}" data-track-index="1" muted playsinline></video>
+    <audio id="hf-audio" src="media/source.mp4" data-start="0" data-duration="{duration:.3f}" data-track-index="10" data-volume="1"></audio>
+    <section id="hf-title" class="clip title" data-start="0" data-duration="{title_duration:.3f}" data-track-index="2"><span id="hf-title-text">{title}</span></section>
+{caption_clips}
+    <section id="hf-dek" class="clip dek" data-start="{dek_start:.3f}" data-duration="{duration - dek_start:.3f}" data-track-index="4">{text}</section>
+  </div>
+  <script>
+    window.__timelines = window.__timelines || {{}};
+    const timeline = window.gsap
+      ? gsap.timeline({{ paused: true }})
+      : {{ fromTo() {{ return this; }}, to() {{ return this; }} }};
+    timeline.fromTo("#hf-title-text", {{ opacity: 0, y: -30 }}, {{ opacity: 1, y: 0, duration: 0.45, ease: "power3.out" }}, 0.15);
+    timeline.fromTo("#hf-dek", {{ opacity: 0, y: 18 }}, {{ opacity: 0.88, y: 0, duration: 0.45, ease: "power2.out" }}, {dek_start:.3f});
+    window.__timelines["jaguartv-hf"] = timeline;
+  </script>
+</body>
+</html>
+"""
+
+
 def load_font(size: int) -> ImageFont.FreeTypeFont:
     candidates = [
         "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
@@ -1979,12 +2350,168 @@ def copy_remotion_public_asset(source: Path, public_dir: Path, name: str) -> str
     return f"renders/{public_dir.name}/{name}"
 
 
+def run_remotion_cli_render(
+    config: dict[str, Any],
+    runtime: Path,
+    props: dict[str, Any],
+    output: Path,
+    render_target: Path,
+) -> dict[str, Any]:
+    remotion_bin = runtime / "node_modules" / ".bin" / "remotion"
+    try:
+        result = run_command([
+            str(remotion_bin), "render", "src/index.tsx", "JaguarTVVariant",
+            str(render_target), "--props", json.dumps(props, ensure_ascii=False), "--log", "error",
+        ], cwd=runtime, check=False, timeout=float((config.get("run", {}) or {}).get("timeout_sec", 360)))
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError(f"Remotion render timed out after {error.timeout}s") from error
+    if result.returncode != 0:
+        raise RuntimeError("Remotion render failed:\n" + (result.stderr or result.stdout)[-6000:])
+    if not render_target.is_file() or render_target.stat().st_size <= 0:
+        raise RuntimeError("Remotion render finished without output:\n" + (result.stderr or result.stdout)[-6000:])
+    render_target.replace(output)
+    return {"runner": "cli"}
+
+
+def run_remotion_renderer_api(
+    config: dict[str, Any],
+    runtime: Path,
+    props: dict[str, Any],
+    output: Path,
+    render_target: Path,
+    *,
+    job_id: str,
+    candidate_id: str,
+    variant: str,
+) -> dict[str, Any]:
+    timeout = float((config.get("run", {}) or {}).get("timeout_sec", 360))
+    script = runtime / "scripts" / "render.mjs"
+    if not script.is_file():
+        raise RuntimeError(f"Remotion renderer script is missing: {script}")
+    cancel_file = output.with_name(f"{output.stem}_render.cancel")
+    cancel_file.unlink(missing_ok=True)
+    payload = {
+        "entryPoint": "src/index.tsx",
+        "compositionId": "JaguarTVVariant",
+        "props": props,
+        "outputLocation": str(render_target),
+        "cancelFile": str(cancel_file),
+        "timeoutMs": int(timeout * 1000),
+        "codec": "h264",
+        "pixelFormat": "yuv420p",
+        "x264Preset": "veryfast",
+        "crf": 22,
+    }
+    payload_path = output.with_name(f"{output.stem}_renderer_payload.json")
+    payload_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    upsert_render_job(
+        config,
+        job_id,
+        candidate_id=candidate_id,
+        variant=variant,
+        engine="remotion_renderer_api",
+        status="STARTED",
+        progress=0.0,
+        output_path=str(output),
+        cancel_file=str(cancel_file),
+        metadata={"payload_path": str(payload_path), "target_path": str(render_target)},
+    )
+
+    args = [require_binary("node"), str(script), str(payload_path)]
+    process = subprocess.Popen(
+        args,
+        cwd=runtime,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    selector = selectors.DefaultSelector()
+    if process.stdout is not None:
+        selector.register(process.stdout, selectors.EVENT_READ)
+    lines: list[str] = []
+    started = time.monotonic()
+    try:
+        while process.poll() is None:
+            if time.monotonic() - started > timeout:
+                process.kill()
+                update_render_job(config, job_id, status="TIMED_OUT", error=f"Timed out after {timeout:.0f}s")
+                raise RuntimeError(f"Remotion renderer API timed out after {timeout:.0f}s")
+            for key, _ in selector.select(timeout=0.25):
+                line = key.fileobj.readline()
+                if line:
+                    lines.append(line.rstrip())
+                    handle_remotion_renderer_event(config, job_id, line)
+        if process.stdout is not None:
+            for line in process.stdout:
+                lines.append(line.rstrip())
+                handle_remotion_renderer_event(config, job_id, line)
+    finally:
+        selector.close()
+
+    output_text = "\n".join(lines)
+    if process.returncode != 0:
+        detail = output_text[-6000:]
+        update_render_job(config, job_id, status="FAILED", error=detail)
+        raise RuntimeError("Remotion renderer API failed:\n" + detail)
+    if not render_target.is_file() or render_target.stat().st_size <= 0:
+        detail = output_text[-6000:]
+        update_render_job(config, job_id, status="FAILED", error=detail)
+        raise RuntimeError("Remotion renderer API finished without output:\n" + detail)
+    render_target.replace(output)
+    update_render_job(
+        config,
+        job_id,
+        status="COMPLETED",
+        progress=1.0,
+        metadata_patch={"completed_output": str(output), "size": output.stat().st_size},
+    )
+    return {"runner": "renderer_api", "render_job_id": job_id, "cancel_file": str(cancel_file)}
+
+
+def handle_remotion_renderer_event(config: dict[str, Any], job_id: str, line: str) -> None:
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        update_render_job(config, job_id, metadata_patch={"last_log": line[-1000:]})
+        return
+    name = str(event.get("event") or "")
+    if name == "bundle_progress":
+        update_render_job(config, job_id, status="BUNDLING", progress=float(event.get("progress") or 0) * 0.12)
+    elif name == "bundle_completed":
+        update_render_job(config, job_id, status="SELECTING_COMPOSITION", progress=0.14)
+    elif name == "composition_selected":
+        update_render_job(
+            config,
+            job_id,
+            status="RENDERING",
+            progress=0.16,
+            metadata_patch={
+                "width": event.get("width"),
+                "height": event.get("height"),
+                "fps": event.get("fps"),
+                "durationInFrames": event.get("durationInFrames"),
+            },
+        )
+    elif name == "render_progress":
+        render_progress = max(0.0, min(1.0, float(event.get("progress") or 0)))
+        update_render_job(config, job_id, status="RENDERING", progress=0.16 + render_progress * 0.82)
+    elif name == "cancel_requested":
+        update_render_job(config, job_id, status="CANCEL_REQUESTED", metadata_patch={"cancel_event": event})
+    elif name == "completed":
+        update_render_job(config, job_id, status="FINALIZING", progress=0.99, metadata_patch={"renderer_completed": event})
+    elif name == "error":
+        update_render_job(config, job_id, status="FAILED", error=str(event.get("message") or line)[-4000:])
+
+
 def render_video_remotion_variant(
     config: dict[str, Any],
     clean_media: Path,
     output: Path,
     *,
     variant: str,
+    subtitles: Path | None = None,
+    job_id: str | None = None,
+    candidate_id: str | None = None,
 ) -> dict[str, Any]:
     clean_media = clean_media.expanduser().resolve()
     output = output.expanduser().resolve()
@@ -2020,6 +2547,11 @@ def render_video_remotion_variant(
         "overlayPlacement": str(canvas["overlay_placement"]),
         "sourceAspectRatio": source_width / max(1, source_height),
     }
+    if remotion_captions_enabled_for_variant(config, variant):
+        caption_cues = remotion_caption_cues(subtitles, max_end=content_duration)
+        if caption_cues:
+            props["captions"] = caption_cues
+            props["captionStyle"] = remotion_caption_style(config)
     endcard_class = ""
     if variant == "通用版":
         tu_yi = configured_remotion_asset(config, "tu_yi")
@@ -2034,23 +2566,28 @@ def render_video_remotion_variant(
     render_target = output.with_name(
         f".remotion-{os.getpid()}-{threading.get_ident()}-{random.randrange(1_000_000)}{output.suffix}"
     )
-    remotion_bin = runtime / "node_modules" / ".bin" / "remotion"
-    try:
-        result = run_command([
-            str(remotion_bin), "render", "src/index.tsx", "JaguarTVVariant",
-            str(render_target), "--props", json.dumps(props, ensure_ascii=False), "--log", "error",
-        ], cwd=runtime, check=False, timeout=float((config.get("run", {}) or {}).get("timeout_sec", 360)))
-    except subprocess.TimeoutExpired as error:
-        raise RuntimeError(f"Remotion render timed out after {error.timeout}s") from error
-    if result.returncode != 0:
-        raise RuntimeError("Remotion render failed:\n" + (result.stderr or result.stdout)[-6000:])
-    if not render_target.is_file() or render_target.stat().st_size <= 0:
-        raise RuntimeError("Remotion render finished without output:\n" + (result.stderr or result.stdout)[-6000:])
-    render_target.replace(output)
+    render_runner = str(remotion_settings.get("render_runner", "renderer_api")).strip().lower()
+    if render_runner == "cli":
+        runner_info = run_remotion_cli_render(config, runtime, props, output, render_target)
+    elif render_runner == "renderer_api":
+        stable_job_id = job_id or output.stem
+        runner_info = run_remotion_renderer_api(
+            config,
+            runtime,
+            props,
+            output,
+            render_target,
+            job_id=f"{stable_job_id}:{variant}",
+            candidate_id=candidate_id or stable_job_id,
+            variant=variant,
+        )
+    else:
+        raise RuntimeError("remotion.render_runner must be renderer_api or cli")
     return {
         "variant": variant,
         "path": str(output),
         "filename": output.name,
+        **runner_info,
         "endcard_class": endcard_class,
         "duration": media_duration(output),
         "size": output.stat().st_size,
@@ -2065,7 +2602,7 @@ def render_video_remotion(
 ) -> None:
     clean = output.with_name(f"{output.stem}_clean_input.mp4")
     render_clean_segment(config, media, voice, bgm, clean, duration, audio_mode, start_time)
-    render_video_remotion_variant(config, clean, output, variant="通用版")
+    render_video_remotion_variant(config, clean, output, variant="通用版", subtitles=subtitles, job_id=output.stem, candidate_id=output.stem)
 
 
 def render_video(
@@ -2157,10 +2694,16 @@ MARKET_REJECT_TERMS = (
 def candidate_market_rejection(
     config: dict[str, Any], info: dict[str, Any], *, keyword: str = ""
 ) -> str:
-    """Reject low-value/non-football finds before they pollute the inventory."""
+    """Reject low-value finds before they pollute the inventory.
+
+    The default target is strict Brazil-football inventory. Broader Brazil trend
+    crawls still reject betting/prediction spam, but they do not require a
+    football term in every title.
+    """
     market_filter = (config.get("selection") or {}).get("market_filter") or {}
     if market_filter.get("enabled") is False:
         return ""
+    target = str(market_filter.get("target") or "brazil_football").strip().lower()
     text = " ".join(
         str(value or "")
         for value in (
@@ -2173,6 +2716,8 @@ def candidate_market_rejection(
     ).lower()
     if any(term.lower() in text for term in MARKET_REJECT_TERMS):
         return "prediction_or_betting_content"
+    if target in {"brazil_trends", "broad_brazil", "brasil_trends"}:
+        return ""
     if any(term.lower() in text for term in MARKET_INCLUDE_TERMS):
         return ""
     return "not_brazil_football"
@@ -2449,7 +2994,9 @@ def produce_candidate(
             )
             render_media = preprocessed
             render_start = 0.0
+        title_suffix = f" - Parte {segment_index}" if segment_total > 1 else ""
         variant_outputs: list[dict[str, Any]] = []
+        hyperframes_package: dict[str, Any] | None = None
         if render_engine == "remotion" and (config.get("remotion", {}).get("dual_variant", {}) or {}).get("enabled", False):
             clean = work / f"{filename_stem}_clean_input.mp4"
             render_clean_segment(
@@ -2458,7 +3005,15 @@ def produce_candidate(
             )
             for variant in ("通用版", "FB版"):
                 variant_output = work / f"{filename_stem}-{variant}.mp4"
-                info = render_video_remotion_variant(config, clean, variant_output, variant=variant)
+                info = render_video_remotion_variant(
+                    config,
+                    clean,
+                    variant_output,
+                    variant=variant,
+                    subtitles=subtitles,
+                    job_id=package_id,
+                    candidate_id=row["id"],
+                )
                 if reaction.mode != "none":
                     compose_reaction(
                         variant_output,
@@ -2488,6 +3043,17 @@ def produce_candidate(
                 if not qa_variant["passed"]:
                     raise RuntimeError(f"QA failed for {package_id} {variant}: {qa_variant}")
                 variant_outputs.append(info)
+            if hyperframes_packaging_enabled(config):
+                hyperframes_package = write_hyperframes_package(
+                    config,
+                    work,
+                    package_id,
+                    clean,
+                    subtitles,
+                    f"{filename_stem}{title_suffix}",
+                    publishing_text,
+                    float(segment["duration"]),
+                )
             output = Path(str(variant_outputs[0]["path"]))
         else:
             render_video(
@@ -2546,7 +3112,6 @@ def produce_candidate(
         active_kit = brand_kit(config)
         cover_source = render_cover_image(config, active_kit, output, cover)
         links = tracking_links(config, package_id)
-        title_suffix = f" - Parte {segment_index}" if segment_total > 1 else ""
         metadata = {
             "job_id": package_id,
             "source_job_id": row["id"],
@@ -2592,6 +3157,7 @@ def produce_candidate(
                 "endcard": str(brand_kit(config).get("endcard", {}).get("image") or ""),
             },
             "output_variants": variant_outputs,
+            "hyperframes_package": hyperframes_package,
             "render_engine": render_engine,
             "reaction": reaction.to_dict(),
             "compliance": compliance,

@@ -4,7 +4,14 @@ from pathlib import Path
 import pytest
 
 from jaguartv_factory.core import connect_db, now_iso
-from jaguartv_factory.dashboard import dashboard_overview, save_metrics, save_publication, save_review
+from jaguartv_factory.dashboard import (
+    dashboard_overview,
+    public_brand_asset_path,
+    render_job_rows,
+    save_metrics,
+    save_publication,
+    save_review,
+)
 from jaguartv_factory.sessions import check_session, list_sessions, save_session
 
 
@@ -29,6 +36,15 @@ def insert_candidate(config: dict, candidate_id: str = "candidate-1") -> None:
         ),
     )
     connection.commit()
+
+
+def test_public_brand_asset_path_is_limited_to_brand_assets():
+    asset = public_brand_asset_path("/assets/brand/endcard_landscape_blue_v2.png")
+
+    assert asset is not None
+    assert asset.name == "endcard_landscape_blue_v2.png"
+    assert public_brand_asset_path("/assets/brand/../../config/pipeline.yaml") is None
+    assert public_brand_asset_path("/assets/brand/missing.png") is None
 
 
 def test_dashboard_schema_and_overview(tmp_path: Path):
@@ -59,6 +75,36 @@ def test_dashboard_schema_and_overview(tmp_path: Path):
     connection = connect_db(config)
     feedback = connection.execute("SELECT * FROM feedback_actions").fetchone()
     assert feedback["action_type"] == "BOOST_KEYWORD"
+
+
+def test_render_job_rows_include_candidate_title_and_metadata(tmp_path: Path):
+    config = dashboard_config(tmp_path)
+    insert_candidate(config)
+    connection = connect_db(config)
+    connection.execute(
+        """
+        INSERT INTO render_jobs
+          (id,candidate_id,variant,engine,status,progress,metadata_json,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            "job-1",
+            "candidate-1",
+            "通用版",
+            "remotion_renderer_api",
+            "RENDERING",
+            0.5,
+            json.dumps({"fps": 30}),
+            now_iso(),
+            now_iso(),
+        ),
+    )
+    connection.commit()
+
+    rows = render_job_rows(config)
+    assert rows[0]["title"] == "Demo"
+    assert rows[0]["metadata"]["fps"] == 30
+    assert rows[0]["progress"] == 0.5
 
 
 def test_session_manager_saves_and_checks_cookie_state(tmp_path: Path):

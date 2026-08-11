@@ -28,7 +28,14 @@ workbuddy = "jaguartv_factory.cli:main"
 jaguartv = "jaguartv_factory.cli:main"
 
 [tool.setuptools.package-data]
-jaguartv_factory = ["web/*.html", "web/*.css", "web/*.js", "remotion_template/package.json", "remotion_template/src/*.tsx"]
+jaguartv_factory = [
+  "web/*.html",
+  "web/*.css",
+  "web/*.js",
+  "remotion_template/package.json",
+  "remotion_template/scripts/*.mjs",
+  "remotion_template/src/*.tsx",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -7,17 +7,17 @@ run:
   source_download_timeout_sec: 300
 
 sources:
-  enabled: [youtube, bilibili, douyin, xiaohongshu, tiktok, facebook]
+  enabled: [youtube, bilibili, douyin, tiktok]
   exclude_languages: []
-  keywords_file: config/keywords.demo.yaml
+  keywords_file: config/keywords.brazil.yaml
   creators_file: config/creators.example.yaml
   # Which keyword languages go to which platform (see keywords file terms.*)
   platform_language:
-    youtube: [en, es, pt]
-    bilibili: [zh-CN, zh]
-    douyin: [zh-CN, zh]
+    youtube: [pt, en]
+    bilibili: [zh-CN, zh, pt]
+    douyin: [zh-CN, zh, pt]
     xiaohongshu: [zh-CN, zh]
-    tiktok: [en, es, pt]
+    tiktok: [pt, en]
     facebook: [en, es, pt]
   adapters:
     youtube:
@@ -51,7 +51,7 @@ selection:
   duplicate_threshold: 0.90
   market_filter:
     enabled: true
-    target: brazil_football
+    target: brazil_trends
 
 edit:
   render_engine: remotion           # dual-variant overlays/endcards require Remotion
@@ -98,6 +98,7 @@ audio:
   bgm_path: ""
 
 remotion:
+  render_runner: renderer_api
   promo_duration_sec: 1.5
   overlay_max_width_ratio: 0.18
   mobile_overlay_left_width_ratio: 0.22
@@ -115,9 +116,26 @@ remotion:
   add_bgm_under_source: true
   content_bgm_volume: 0.16
   endcard_bgm_volume: 0.24
+  captions:
+    enabled: true
+    variants: [通用版]
+    position: bottom
+    max_width_ratio: 0.82
+    font_size_ratio: 0.044
+    background_opacity: 0.74
+    max_lines: 3
+    text_color: "#ffffff"
+    background_color: "#050505"
+    accent_color: "#f2d14b"
   top_badge: "VÍDEO DO DIA 🔥"
   bottom_headline: "Assista esportes ao vivo"
   bottom_subline: "Canais, jogos e entretenimento em um só app"
+
+hyperframes:
+  enabled: false
+  variant_label: HF包装版
+  project_dir: hyperframes
+  allow_external_render: false
 
 aspect_thresholds:
   vertical_min: 0.5

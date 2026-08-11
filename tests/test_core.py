@@ -8,6 +8,7 @@ from jaguartv_factory.core import (
     brand_kit,
     candidate_market_rejection,
     choose_audio_strategy,
+    connect_db,
     enforce_dual_variant_remotion,
     format_srt_time,
     generate_funk_bgm,
@@ -16,9 +17,16 @@ from jaguartv_factory.core import (
     mobile_review_format_needed,
     require_binary,
     remotion_canvas_for_source,
+    remotion_caption_cues,
+    remotion_caption_style,
+    remotion_captions_enabled_for_variant,
     render_endcard,
+    render_hyperframes_html,
+    update_render_job,
     should_ocr_blur_source_subtitles,
     source_filename_label,
+    safe_hyperframes_dir_name,
+    upsert_render_job,
     write_srt,
 )
 
@@ -37,6 +45,76 @@ def test_srt_generation(tmp_path: Path):
     assert format_srt_time(61.2) == "00:01:01,200"
 
 
+def test_remotion_caption_cues_are_safe_and_clamped(tmp_path: Path):
+    destination = tmp_path / "captions.srt"
+    destination.write_text(
+        "1\n00:00:00,000 --> 00:00:02,500\nOlá Brasil!\n\n"
+        "2\n00:00:03,000 --> 00:00:09,000\nFinal precisa cortar.\n",
+        encoding="utf-8",
+    )
+    assert remotion_caption_cues(destination, max_end=4.0) == [
+        {"startSeconds": 0.0, "endSeconds": 2.5, "text": "Olá Brasil!"},
+        {"startSeconds": 3.0, "endSeconds": 4.0, "text": "Final precisa cortar."},
+    ]
+
+
+def test_remotion_caption_variant_config():
+    config = {
+        "remotion": {
+            "captions": {
+                "enabled": True,
+                "variants": ["通用版"],
+                "font_size_ratio": 0.5,
+                "position": "middle",
+            }
+        }
+    }
+    assert remotion_captions_enabled_for_variant(config, "通用版") is True
+    assert remotion_captions_enabled_for_variant(config, "FB版") is False
+    style = remotion_caption_style(config)
+    assert style["position"] == "bottom"
+    assert style["fontSizeRatio"] == 0.075
+
+
+def test_hyperframes_package_rejects_nested_project_dir():
+    assert safe_hyperframes_dir_name("hf_pack") == "hf_pack"
+    with pytest.raises(ValueError):
+        safe_hyperframes_dir_name("../outside")
+
+
+def test_hyperframes_html_uses_local_media_and_captions():
+    html = render_hyperframes_html(
+        {"title": "JaguarTV", "durationSeconds": 3.0, "gsap": "vendor/gsap.min.js"},
+        [{"startSeconds": 0.0, "endSeconds": 1.0, "text": "Legenda"}],
+        "Resumo",
+    )
+    assert 'src="media/source.mp4"' in html
+    assert 'data-composition-id="jaguartv-hf"' in html
+    assert 'data-start="0"' in html
+    assert 'data-width="1080"' in html
+    assert 'data-track-index="3"' in html
+    assert 'window.__timelines["jaguartv-hf"]' in html
+    assert "Legenda" in html
+
+
+def test_render_job_progress_is_persistent(tmp_path: Path):
+    config = {"_root": str(tmp_path), "run": {"workspace": "workspace"}}
+    upsert_render_job(
+        config,
+        "job-1",
+        candidate_id="candidate-1",
+        variant="通用版",
+        engine="remotion_renderer_api",
+        status="STARTED",
+        output_path="/tmp/out.mp4",
+    )
+    update_render_job(config, "job-1", status="RENDERING", progress=0.5, metadata_patch={"fps": 30})
+    row = connect_db(config).execute("SELECT * FROM render_jobs WHERE id='job-1'").fetchone()
+    assert row["status"] == "RENDERING"
+    assert row["progress"] == 0.5
+    assert '"fps": 30' in row["metadata_json"]
+
+
 def test_demo_config_loads():
     config = load_config(Path("config/pipeline.yaml"))
     assert config["localization"]["target"] == "pt-BR"
@@ -53,6 +131,8 @@ def test_demo_config_loads():
     assert config["brand"]["kits"]["jaguartv"]["endcard"]["mode"] == "orientation_image"
     assert config["brand"]["kits"]["jaguartv"]["endcard"]["duration_sec"] == 1.5
     assert config["mobile_review_format"]["target_resolution"] == [1080, 1440]
+    assert config["sources"]["enabled"] == ["youtube", "bilibili", "douyin", "tiktok"]
+    assert config["sources"]["keywords_file"] == "config/keywords.brazil.yaml"
 
 
 def test_standard_production_requires_remotion_dual_variant_assets():
@@ -173,6 +253,19 @@ def test_market_filter_rejects_betting_but_keeps_brazil_football():
     assert candidate_market_rejection(
         config, {"title": "Flamengo gols melhores momentos"}, keyword="#brasileirao"
     ) == ""
+
+
+def test_broad_brazil_market_filter_keeps_non_football_trends():
+    config = {"selection": {"market_filter": {"enabled": True, "target": "brazil_trends"}}}
+    assert candidate_market_rejection(
+        config, {"title": "Resumo da novela das nove"}, keyword="Novela da Globo"
+    ) == ""
+    assert candidate_market_rejection(
+        config, {"title": "Spotify Brasil música viral"}, keyword="Funk brasileiro"
+    ) == ""
+    assert candidate_market_rejection(
+        config, {"title": "巴甲 比分预测 串关 稳胆"}, keyword="巴甲"
+    ) == "prediction_or_betting_content"
 
 
 def test_generate_funk_bgm(tmp_path: Path):

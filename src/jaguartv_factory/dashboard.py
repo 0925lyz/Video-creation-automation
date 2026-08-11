@@ -53,11 +53,24 @@ from .trends import list_hot_keywords, run_trends_job, start_trends_scheduler
 
 
 WEB_ROOT = Path(__file__).resolve().parent / "web"
+BRAND_ASSET_ROOT = Path(__file__).resolve().parents[2] / "assets" / "brand"
 PLATFORMS = ("youtube", "facebook", "tiktok", "kwai")
 PUBLISH_TARGETS = (*PLATFORMS, "instagram", "other")
 EVENT_TYPES = ("landing_click", "download_started", "install", "registration", "first_watch")
 REVIEW_DECISIONS = ("APPROVED", "REVISION_REQUIRED")
 PART_PACKAGE_PATTERN = re.compile(r"^(?P<parent>.+)_part(?P<number>\d+)$")
+
+
+def public_brand_asset_path(requested: str) -> Path | None:
+    relative = unquote(requested).lstrip("/")
+    prefix = "assets/brand/"
+    if not relative.startswith(prefix):
+        return None
+    root = BRAND_ASSET_ROOT.resolve()
+    path = (root / relative.removeprefix(prefix)).resolve()
+    if root not in path.parents or not path.is_file():
+        return None
+    return path
 
 
 def utc_now() -> datetime:
@@ -594,6 +607,7 @@ def delete_candidates(config: dict[str, Any], payload: dict[str, Any]) -> dict[s
             "performance_snapshots",
             "conversion_events",
             "feedback_actions",
+            "render_jobs",
         ):
             connection.execute(f"DELETE FROM {table} WHERE candidate_id=?", (candidate,))
         cursor = connection.execute("DELETE FROM candidates WHERE id=?", (candidate,))
@@ -805,6 +819,28 @@ def publication_rows(config: dict[str, Any]) -> list[dict[str, Any]]:
 def worker_rows(config: dict[str, Any]) -> list[dict[str, Any]]:
     connection = connect_db(config)
     return [dict(row) for row in connection.execute("SELECT * FROM workers ORDER BY last_seen DESC")]
+
+
+def render_job_rows(config: dict[str, Any], limit: int = 100) -> list[dict[str, Any]]:
+    connection = connect_db(config)
+    rows = []
+    for row in connection.execute(
+        """
+        SELECT render_jobs.*,candidates.title
+        FROM render_jobs
+        LEFT JOIN candidates ON candidates.id=render_jobs.candidate_id
+        ORDER BY render_jobs.updated_at DESC
+        LIMIT ?
+        """,
+        (max(1, min(500, int(limit))),),
+    ):
+        item = dict(row)
+        try:
+            item["metadata"] = json.loads(item.pop("metadata_json", "{}") or "{}")
+        except json.JSONDecodeError:
+            item["metadata"] = {}
+        rows.append(item)
+    return rows
 
 
 def feedback_rows(config: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1505,6 +1541,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return self.send_json(publication_rows(self.server.config))
             if parsed.path == "/api/workers":
                 return self.send_json(worker_rows(self.server.config))
+            if parsed.path == "/api/render-jobs":
+                limit = int_value(query.get("limit", [100])[0], 100)
+                return self.send_json(render_job_rows(self.server.config, limit))
             if parsed.path == "/api/feedback":
                 return self.send_json(feedback_rows(self.server.config))
             if parsed.path == "/api/download-claims":
@@ -1764,6 +1803,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def send_static(self, requested: str) -> None:
+        if requested.startswith("/assets/brand/"):
+            path = public_brand_asset_path(requested)
+            if path is None:
+                return self.send_error(HTTPStatus.NOT_FOUND)
+            return self.send_file(path, cache="public, max-age=3600")
         relative = "index.html" if requested in {"", "/"} else requested.lstrip("/")
         path = (WEB_ROOT / relative).resolve()
         if WEB_ROOT.resolve() not in path.parents or not path.is_file():

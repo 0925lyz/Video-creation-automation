@@ -453,7 +453,7 @@ def test_delete_candidate_clears_db_review_job_and_inventory_files(tmp_path: Pat
     config = make_config(tmp_path)
     insert_candidate(config, candidate_id="c-delete", status="APPROVED")
     connection = connect_db(config)
-    for table in ("events", "publications", "performance_snapshots", "conversion_events", "feedback_actions"):
+    for table in ("events", "publications", "performance_snapshots", "conversion_events", "feedback_actions", "render_jobs"):
         if table == "events":
             connection.execute(
                 "INSERT INTO events(candidate_id,event_type,payload_json,created_at) VALUES(?,?,?,?)",
@@ -474,10 +474,19 @@ def test_delete_candidate_clears_db_review_job_and_inventory_files(tmp_path: Pat
                 "INSERT INTO conversion_events(candidate_id,event_type,occurred_at) VALUES(?,?,?)",
                 ("c-delete", "install", now_iso()),
             )
-        else:
+        elif table == "feedback_actions":
             connection.execute(
                 "INSERT INTO feedback_actions(candidate_id,action_type,reason,created_at) VALUES(?,?,?,?)",
                 ("c-delete", "BOOST_KEYWORD", "demo", now_iso()),
+            )
+        else:
+            connection.execute(
+                """
+                INSERT INTO render_jobs
+                  (id,candidate_id,variant,engine,status,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,?)
+                """,
+                ("render-delete", "c-delete", "通用版", "remotion_renderer_api", "COMPLETED", now_iso(), now_iso()),
             )
     connection.commit()
 
@@ -506,7 +515,7 @@ def test_delete_candidate_clears_db_review_job_and_inventory_files(tmp_path: Pat
     assert not inventory_file.exists()
     connection = connect_db(config)
     assert connection.execute("SELECT COUNT(*) count FROM candidates WHERE id='c-delete'").fetchone()["count"] == 0
-    for table in ("events", "publications", "performance_snapshots", "conversion_events", "feedback_actions"):
+    for table in ("events", "publications", "performance_snapshots", "conversion_events", "feedback_actions", "render_jobs"):
         assert connection.execute(f"SELECT COUNT(*) count FROM {table} WHERE candidate_id='c-delete'").fetchone()["count"] == 0
 
 
