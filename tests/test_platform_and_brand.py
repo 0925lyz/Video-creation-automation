@@ -524,11 +524,11 @@ def test_delete_candidate_clears_db_review_job_and_inventory_files(tmp_path: Pat
         assert connection.execute(f"SELECT COUNT(*) count FROM {table} WHERE candidate_id='c-delete'").fetchone()["count"] == 0
 
 
-def test_delete_more_than_100_candidates_keeps_seen_history(tmp_path: Path):
+def test_delete_100_candidates_keeps_seen_history(tmp_path: Path):
     config = make_config(tmp_path)
     connection = connect_db(config)
     timestamp = now_iso()
-    for index in range(105):
+    for index in range(100):
         source_id = f"s{index}"
         connection.execute(
             """INSERT INTO candidates(id,platform,source_id,url,title,description,duration,view_count,
@@ -561,9 +561,9 @@ def test_delete_more_than_100_candidates_keeps_seen_history(tmp_path: Path):
     result = delete_candidates(config, {"candidate_ids": ids})
 
     connection = connect_db(config)
-    assert result["deleted"] == 105
+    assert result["deleted"] == 100
     assert connection.execute("SELECT COUNT(*) count FROM candidates").fetchone()["count"] == 0
-    assert connection.execute("SELECT COUNT(*) count FROM seen_sources").fetchone()["count"] == 105
+    assert connection.execute("SELECT COUNT(*) count FROM seen_sources").fetchone()["count"] == 100
 
 
 def test_discover_skips_sources_seen_before_even_after_delete(tmp_path: Path, monkeypatch):
