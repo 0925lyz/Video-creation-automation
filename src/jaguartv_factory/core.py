@@ -1016,6 +1016,22 @@ def download_candidate(config: dict[str, Any], row: sqlite3.Row) -> Path:
     media = next((path for path in work.glob("source.*") if path.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov"}), None)
     if not media:
         raise RuntimeError("download completed but no media file was found")
+    try:
+        probed_duration = media_duration(media)
+    except Exception as error:
+        media.unlink(missing_ok=True)
+        connection.execute("UPDATE candidates SET status='DOWNLOAD_FAILED',updated_at=? WHERE id=?", (now_iso(), row["id"]))
+        append_event(connection, row["id"], "DOWNLOAD_FAILED", {
+            "stderr": f"downloaded media failed ffprobe validation: {error}"[-4000:],
+        })
+        connection.commit()
+        raise RuntimeError("download completed but media file is not a valid video") from error
+    if probed_duration <= 0:
+        media.unlink(missing_ok=True)
+        connection.execute("UPDATE candidates SET status='DOWNLOAD_FAILED',updated_at=? WHERE id=?", (now_iso(), row["id"]))
+        append_event(connection, row["id"], "DOWNLOAD_FAILED", {"stderr": "downloaded media has zero duration"})
+        connection.commit()
+        raise RuntimeError("download completed but media file has zero duration")
     subtitle_result = run_command([
         require_binary("yt-dlp"), "--force-ipv4", "--skip-download", "--write-auto-subs", "--write-subs",
         "--sub-langs", "en,zh-Hans,zh-Hant,es,fr,de,ja,ko", "--convert-subs", "srt",

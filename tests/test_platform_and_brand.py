@@ -13,6 +13,7 @@ from jaguartv_factory.core import (
     candidate_id,
     connect_db,
     discover,
+    download_candidate,
     ingest_uploaded_media,
     load_config,
     now_iso,
@@ -286,6 +287,29 @@ def test_source_upload_becomes_downloaded_candidate(tmp_path: Path, monkeypatch)
     assert row["status"] == "DOWNLOADED"
     assert row["platform"] == "server_upload"
     assert (tmp_path / "workspace" / "jobs" / candidate / "source.mp4").is_file()
+
+
+def test_download_candidate_rejects_invalid_media_file(tmp_path: Path, monkeypatch):
+    config = make_config(tmp_path)
+    insert_candidate(config)
+
+    class FakeAdapter:
+        def download(self, url, output_template):
+            Path(output_template.replace("%(ext)s", "mp4")).write_bytes(b"not a video")
+
+    monkeypatch.setattr("jaguartv_factory.sources.get_adapter", lambda platform, config: FakeAdapter())
+    monkeypatch.setattr(
+        "jaguartv_factory.core.media_duration",
+        lambda path: (_ for _ in ()).throw(RuntimeError("ffprobe failed")),
+    )
+    row = connect_db(config).execute("SELECT * FROM candidates WHERE id=?", ("c1",)).fetchone()
+
+    with pytest.raises(RuntimeError, match="not a valid video"):
+        download_candidate(config, row)
+
+    stored = connect_db(config).execute("SELECT status FROM candidates WHERE id=?", ("c1",)).fetchone()
+    assert stored["status"] == "DOWNLOAD_FAILED"
+    assert not (tmp_path / "workspace" / "jobs" / "c1" / "source.mp4").exists()
 
 
 def test_inventory_scans_server_review_packages_without_db_row(tmp_path: Path):

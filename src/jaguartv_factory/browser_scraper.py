@@ -136,20 +136,9 @@ def _looks_like_tiktok_media_url(media_url: str) -> bool:
     lower = media_url.lower()
     if not lower or lower.startswith("blob:"):
         return False
-    return any(
-        marker in lower
-        for marker in (
-            ".mp4",
-            ".m3u8",
-            "mime_type=video",
-            "video/tos/",
-            "/video/tos",
-            "playwm",
-            "play_addr",
-            "download_addr",
-            "tiktokcdn",
-        )
-    )
+    if any(marker in lower for marker in (".js", ".css", ".png", ".jpg", ".jpeg", ".webp", ".svg", ".ico")):
+        return False
+    return any(marker in lower for marker in (".mp4", ".m3u8", "mime_type=video", "video/tos/", "/video/tos"))
 
 
 async def _search_tiktok_async(config: dict[str, Any], term: str, limit: int) -> list[dict[str, Any]]:
