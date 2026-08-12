@@ -179,6 +179,16 @@ def connect_db(config: dict[str, Any]) -> sqlite3.Connection:
         );
         CREATE UNIQUE INDEX IF NOT EXISTS candidates_platform_source
           ON candidates(platform, source_id) WHERE source_id IS NOT NULL;
+        CREATE TABLE IF NOT EXISTS seen_sources (
+          platform TEXT NOT NULL,
+          source_key TEXT NOT NULL,
+          source_id TEXT,
+          url TEXT NOT NULL DEFAULT '',
+          first_candidate_id TEXT NOT NULL DEFAULT '',
+          first_seen_at TEXT NOT NULL,
+          last_seen_at TEXT NOT NULL,
+          PRIMARY KEY(platform, source_key)
+        );
         CREATE TABLE IF NOT EXISTS events (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           candidate_id TEXT NOT NULL,
@@ -315,6 +325,24 @@ def connect_db(config: dict[str, Any]) -> sqlite3.Connection:
             "ALTER TABLE candidates ADD COLUMN published_flag INTEGER NOT NULL DEFAULT 0"
         )
         connection.commit()
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO seen_sources
+        (platform,source_key,source_id,url,first_candidate_id,first_seen_at,last_seen_at)
+        SELECT platform,
+               CASE
+                 WHEN source_id IS NOT NULL AND source_id != '' THEN 'id:' || source_id
+                 ELSE 'url:' || url
+               END,
+               source_id,
+               url,
+               id,
+               created_at,
+               updated_at
+        FROM candidates
+        """
+    )
+    connection.commit()
     return connection
 
 
@@ -417,6 +445,62 @@ def update_render_job(
 def candidate_id(platform: str, source_id: str | None, url: str) -> str:
     stable = f"{platform}:{source_id or url}"
     return hashlib.sha256(stable.encode("utf-8")).hexdigest()[:16]
+
+
+def seen_source_key(source_id: str | None, url: str) -> str:
+    source = str(source_id or "").strip()
+    if source:
+        return f"id:{source}"
+    return f"url:{normalize_source_url(url)}"
+
+
+def normalize_source_url(url: str) -> str:
+    parsed = urllib.parse.urlparse(str(url or "").strip())
+    if not parsed.scheme or not parsed.netloc:
+        return str(url or "").strip()
+    query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    kept = [
+        (key, value)
+        for key, value in query
+        if not key.lower().startswith("utm_") and key.lower() not in {"fbclid", "gclid"}
+    ]
+    return urllib.parse.urlunparse((
+        parsed.scheme.lower(),
+        parsed.netloc.lower(),
+        parsed.path.rstrip("/") or parsed.path,
+        "",
+        urllib.parse.urlencode(kept, doseq=True),
+        "",
+    ))
+
+
+def remember_seen_source(
+    connection: sqlite3.Connection,
+    platform: str,
+    source_id: str | None,
+    url: str,
+    candidate: str,
+    *,
+    timestamp: str | None = None,
+) -> bool:
+    """Record source discovery permanently; returns False when seen before."""
+    stamp = timestamp or now_iso()
+    key = seen_source_key(source_id, url)
+    cursor = connection.execute(
+        """
+        INSERT OR IGNORE INTO seen_sources
+        (platform,source_key,source_id,url,first_candidate_id,first_seen_at,last_seen_at)
+        VALUES(?,?,?,?,?,?,?)
+        """,
+        (platform, key, source_id, normalize_source_url(url), candidate, stamp, stamp),
+    )
+    if cursor.rowcount:
+        return True
+    connection.execute(
+        "UPDATE seen_sources SET last_seen_at=? WHERE platform=? AND source_key=?",
+        (stamp, platform, key),
+    )
+    return False
 
 
 def infer_platform(info: dict[str, Any]) -> str:
@@ -541,7 +625,7 @@ def discover(
     stats = {
         "discovered": 0, "inserted": 0, "language_rejected": 0,
         "market_rejected": 0, "too_long": 0, "errors": 0, "categories_skipped": 0,
-        "error_details": [],
+        "duplicates": 0, "error_details": [],
     }
     for platform in enabled:
         if platform not in SEARCHABLE_PLATFORMS:
@@ -581,6 +665,10 @@ def discover(
                     actual_platform = infer_platform(info) or platform
                     cid = candidate_id(actual_platform, source_id, url)
                     title = str(info.get("title") or "")
+                    timestamp = now_iso()
+                    if not remember_seen_source(connection, actual_platform, source_id, url, cid, timestamp=timestamp):
+                        stats["duplicates"] += 1
+                        continue
                     market_rejection = candidate_market_rejection(config, info, keyword=str(term))
                     if market_rejection:
                         stats["market_rejected"] += 1
@@ -593,7 +681,6 @@ def discover(
                         stats["language_rejected"] += 1
                     if too_long:
                         stats["too_long"] += 1
-                    timestamp = now_iso()
                     score, breakdown = score_candidate_v2(info, str(term), scoring_config_path(config))
                     values = (
                         cid,
@@ -669,6 +756,7 @@ def register_url_stub_candidate(
     connection = connect_db(config)
     existing = connection.execute("SELECT created_at FROM candidates WHERE id=?", (cid,)).fetchone()
     created_at = existing["created_at"] if existing else timestamp
+    remember_seen_source(connection, platform, None, url, cid, timestamp=timestamp)
     connection.execute(
         """INSERT OR REPLACE INTO candidates
         (id,platform,source_id,url,title,description,duration,view_count,detected_language,score,status,metadata_json,created_at,updated_at)
@@ -731,6 +819,15 @@ def inspect_url(
     timestamp = now_iso()
     score, breakdown = score_candidate_v2(info, title, scoring_config_path(config))
     connection = connect_db(config)
+    seen = remember_seen_source(connection, platform, source_id, url, cid, timestamp=timestamp)
+    if not seen:
+        existing = connection.execute(
+            "SELECT id FROM candidates WHERE platform=? AND (source_id=? OR url=?) ORDER BY created_at LIMIT 1",
+            (platform, source_id, url),
+        ).fetchone()
+        if existing:
+            connection.commit()
+            return str(existing["id"])
     connection.execute(
         """INSERT OR REPLACE INTO candidates
         (id,platform,source_id,url,title,description,duration,view_count,detected_language,score,status,metadata_json,created_at,updated_at)

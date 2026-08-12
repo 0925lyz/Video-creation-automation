@@ -12,6 +12,7 @@ from .core import (
     connect_db,
     likely_language,
     now_iso,
+    remember_seen_source,
     scoring_config_path,
     source_duration_limit,
 )
@@ -139,13 +140,17 @@ def ingest_mediacrawler_jsonl(
             score, breakdown = score_candidate_v2(info, title, scoring_config_path(config))
             too_long = candidate_too_long(config, duration)
             timestamp = now_iso()
+            cid = candidate_id(normalized_platform, source_id, url)
+            if not remember_seen_source(connection, normalized_platform, source_id, url, cid, timestamp=timestamp):
+                stats["duplicate"] += 1
+                continue
             cursor = connection.execute(
                 """INSERT OR IGNORE INTO candidates
                 (id,platform,source_id,url,title,description,duration,view_count,detected_language,
                  score,status,metadata_json,created_at,updated_at)
                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
-                    candidate_id(normalized_platform, source_id, url), normalized_platform, source_id, url,
+                    cid, normalized_platform, source_id, url,
                     title, description, duration, views, language, score, "TOO_LONG" if too_long else "DISCOVERED",
                     json.dumps({
                         **info,

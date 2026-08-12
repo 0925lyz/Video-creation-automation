@@ -122,6 +122,7 @@ GET /api/hot-keywords?date=today
 - 后续同步：`scripts/server-sync.sh`
 - systemd 默认服务：`jaguartv-content-factory-vnext`
 - 默认目录：`/opt/jaguartv-content-factory-vnext`
+- 默认 GitHub 仓库：`https://github.com/0925lyz/Video-creation-automation.git`
 - 当前服务器内部监听：`127.0.0.1:8788`，由 Nginx 对外提供 HTTPS
 - 线上入口：[factory.jarg.top](https://factory.jarg.top/)
 

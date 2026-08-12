@@ -7,26 +7,54 @@ set -euo pipefail
 #   APP_DIR=/opt/jaguartv-content-factory-vnext bash scripts/server-sync.sh
 
 APP_DIR="${APP_DIR:-/opt/jaguartv-content-factory-vnext}"
+REPO_URL="${REPO_URL:-https://github.com/0925lyz/Video-creation-automation.git}"
 BRANCH="${BRANCH:-main}"
 SERVICE_NAME="${SERVICE_NAME:-jaguartv-content-factory-vnext}"
+PYTHON_BIN="${PYTHON_BIN:-$APP_DIR/.venv/bin/python}"
+NODE_MIN_MAJOR="${NODE_MIN_MAJOR:-22}"
 
 if [[ ! -d "$APP_DIR/.git" ]]; then
   echo "Not a git checkout: $APP_DIR" >&2
   exit 1
 fi
 
+git_has_changes() {
+  ! git -C "$APP_DIR" diff --quiet ||
+    ! git -C "$APP_DIR" diff --cached --quiet ||
+    [[ -n "$(git -C "$APP_DIR" ls-files --others --exclude-standard)" ]]
+}
+
+if git_has_changes; then
+  STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+  echo "==> Saving existing server changes to git stash: server-sync-$STAMP"
+  git -C "$APP_DIR" stash push --include-untracked -m "server-sync-$STAMP"
+fi
+
 echo "==> Pulling latest code"
+git -C "$APP_DIR" remote set-url origin "$REPO_URL"
 git -C "$APP_DIR" fetch origin "$BRANCH"
-git -C "$APP_DIR" checkout "$BRANCH"
-git -C "$APP_DIR" pull --ff-only origin "$BRANCH"
+git -C "$APP_DIR" checkout -B "$BRANCH" "origin/$BRANCH"
+
+cd "$APP_DIR"
+
+NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
+if [[ "$NODE_MAJOR" -lt "$NODE_MIN_MAJOR" ]]; then
+  echo "==> Installing Node.js $NODE_MIN_MAJOR for Remotion and Hyperframes tooling"
+  curl -fsSL "https://deb.nodesource.com/setup_${NODE_MIN_MAJOR}.x" | sudo -E bash -
+  sudo apt-get install -y nodejs
+fi
 
 echo "==> Updating Python package"
-"$APP_DIR/.venv/bin/python" -m pip install --upgrade pip setuptools wheel
-"$APP_DIR/.venv/bin/pip" install -e "$APP_DIR[test]"
+"$PYTHON_BIN" -m pip install --upgrade pip setuptools wheel
+"$PYTHON_BIN" -m pip install -e "$APP_DIR[test]"
+
+echo "==> Updating Node helper packages"
+npm --prefix "$APP_DIR" install --no-audit --no-fund
+npm --prefix "$APP_DIR/src/jaguartv_factory/remotion_template" install --no-audit --no-fund
 
 if ! command -v deno >/dev/null 2>&1 || ! deno --version 2>/dev/null | head -n 1 | grep -Eq 'deno (2\.([3-9]|[1-9][0-9]+)\.|([3-9]|[1-9][0-9]+)\.)'; then
   echo "==> Installing a supported Deno runtime for YouTube extraction"
-  DENO_VERSION="${DENO_VERSION:-$(curl -fsSL https://api.github.com/repos/denoland/deno/releases/latest | "$APP_DIR/.venv/bin/python" -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])')}"
+  DENO_VERSION="${DENO_VERSION:-$(curl -fsSL https://api.github.com/repos/denoland/deno/releases/latest | "$PYTHON_BIN" -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])')}"
   case "$(uname -m)" in
     x86_64) DENO_TARGET="x86_64-unknown-linux-gnu" ;;
     aarch64|arm64) DENO_TARGET="aarch64-unknown-linux-gnu" ;;
@@ -34,10 +62,16 @@ if ! command -v deno >/dev/null 2>&1 || ! deno --version 2>/dev/null | head -n 1
   esac
   DENO_TEMP="$(mktemp -d)"
   curl -fsSL "https://github.com/denoland/deno/releases/download/$DENO_VERSION/deno-$DENO_TARGET.zip" -o "$DENO_TEMP/deno.zip"
-  "$APP_DIR/.venv/bin/python" -m zipfile -e "$DENO_TEMP/deno.zip" "$DENO_TEMP"
+  "$PYTHON_BIN" -m zipfile -e "$DENO_TEMP/deno.zip" "$DENO_TEMP"
   sudo install -m 0755 "$DENO_TEMP/deno" /usr/local/bin/deno
   rm -rf "$DENO_TEMP"
 fi
+
+echo "==> Verifying install"
+"$PYTHON_BIN" -m pytest tests/test_core.py tests/test_platform_and_brand.py tests/test_workbuddy_integration.py
+"$APP_DIR/.agents/skills/jaguartv-content-factory/scripts/factory.sh" doctor
+npm --prefix "$APP_DIR" run build
+"$APP_DIR/scripts/remotion-smoke.sh"
 
 echo "==> Restarting service"
 bash "$APP_DIR/scripts/install-source-services.sh"

@@ -10,7 +10,9 @@ import pytest
 from jaguartv_factory.core import (
     assert_script_is_portuguese,
     brand_kit,
+    candidate_id,
     connect_db,
+    discover,
     ingest_uploaded_media,
     load_config,
     now_iso,
@@ -515,8 +517,91 @@ def test_delete_candidate_clears_db_review_job_and_inventory_files(tmp_path: Pat
     assert not inventory_file.exists()
     connection = connect_db(config)
     assert connection.execute("SELECT COUNT(*) count FROM candidates WHERE id='c-delete'").fetchone()["count"] == 0
+    assert connection.execute(
+        "SELECT COUNT(*) count FROM seen_sources WHERE platform='youtube' AND source_key='id:s1'"
+    ).fetchone()["count"] == 1
     for table in ("events", "publications", "performance_snapshots", "conversion_events", "feedback_actions", "render_jobs"):
         assert connection.execute(f"SELECT COUNT(*) count FROM {table} WHERE candidate_id='c-delete'").fetchone()["count"] == 0
+
+
+def test_delete_more_than_100_candidates_keeps_seen_history(tmp_path: Path):
+    config = make_config(tmp_path)
+    connection = connect_db(config)
+    timestamp = now_iso()
+    for index in range(105):
+        source_id = f"s{index}"
+        connection.execute(
+            """INSERT INTO candidates(id,platform,source_id,url,title,description,duration,view_count,
+            detected_language,score,status,metadata_json,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                candidate_id("youtube", source_id, f"https://example.test/{source_id}"),
+                "youtube",
+                source_id,
+                f"https://example.test/{source_id}",
+                "Demo",
+                "",
+                30,
+                10,
+                "en",
+                50,
+                "DISCOVERED",
+                "{}",
+                timestamp,
+                timestamp,
+            ),
+        )
+    connection.commit()
+    connect_db(config).close()
+
+    ids = [
+        row["id"]
+        for row in connect_db(config).execute("SELECT id FROM candidates ORDER BY id").fetchall()
+    ]
+    result = delete_candidates(config, {"candidate_ids": ids})
+
+    connection = connect_db(config)
+    assert result["deleted"] == 105
+    assert connection.execute("SELECT COUNT(*) count FROM candidates").fetchone()["count"] == 0
+    assert connection.execute("SELECT COUNT(*) count FROM seen_sources").fetchone()["count"] == 105
+
+
+def test_discover_skips_sources_seen_before_even_after_delete(tmp_path: Path, monkeypatch):
+    config = make_config(tmp_path)
+    keywords = tmp_path / "keywords.yaml"
+    keywords.write_text(
+        "demo:\n  enabled: true\n  terms:\n    pt:\n      - brasil\n",
+        encoding="utf-8",
+    )
+    config["sources"] = {"keywords_file": str(keywords), "enabled": ["youtube"]}
+    config["discovery"] = {"max_candidates_per_keyword": 1}
+
+    class Adapter:
+        def search(self, term: str, limit: int) -> list[dict]:
+            return [{
+                "id": "same-video",
+                "webpage_url": "https://www.youtube.com/watch?v=same-video",
+                "title": "Brasil futebol hoje",
+                "description": "Você não vai acreditar no Brasil hoje",
+                "duration": 30,
+                "view_count": 1000,
+                "extractor_key": "Youtube",
+            }]
+
+    monkeypatch.setattr("jaguartv_factory.sources.SEARCHABLE_PLATFORMS", {"youtube"})
+    monkeypatch.setattr("jaguartv_factory.sources.get_adapter", lambda platform, config: Adapter())
+
+    first = discover(config)
+    cid = candidate_id("youtube", "same-video", "https://www.youtube.com/watch?v=same-video")
+    delete_candidates(config, {"candidate_ids": [cid]})
+    second = discover(config)
+
+    connection = connect_db(config)
+    assert first["inserted"] == 1
+    assert second["inserted"] == 0
+    assert second["duplicates"] == 1
+    assert connection.execute("SELECT COUNT(*) count FROM candidates").fetchone()["count"] == 0
+    assert connection.execute("SELECT COUNT(*) count FROM seen_sources").fetchone()["count"] == 1
 
 
 def test_delete_server_only_review_package(tmp_path: Path):

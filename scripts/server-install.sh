@@ -4,24 +4,40 @@ set -euo pipefail
 # Tencent Cloud Lighthouse / Ubuntu-Debian server installer for JaguarTV Content Factory.
 #
 # Usage on server:
-#   REPO_URL=git@github-jaguartv-l4:0925lyz/jaguartv-content-factory-vnext-l4.git \
+#   REPO_URL=https://github.com/0925lyz/Video-creation-automation.git \
 #   APP_DIR=/opt/jaguartv-content-factory-vnext \
 #   JAGUARTV_HOST=127.0.0.1 \
 #   JAGUARTV_PORT=8788 \
 #   bash scripts/server-install.sh
 #
 # Notes:
-# - For the private GitHub repo, configure an SSH deploy key or use an HTTPS token URL before running.
+# - For private forks, configure an SSH deploy key or use an HTTPS token URL before running.
 # - This script intentionally keeps runtime media in APP_DIR/workspace, not in git.
 
 APP_DIR="${APP_DIR:-/opt/jaguartv-content-factory-vnext}"
-REPO_URL="${REPO_URL:-https://github.com/0925lyz/jaguartv-content-factory-vnext-l4.git}"
+REPO_URL="${REPO_URL:-https://github.com/0925lyz/Video-creation-automation.git}"
 BRANCH="${BRANCH:-main}"
 SERVICE_NAME="${SERVICE_NAME:-jaguartv-content-factory-vnext}"
 JAGUARTV_HOST="${JAGUARTV_HOST:-127.0.0.1}"
 JAGUARTV_PORT="${JAGUARTV_PORT:-8787}"
 SERVICE_USER="${SERVICE_USER:-$(id -un)}"
 PYTHON_BIN="${PYTHON_BIN:-python3.12}"
+NODE_MIN_MAJOR="${NODE_MIN_MAJOR:-22}"
+
+git_has_changes() {
+  ! git -C "$APP_DIR" diff --quiet ||
+    ! git -C "$APP_DIR" diff --cached --quiet ||
+    [[ -n "$(git -C "$APP_DIR" ls-files --others --exclude-standard)" ]]
+}
+
+save_local_changes() {
+  if [[ -d "$APP_DIR/.git" ]] && git_has_changes; then
+    local stamp
+    stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+    echo "==> Saving existing server changes to git stash: server-install-$stamp"
+    git -C "$APP_DIR" stash push --include-untracked -m "server-install-$stamp"
+  fi
+}
 
 if ! command -v sudo >/dev/null 2>&1; then
   echo "sudo is required. Please install sudo or run from a sudo-capable user." >&2
@@ -52,9 +68,9 @@ if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
 fi
 
 NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
-if [[ "$NODE_MAJOR" -lt 18 ]]; then
-  echo "==> Installing Node.js 20 for Remotion rendering"
-  curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+if [[ "$NODE_MAJOR" -lt "$NODE_MIN_MAJOR" ]]; then
+  echo "==> Installing Node.js $NODE_MIN_MAJOR for Remotion and Hyperframes tooling"
+  curl -fsSL "https://deb.nodesource.com/setup_${NODE_MIN_MAJOR}.x" | sudo -E bash -
   sudo apt-get install -y nodejs
 fi
 
@@ -79,9 +95,10 @@ sudo chown -R "$SERVICE_USER":"$SERVICE_USER" "$APP_DIR"
 
 if [[ -d "$APP_DIR/.git" ]]; then
   echo "==> Updating existing repository"
+  save_local_changes
+  git -C "$APP_DIR" remote set-url origin "$REPO_URL"
   git -C "$APP_DIR" fetch origin "$BRANCH"
-  git -C "$APP_DIR" checkout "$BRANCH"
-  git -C "$APP_DIR" pull --ff-only origin "$BRANCH"
+  git -C "$APP_DIR" checkout -B "$BRANCH" "origin/$BRANCH"
 else
   echo "==> Cloning repository"
   git clone --branch "$BRANCH" "$REPO_URL" "$APP_DIR"
@@ -93,6 +110,10 @@ echo "==> Creating Python virtual environment"
 "$PYTHON_BIN" -m venv .venv
 .venv/bin/python -m pip install --upgrade pip setuptools wheel
 .venv/bin/pip install -e ".[test]"
+
+echo "==> Installing Node helper packages"
+npm --prefix "$APP_DIR" install --no-audit --no-fund
+npm --prefix "$APP_DIR/src/jaguartv_factory/remotion_template" install --no-audit --no-fund
 
 mkdir -p workspace/server_media/review workspace/server_media/uploads/source \
   workspace/server_media/uploads/reaction assets/bgm
@@ -150,8 +171,11 @@ sudo systemctl restart "$SERVICE_NAME"
 echo "==> Installing source helper services"
 bash scripts/install-source-services.sh
 
-echo "==> Running doctor"
-.venv/bin/jaguartv doctor
+echo "==> Verifying install"
+.venv/bin/python -m pytest tests/test_core.py tests/test_platform_and_brand.py tests/test_workbuddy_integration.py
+./.agents/skills/jaguartv-content-factory/scripts/factory.sh doctor
+npm --prefix "$APP_DIR" run build
+./scripts/remotion-smoke.sh
 
 echo
 echo "Deployment complete."

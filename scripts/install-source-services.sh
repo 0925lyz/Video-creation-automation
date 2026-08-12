@@ -4,6 +4,7 @@ set -euo pipefail
 APP_DIR="${APP_DIR:-/opt/jaguartv-content-factory-vnext}"
 SERVICE_USER="${SERVICE_USER:-$(id -un)}"
 PYTHON_BIN="${PYTHON_BIN:-$APP_DIR/.venv/bin/python}"
+JAGUARTV_CONFIG="${JAGUARTV_CONFIG:-config/pipeline.yaml}"
 
 if ! command -v sudo >/dev/null 2>&1; then
   echo "sudo is required." >&2
@@ -34,7 +35,7 @@ Type=simple
 User=$SERVICE_USER
 WorkingDirectory=$APP_DIR
 EnvironmentFile=-$APP_DIR/.env
-ExecStart=$PYTHON_BIN -m jaguartv_factory.source_service --config config/pipeline.yaml --host 127.0.0.1 --port $port --mode $mode
+ExecStart=$PYTHON_BIN -m jaguartv_factory.source_service --config $JAGUARTV_CONFIG --host 127.0.0.1 --port $port --mode $mode
 Restart=always
 RestartSec=5
 KillSignal=SIGINT
