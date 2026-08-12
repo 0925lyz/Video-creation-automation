@@ -111,6 +111,7 @@ def build_parser() -> argparse.ArgumentParser:
     discover_parser = subparsers.add_parser("discover")
     discover_parser.add_argument("--platform", action="append", choices=["youtube", "bilibili", "douyin", "xiaohongshu", "tiktok", "facebook"])
     discover_parser.add_argument("--limit", type=int)
+    discover_parser.add_argument("--keyword", action="append", help="Override configured keyword file for a focused discovery run.")
 
     ingest_parser = subparsers.add_parser("ingest")
     ingest_parser.add_argument("url")
@@ -161,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
         return doctor()
     config = load_config(Path(args.config))
     if args.command == "discover":
-        print_json(discover(config, platforms=args.platform, limit=args.limit))
+        print_json(discover(config, platforms=args.platform, limit=args.limit, keyword_overrides=args.keyword))
     elif args.command == "ingest":
         print(inspect_url(config, args.url))
     elif args.command == "ingest-mediacrawler":

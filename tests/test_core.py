@@ -29,6 +29,7 @@ from jaguartv_factory.core import (
     upsert_render_job,
     write_srt,
 )
+from jaguartv_factory import cli
 
 
 def test_language_detection():
@@ -133,6 +134,39 @@ def test_demo_config_loads():
     assert config["mobile_review_format"]["target_resolution"] == [1080, 1440]
     assert config["sources"]["enabled"] == ["douyin", "tiktok", "facebook"]
     assert config["sources"]["keywords_file"] == "config/keywords.brazil.yaml"
+
+
+def test_cli_discover_accepts_keyword_overrides(monkeypatch, tmp_path: Path, capsys):
+    config_path = tmp_path / "pipeline.yaml"
+    config_path.write_text("run:\n  workspace: workspace\nsources:\n  enabled: []\n", encoding="utf-8")
+    captured = {}
+
+    def fake_load_config(path: Path):
+        captured["config_path"] = path
+        return {"_root": str(tmp_path), "run": {"workspace": "workspace"}, "sources": {"enabled": []}}
+
+    def fake_discover(config, *, platforms=None, limit=None, keyword_overrides=None):
+        captured["platforms"] = platforms
+        captured["limit"] = limit
+        captured["keyword_overrides"] = keyword_overrides
+        return {"inserted": 0}
+
+    monkeypatch.setattr(cli, "load_config", fake_load_config)
+    monkeypatch.setattr(cli, "discover", fake_discover)
+
+    assert cli.main([
+        "--config", str(config_path),
+        "discover",
+        "--platform", "douyin",
+        "--keyword", "Brasileirão",
+        "--keyword", "TikTok Brasil",
+        "--limit", "1",
+    ]) == 0
+    assert captured["config_path"] == config_path
+    assert captured["platforms"] == ["douyin"]
+    assert captured["limit"] == 1
+    assert captured["keyword_overrides"] == ["Brasileirão", "TikTok Brasil"]
+    assert '"inserted": 0' in capsys.readouterr().out
 
 
 def test_standard_production_requires_remotion_dual_variant_assets():
