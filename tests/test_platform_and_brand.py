@@ -143,6 +143,38 @@ def test_facebook_adapter_uses_browser_search(monkeypatch):
     assert adapter.search("Brasileirão", 1)[0]["id"] == "fb1"
 
 
+def test_tiktok_download_uses_browser_fallback_when_ytdlp_fails(tmp_path: Path, monkeypatch):
+    def fake_run(args, *, timeout=None):
+        class Result:
+            returncode = 1
+            stderr = "Unexpected response from webpage request"
+            stdout = ""
+
+        return Result()
+
+    def fake_http_download(url, destination, timeout=300, headers=None):
+        destination.write_bytes(b"mp4")
+
+    monkeypatch.setattr("jaguartv_factory.sources.yt_dlp_binary", lambda: "/usr/bin/yt-dlp")
+    monkeypatch.setattr("jaguartv_factory.sources.run", fake_run)
+    monkeypatch.setattr(
+        "jaguartv_factory.browser_scraper.resolve_tiktok_video",
+        lambda config, url: {
+            "video_url": "https://v16-webapp-prime.tiktokcdn.com/video.mp4",
+            "title": "TikTok Brasil",
+        },
+    )
+    monkeypatch.setattr("jaguartv_factory.sources.http_download", fake_http_download)
+    destination = tmp_path / "source.%(ext)s"
+
+    adapter = YtDlpAdapter("tiktok", {"_root": str(tmp_path), "_workspace": "workspace"})
+    adapter.download("https://www.tiktok.com/@demo/video/123", str(destination))
+
+    assert (tmp_path / "source.mp4").read_bytes() == b"mp4"
+    info = json.loads((tmp_path / "source.info.json").read_text(encoding="utf-8"))
+    assert info["browser_fallback"]["title"] == "TikTok Brasil"
+
+
 def test_yt_dlp_adapter_supports_browser_cookie_env(monkeypatch):
     monkeypatch.setenv("JAGUARTV_YOUTUBE_COOKIES_FROM_BROWSER", "chrome")
     adapter = YtDlpAdapter("youtube", {})

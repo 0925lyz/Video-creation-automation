@@ -132,6 +132,26 @@ def _compact_title(text: str, fallback: str) -> str:
     return (text[:160] if text else fallback)
 
 
+def _looks_like_tiktok_media_url(media_url: str) -> bool:
+    lower = media_url.lower()
+    if not lower or lower.startswith("blob:"):
+        return False
+    return any(
+        marker in lower
+        for marker in (
+            ".mp4",
+            ".m3u8",
+            "mime_type=video",
+            "video/tos/",
+            "/video/tos",
+            "playwm",
+            "play_addr",
+            "download_addr",
+            "tiktokcdn",
+        )
+    )
+
+
 async def _search_tiktok_async(config: dict[str, Any], term: str, limit: int) -> list[dict[str, Any]]:
     playwright, browser, _context, page = await _new_page(config, "tiktok")
     try:
@@ -202,6 +222,75 @@ async def _search_douyin_async(config: dict[str, Any], term: str, limit: int) ->
                 "browser_scraper": "playwright_cookie_search",
             })
         return _dedupe(entries, limit)
+    finally:
+        await browser.close()
+        await playwright.stop()
+
+
+async def _resolve_tiktok_async(config: dict[str, Any], url: str) -> dict[str, Any]:
+    playwright, browser, _context, page = await _new_page(config, "tiktok")
+    try:
+        resources: list[str] = []
+
+        def collect_media(response: Any) -> None:
+            headers = getattr(response, "headers", {}) or {}
+            content_type = str(headers.get("content-type") or "").lower()
+            response_url = html.unescape(str(getattr(response, "url", "") or "")).replace("&amp;", "&")
+            if "video" in content_type or _looks_like_tiktok_media_url(response_url):
+                resources.append(response_url)
+
+        page.on("response", collect_media)
+        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        for _ in range(3):
+            await page.wait_for_timeout(4000)
+            try:
+                await page.locator("video").first.click(timeout=1200)
+            except Exception:
+                pass
+            await page.mouse.wheel(0, 600)
+        videos = await page.evaluate(
+            """() => Array.from(document.querySelectorAll('video')).map(v => ({
+              src: v.currentSrc || v.src,
+              duration: v.duration || 0,
+              poster: v.poster || ''
+            }))"""
+        )
+        performance_urls = await page.evaluate(
+            """() => performance.getEntriesByType('resource')
+              .map(entry => entry.name)
+              .filter(Boolean)"""
+        )
+        title = await page.title()
+        body = ""
+        try:
+            body = (await page.locator("body").inner_text(timeout=5000)).strip()
+        except Exception:
+            body = ""
+        candidates: list[str] = []
+        for source in [
+            *(resources or []),
+            *(performance_urls or []),
+            *(video.get("src") for video in videos if isinstance(video, dict)),
+        ]:
+            media_url = html.unescape(str(source or "")).replace("&amp;", "&")
+            if _looks_like_tiktok_media_url(media_url):
+                candidates.append(media_url)
+        if not candidates:
+            html_text = await page.content()
+            for match in re.findall(r"https?:\\/\\/[^\"'<>\\s]+", html_text):
+                media_url = html.unescape(match.replace("\\/", "/")).replace("&amp;", "&")
+                if _looks_like_tiktok_media_url(media_url):
+                    candidates.append(media_url)
+        candidates = list(dict.fromkeys(candidates))
+        if not candidates:
+            raise BrowserScrapeError("tiktok browser page loaded but no downloadable video URL was found")
+        return {
+            "video_url": candidates[0],
+            "title": title.replace(" | TikTok", "").strip(),
+            "description": body[:1200],
+            "duration": next((video.get("duration") for video in videos if isinstance(video, dict) and video.get("duration")), None),
+            "candidates": candidates[:5],
+        }
     finally:
         await browser.close()
         await playwright.stop()
@@ -368,3 +457,7 @@ def search_xiaohongshu(config: dict[str, Any], term: str, limit: int) -> list[di
 
 def resolve_xiaohongshu_video(config: dict[str, Any], url: str) -> dict[str, Any]:
     return asyncio.run(_resolve_xhs_async(config, url))
+
+
+def resolve_tiktok_video(config: dict[str, Any], url: str) -> dict[str, Any]:
+    return asyncio.run(_resolve_tiktok_async(config, url))

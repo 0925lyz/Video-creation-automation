@@ -74,6 +74,24 @@ def http_download(url: str, destination: Path, timeout: int = 300, headers: dict
         shutil.copyfileobj(response, handle)
 
 
+def ffmpeg_download(url: str, destination: Path, timeout: int = 300, headers: dict[str, str] | None = None) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise SourceError("ffmpeg binary is missing for HLS media download")
+    header_lines = {"User-Agent": "Mozilla/5.0", **(headers or {})}
+    header_blob = "".join(f"{key}: {value}\r\n" for key, value in header_lines.items())
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    result = run([
+        ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+        "-headers", header_blob,
+        "-i", url,
+        "-c", "copy",
+        str(destination),
+    ], timeout=timeout)
+    if result.returncode != 0:
+        raise SourceError(result.stderr.strip()[-1000:] or "ffmpeg media download failed")
+
+
 class YtDlpAdapter:
     """youtube + bilibili via yt-dlp. Bilibili search 412s are fixed in
     yt-dlp >= 2024.02 (auto buvid3); a real cookies file further improves
@@ -215,7 +233,45 @@ class YtDlpAdapter:
         except subprocess.TimeoutExpired as error:
             raise SourceError(f"{self.platform} download timed out after {error.timeout}s") from error
         if result.returncode != 0:
+            if self.platform == "tiktok":
+                self._download_tiktok_with_browser_fallback(
+                    url,
+                    output_template,
+                    timeout,
+                    result.stderr.strip()[-1000:] or "download failed",
+                )
+                return
             raise SourceError(result.stderr.strip()[-1000:] or "download failed")
+
+    def _download_tiktok_with_browser_fallback(
+        self,
+        url: str,
+        output_template: str,
+        timeout: float,
+        original_error: str,
+    ) -> None:
+        try:
+            from .browser_scraper import resolve_tiktok_video
+
+            data = resolve_tiktok_video(self._scrape_config(), url)
+            video_url = str(data.get("video_url") or "").strip()
+            if not video_url:
+                raise SourceError("browser fallback returned no video URL")
+            destination = Path(output_template.replace("%(ext)s", "mp4"))
+            headers = {"Referer": "https://www.tiktok.com/"}
+            if ".m3u8" in video_url.lower():
+                ffmpeg_download(video_url, destination, int(timeout), headers=headers)
+            else:
+                http_download(video_url, destination, int(timeout), headers=headers)
+            info_path = destination.with_suffix(".info.json")
+            info_path.write_text(
+                json.dumps({"webpage_url": url, "browser_fallback": data}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception as fallback_error:
+            raise SourceError(
+                f"{original_error}; tiktok browser download fallback failed: {fallback_error}"
+            ) from fallback_error
 
 
 class DouyinApiAdapter:
