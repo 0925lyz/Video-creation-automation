@@ -105,8 +105,6 @@ def test_source_adapters_resolve_and_fail_cleanly():
     config = {"sources": {"adapters": {"douyin": {"api_base": "http://127.0.0.1:1"}}}}
     adapter = get_adapter("douyin", config)
     assert isinstance(adapter.search("足球", 3), list)
-    with pytest.raises(SourceError):
-        get_adapter("facebook", config).search("football", 1)
     assert get_adapter("tiktok", config).platform == "tiktok"
     with pytest.raises(SourceError):
         get_adapter("unknown-platform", config)
@@ -131,6 +129,18 @@ def test_douyin_adapter_falls_back_to_browser_search(monkeypatch):
         {"_root": "/tmp/app", "run": {"workspace": "workspace"}, "sources": {"adapters": {"douyin": {"api_base": "http://127.0.0.1:1"}}}},
     )
     assert adapter.search("巴甲", 1)[0]["id"] == "123"
+
+
+def test_facebook_adapter_uses_browser_search(monkeypatch):
+    monkeypatch.setattr(
+        "jaguartv_factory.browser_scraper.search_facebook",
+        lambda config, term, limit: [{"id": "fb1", "webpage_url": "https://www.facebook.com/reel/fb1"}],
+    )
+    adapter = get_adapter(
+        "facebook",
+        {"_root": "/tmp/app", "run": {"workspace": "workspace"}, "sources": {}},
+    )
+    assert adapter.search("Brasileirão", 1)[0]["id"] == "fb1"
 
 
 def test_yt_dlp_adapter_supports_browser_cookie_env(monkeypatch):

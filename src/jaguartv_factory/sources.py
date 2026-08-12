@@ -164,6 +164,13 @@ class YtDlpAdapter:
         yt_dlp = yt_dlp_binary()
         prefix = self.search_prefixes.get(self.platform)
         if not prefix:
+            if self.platform == "facebook":
+                try:
+                    from .browser_scraper import search_facebook
+
+                    return search_facebook(self._scrape_config(), term, limit)
+                except Exception as browser_error:
+                    raise SourceError(f"facebook browser search failed: {browser_error}") from browser_error
             raise SourceError(f"{self.platform} has no yt-dlp search support")
         timeout = float(self.options.get("search_timeout_sec") or 90)
         try:

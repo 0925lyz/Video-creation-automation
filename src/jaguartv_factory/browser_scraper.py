@@ -207,6 +207,63 @@ async def _search_douyin_async(config: dict[str, Any], term: str, limit: int) ->
         await playwright.stop()
 
 
+def _facebook_video_id(href: str) -> str:
+    match = re.search(r"/reel/([A-Za-z0-9_.-]+)", href)
+    if match:
+        return match.group(1)
+    match = re.search(r"[?&]v=([A-Za-z0-9_.-]+)", href)
+    if match:
+        return match.group(1)
+    match = re.search(r"/videos/(?:[^/?#]+/)?([A-Za-z0-9_.-]+)", href)
+    if match:
+        return match.group(1)
+    match = re.search(r"fb\.watch/([A-Za-z0-9_.-]+)", href)
+    if match:
+        return match.group(1)
+    return ""
+
+
+async def _search_facebook_async(config: dict[str, Any], term: str, limit: int) -> list[dict[str, Any]]:
+    playwright, browser, _context, page = await _new_page(config, "facebook")
+    try:
+        url = "https://www.facebook.com/search/videos?q=" + urllib.parse.quote(term)
+        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        for _ in range(4):
+            await page.wait_for_timeout(3500)
+            await page.mouse.wheel(0, 1400)
+        links = await page.evaluate(
+            """() => Array.from(document.querySelectorAll('a[href]')).map(a => ({
+              href: a.href,
+              text: (a.innerText || a.getAttribute('aria-label') || '').trim()
+            })).filter(x => x.href && (
+              x.href.includes('/reel/') ||
+              x.href.includes('/watch/?v=') ||
+              x.href.includes('/videos/') ||
+              x.href.includes('fb.watch/')
+            ))"""
+        )
+        entries = []
+        for link in links:
+            href = html.unescape(str(link.get("href") or "")).replace("&amp;", "&")
+            video_id = _facebook_video_id(href)
+            if not video_id:
+                continue
+            entries.append({
+                "id": video_id,
+                "title": _compact_title(str(link.get("text") or ""), f"Facebook {term}"),
+                "description": str(link.get("text") or ""),
+                "webpage_url": href,
+                "duration": None,
+                "view_count": 0,
+                "extractor_key": "facebook",
+                "browser_scraper": "playwright_cookie_search",
+            })
+        return _dedupe(entries, limit)
+    finally:
+        await browser.close()
+        await playwright.stop()
+
+
 async def _search_xhs_async(config: dict[str, Any], term: str, limit: int) -> list[dict[str, Any]]:
     playwright, browser, _context, page = await _new_page(config, "xiaohongshu")
     try:
@@ -299,6 +356,10 @@ def search_tiktok(config: dict[str, Any], term: str, limit: int) -> list[dict[st
 
 def search_douyin(config: dict[str, Any], term: str, limit: int) -> list[dict[str, Any]]:
     return asyncio.run(_search_douyin_async(config, term, limit))
+
+
+def search_facebook(config: dict[str, Any], term: str, limit: int) -> list[dict[str, Any]]:
+    return asyncio.run(_search_facebook_async(config, term, limit))
 
 
 def search_xiaohongshu(config: dict[str, Any], term: str, limit: int) -> list[dict[str, Any]]:

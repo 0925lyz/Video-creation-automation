@@ -131,7 +131,7 @@ def test_demo_config_loads():
     assert config["brand"]["kits"]["jaguartv"]["endcard"]["mode"] == "orientation_image"
     assert config["brand"]["kits"]["jaguartv"]["endcard"]["duration_sec"] == 1.5
     assert config["mobile_review_format"]["target_resolution"] == [1080, 1440]
-    assert config["sources"]["enabled"] == ["youtube", "bilibili", "douyin", "tiktok"]
+    assert config["sources"]["enabled"] == ["douyin", "tiktok", "facebook"]
     assert config["sources"]["keywords_file"] == "config/keywords.brazil.yaml"
 
 

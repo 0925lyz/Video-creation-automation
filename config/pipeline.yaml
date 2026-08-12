@@ -7,7 +7,7 @@ run:
   source_download_timeout_sec: 300
 
 sources:
-  enabled: [youtube, bilibili, douyin, tiktok]
+  enabled: [douyin, tiktok, facebook]
   exclude_languages: []
   keywords_file: config/keywords.brazil.yaml
   creators_file: config/creators.example.yaml
