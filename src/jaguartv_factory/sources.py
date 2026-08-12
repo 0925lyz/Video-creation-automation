@@ -251,13 +251,23 @@ class YtDlpAdapter:
         original_error: str,
     ) -> None:
         try:
-            from .browser_scraper import resolve_tiktok_video
+            from .browser_scraper import download_tiktok_video, resolve_tiktok_video
 
+            destination = Path(output_template.replace("%(ext)s", "mp4"))
+            try:
+                data = download_tiktok_video(self._scrape_config(), url, destination)
+                info_path = destination.with_suffix(".info.json")
+                info_path.write_text(
+                    json.dumps({"webpage_url": url, "browser_fallback": data}, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                return
+            except Exception:
+                destination.unlink(missing_ok=True)
             data = resolve_tiktok_video(self._scrape_config(), url)
             video_url = str(data.get("video_url") or "").strip()
             if not video_url:
                 raise SourceError("browser fallback returned no video URL")
-            destination = Path(output_template.replace("%(ext)s", "mp4"))
             headers = {"Referer": "https://www.tiktok.com/"}
             if ".m3u8" in video_url.lower():
                 ffmpeg_download(video_url, destination, int(timeout), headers=headers)

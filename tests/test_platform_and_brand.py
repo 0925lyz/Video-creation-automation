@@ -153,19 +153,16 @@ def test_tiktok_download_uses_browser_fallback_when_ytdlp_fails(tmp_path: Path, 
 
         return Result()
 
-    def fake_http_download(url, destination, timeout=300, headers=None):
+    def fake_browser_download(config, url, destination):
         destination.write_bytes(b"mp4")
+        return {
+            "video_url": "https://v16-webapp-prime.tiktokcdn.com/video.mp4",
+            "title": "TikTok Brasil",
+        }
 
     monkeypatch.setattr("jaguartv_factory.sources.yt_dlp_binary", lambda: "/usr/bin/yt-dlp")
     monkeypatch.setattr("jaguartv_factory.sources.run", fake_run)
-    monkeypatch.setattr(
-        "jaguartv_factory.browser_scraper.resolve_tiktok_video",
-        lambda config, url: {
-            "video_url": "https://v16-webapp-prime.tiktokcdn.com/video.mp4",
-            "title": "TikTok Brasil",
-        },
-    )
-    monkeypatch.setattr("jaguartv_factory.sources.http_download", fake_http_download)
+    monkeypatch.setattr("jaguartv_factory.browser_scraper.download_tiktok_video", fake_browser_download)
     destination = tmp_path / "source.%(ext)s"
 
     adapter = YtDlpAdapter("tiktok", {"_root": str(tmp_path), "_workspace": "workspace"})

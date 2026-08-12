@@ -285,6 +285,62 @@ async def _resolve_tiktok_async(config: dict[str, Any], url: str) -> dict[str, A
         await playwright.stop()
 
 
+async def _download_tiktok_async(config: dict[str, Any], url: str, destination: Path) -> dict[str, Any]:
+    playwright, browser, context, page = await _new_page(config, "tiktok")
+    try:
+        resources: list[dict[str, Any]] = []
+
+        async def collect_media(response: Any) -> None:
+            headers = getattr(response, "headers", {}) or {}
+            content_type = str(headers.get("content-type") or "").lower()
+            response_url = html.unescape(str(getattr(response, "url", "") or "")).replace("&amp;", "&")
+            if "video" not in content_type and not _looks_like_tiktok_media_url(response_url):
+                return
+            item = {
+                "status": int(getattr(response, "status", 0) or 0),
+                "content_type": content_type,
+                "url": response_url,
+            }
+            resources.append(item)
+
+        page.on("response", lambda response: asyncio.create_task(collect_media(response)))
+        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        for _ in range(5):
+            await page.wait_for_timeout(3500)
+            try:
+                await page.locator("video").first.click(timeout=1200)
+            except Exception:
+                pass
+            await page.mouse.wheel(0, 600)
+
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        resolved = {"candidates": [item["url"] for item in resources if "video" in item["content_type"]]}
+        if not resolved["candidates"]:
+            resolved = await _resolve_tiktok_async(config, url)
+        failures: list[str] = []
+        for media_url in resolved.get("candidates") or [resolved.get("video_url")]:
+            media_url = str(media_url or "")
+            if not media_url:
+                continue
+            for headers in ({"Referer": url}, {"Referer": url, "Range": "bytes=0-"}):
+                response = await context.request.get(media_url, headers=headers, timeout=60000)
+                content_type = str(response.headers.get("content-type") or "").lower()
+                if response.status in {200, 206} and "video" in content_type:
+                    destination.write_bytes(await response.body())
+                    return {
+                        "webpage_url": url,
+                        "video_url": media_url,
+                        "content_type": content_type,
+                        "browser_response": "request",
+                        "candidates": resolved.get("candidates") or [],
+                    }
+                failures.append(f"{response.status} {content_type} {media_url[:180]}")
+        raise BrowserScrapeError("tiktok browser request could not fetch video media: " + "; ".join(failures[-3:]))
+    finally:
+        await browser.close()
+        await playwright.stop()
+
+
 def _facebook_video_id(href: str) -> str:
     match = re.search(r"/reel/([A-Za-z0-9_.-]+)", href)
     if match:
@@ -450,3 +506,7 @@ def resolve_xiaohongshu_video(config: dict[str, Any], url: str) -> dict[str, Any
 
 def resolve_tiktok_video(config: dict[str, Any], url: str) -> dict[str, Any]:
     return asyncio.run(_resolve_tiktok_async(config, url))
+
+
+def download_tiktok_video(config: dict[str, Any], url: str, destination: Path) -> dict[str, Any]:
+    return asyncio.run(_download_tiktok_async(config, url, destination))
