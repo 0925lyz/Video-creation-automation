@@ -1,0 +1,82 @@
+{
+  "task_id": "c90db773-aba8-4801-8575-ec6c4b3b4435",
+  "status": "PARTIAL",
+  "step": "S8",
+  "site_url": "https://factory.jarg.top",
+  "repo_url": "https://github.com/0925lyz/jaguartv-content-factory-vnext-l4.git",
+  "issues_found": [
+    "remotion_runtime_required_npm_only",
+    "single_variant_render_pipeline",
+    "review_package_only_archived_primary_video",
+    "missing_hot_keywords_route",
+    "missing_callback_route"
+  ],
+  "fixes_applied": [
+    "media_download_range_and_attachment_links_preserved",
+    "move_to_review_transaction_helper_preserved",
+    "remotion_runtime_accepts_npm_or_pnpm",
+    "remotion_render_timeout_sec_120",
+    "review_archive_copies_all_mp4_variants",
+    "inventory_exposes_variant_preview_download_server_links"
+  ],
+  "features_added": [
+    "dual_variant_remotion",
+    "tiktok_seed_keywords",
+    "google_trends_cron",
+    "hot_keywords_api",
+    "published_badge",
+    "callback_endpoint",
+    "annotation_module",
+    "server_inventory_variant_links"
+  ],
+  "commit_hash": "c85c3ce",
+  "error_code": null,
+  "flags": {
+    "partial_download": 0,
+    "partial_move": 0,
+    "trends_cached": 1,
+    "deploy_manual": 0,
+    "remotion_fallback": 1,
+    "asset_missing": 0
+  },
+  "verification": {
+    "python_compile": "passed",
+    "pytest": "47 passed",
+    "build": "passed via bundled node + pnpm run build; local npm binary is unavailable",
+    "local_api": {
+      "GET /api/hot-keywords?date=today": 200,
+      "POST /api/callback valid": 200,
+      "POST /api/callback invalid_platform": 400
+    },
+    "notes": [
+      "Local pytrends clone found but current .venv lacks pip/pandas/requests; dependencies were added to pyproject.toml.",
+      "A 2-second Remotion render smoke exceeded local runtime expectations and was interrupted; production render now has timeout_sec protection."
+    ]
+  },
+  "preflight": {
+    "site_http": 200,
+    "local_free_gib": 103,
+    "server_free_gib": 149,
+    "ssh": "ok",
+    "db_type": "sqlite",
+    "download_probe": {
+      "candidate_id": "0645eee0ced903fa_part01",
+      "file_size": 17879706,
+      "head_status": 200,
+      "range_status": 206,
+      "range_bytes": 2048,
+      "root_cause": "no_issue_reproduced"
+    }
+  },
+  "route_map": [
+    {"route": "/api/overview", "method": "GET", "status_code": 200, "body_size": 2959, "purpose": "dashboard overview"},
+    {"route": "/api/candidates", "method": "GET", "status_code": 200, "body_size": 114440, "purpose": "candidate inventory"},
+    {"route": "/api/publications", "method": "GET", "status_code": 200, "body_size": 381, "purpose": "publish queue"},
+    {"route": "/api/keywords", "method": "GET", "status_code": 200, "body_size": 407, "purpose": "keyword groups"},
+    {"route": "/api/sessions", "method": "GET", "status_code": 200, "body_size": 5563, "purpose": "saved sessions"},
+    {"route": "/api/health", "method": "GET", "status_code": 200, "body_size": 680, "purpose": "runtime health"},
+    {"route": "/api/actions", "method": "POST", "status_code": 202, "body_size": 48, "purpose": "background discovery/download/production"},
+    {"route": "/api/review", "method": "POST", "status_code": 400, "body_size": 88, "purpose": "review decision; empty payload rejected"},
+    {"route": "/media/<path>", "method": "GET", "status_code": 206, "body_size": 2048, "purpose": "preview and ranged attachment download"}
+  ]
+}
