@@ -63,6 +63,7 @@ edit:
   aspect_ratio: "source"
   resolution: [1080, 1920]         # used only when layout_mode=vertical
   source_subtitle_cleanup: "ocr_blur"  # localized clips only; protected corners are excluded
+  ocr_backend: auto                    # auto | tesseract | paddleocr
   source_subtitle_crop_bottom_ratio: 0.18
   ocr_use_fallback_regions: false
   ocr_auto_lower_third_fallback: true
@@ -76,6 +77,7 @@ localization:
   target: pt-BR
   asr_enabled: false
   whisper_model: tiny
+  voice_enabled: false                 # keep current no-fixed-voice policy unless explicitly enabled
   tts_provider: auto                 # edge -> local system voice fallback
   edge_tts_voice: pt-BR-AntonioNeural # energetic Brazilian Portuguese male voice
   speech_style: excited_sports_male
@@ -87,6 +89,25 @@ localization:
   hooks:
     A: "Olha só o que aconteceu aqui."
     B: "Você precisa ver isso até o final."
+  pyvideotrans:
+    enabled: true
+    project_dir: workspace/external_tools/pyvideotrans
+    uv_bin: ~/.local/bin/uv
+    timeout_sec: 900
+    stt_enabled: false
+    sts_enabled: false
+    tts_enabled: false
+    vtv_enabled: false
+    recogn_type: 0
+    model_name: tiny
+    detect_language: auto
+    translate_type: 0
+    source_language_code: auto
+    target_language_code: pt
+    tts_type: 0
+    voice_role: pt-BR-AntonioNeural
+    voice_rate: "+8%"
+    voice_autorate: true
 
 audio:
   # auto: localize only when subtitles/ASR prove speech; otherwise preserve source music.

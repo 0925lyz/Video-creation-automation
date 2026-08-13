@@ -32,6 +32,12 @@ from .reaction import compose_reaction, reaction_spec
 from .scoring import score_candidate_v2
 from .server_store import archive_review_package, storage_root
 from .strategy import render_audio_mode, resolve_production_strategy
+from .pyvideotrans_adapter import (
+    pyvideotrans_enabled,
+    pyvideotrans_stt,
+    pyvideotrans_translate_srt,
+    pyvideotrans_tts,
+)
 from .workbuddy_adapter import (
     demucs_backing_track,
     detect_chinese_text_regions,
@@ -1082,7 +1088,21 @@ def parse_srt(path: Path) -> str:
     return " ".join(lines)
 
 
-def transcribe_with_whisper(media: Path, output_dir: Path) -> str:
+def transcribe_with_whisper(media: Path, output_dir: Path, config: dict[str, Any] | None = None) -> str:
+    if config and pyvideotrans_enabled(config, "stt"):
+        try:
+            srt = pyvideotrans_stt(config, media, output_dir / "source.pyvideotrans.srt")
+            transcript = parse_srt(srt)
+            if transcript.strip():
+                (output_dir / "transcript_source.json").write_text(
+                    json.dumps({"provider": "pyvideotrans", "subtitle": str(srt), "text": transcript}, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                return transcript
+        except RuntimeError as error:
+            (output_dir / "pyvideotrans_stt_fallback.json").write_text(
+                json.dumps({"error": str(error)}, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
     try:
         from faster_whisper import WhisperModel
     except ImportError as error:
@@ -1098,7 +1118,14 @@ def transcribe_with_whisper(media: Path, output_dir: Path) -> str:
     return transcript
 
 
-def source_text(work: Path, media: Path, fallback: str, *, enable_asr: bool = True) -> str:
+def source_text(
+    work: Path,
+    media: Path,
+    fallback: str,
+    *,
+    enable_asr: bool = True,
+    config: dict[str, Any] | None = None,
+) -> str:
     subtitles = sorted([*work.glob("source*.srt"), *work.glob("source*.vtt")])
     for subtitle in subtitles:
         text = parse_srt(subtitle)
@@ -1106,7 +1133,7 @@ def source_text(work: Path, media: Path, fallback: str, *, enable_asr: bool = Tr
             return text
     if enable_asr:
         try:
-            return transcribe_with_whisper(media, work)
+            return transcribe_with_whisper(media, work, config)
         except RuntimeError:
             pass
     payload = {"provider": "metadata_fallback", "language": "unknown", "text": fallback}
@@ -1144,7 +1171,7 @@ def choose_audio_strategy(
 
     if requested != "preserve" and bool(config.get("localization", {}).get("asr_enabled", False)):
         try:
-            transcript = transcribe_with_whisper(media, work).strip()
+            transcript = transcribe_with_whisper(media, work, config).strip()
         except RuntimeError:
             transcript = ""
         if len(transcript) >= 30:
@@ -1158,7 +1185,13 @@ def choose_audio_strategy(
     return "bgm_only", "", "no_speech_evidence_source_has_no_audio"
 
 
-def localization_profile_for_candidate(row: sqlite3.Row, metadata: dict[str, Any], work: Path, media: Path) -> dict[str, Any]:
+def localization_profile_for_candidate(
+    row: sqlite3.Row,
+    metadata: dict[str, Any],
+    work: Path,
+    media: Path,
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     subtitle_files = sorted([*work.glob("source*.srt"), *work.glob("source*.vtt")])
     subtitle_text = ""
     for subtitle in subtitle_files[:3]:
@@ -1176,7 +1209,11 @@ def localization_profile_for_candidate(row: sqlite3.Row, metadata: dict[str, Any
     ocr_reason = ""
     if not chinese_subtitles and platform in {"bilibili", "douyin", "xiaohongshu"}:
         try:
-            ocr_regions = detect_chinese_text_regions(media, sample_count=8)
+            ocr_regions = detect_chinese_text_regions(
+                media,
+                sample_count=8,
+                backend=str(((config or {}).get("edit", {}) or {}).get("ocr_backend", "tesseract")),
+            )
             ocr_reason = "ocr_screen_chinese_detected" if ocr_regions else "ocr_no_screen_chinese"
         except RuntimeError as error:
             ocr_reason = f"ocr_unavailable:{error}"
@@ -1298,6 +1335,26 @@ def translate_to_ptbr(text: str) -> str:
     if not translated:
         raise RuntimeError("pt-BR translation returned empty text")
     return translated
+
+
+def source_subtitle_file(work: Path) -> Path | None:
+    return next(iter(sorted([*work.glob("source*.srt"), *work.glob("source*.vtt")])), None)
+
+
+def translate_source_subtitles_to_ptbr(config: dict[str, Any], work: Path, destination: Path) -> Path | None:
+    source = source_subtitle_file(work)
+    if not source or source.suffix.lower() != ".srt":
+        return None
+    if not pyvideotrans_enabled(config, "sts"):
+        return None
+    try:
+        return pyvideotrans_translate_srt(config, source, destination)
+    except RuntimeError as error:
+        (work / "pyvideotrans_sts_fallback.json").write_text(
+            json.dumps({"source": str(source), "error": str(error)}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return None
 
 
 def build_ptbr_script(source: str, *, hook: str = DEFAULT_HOOK) -> str:
@@ -1505,6 +1562,20 @@ def write_srt(text: str, duration: float, destination: Path) -> None:
     destination.write_text("\n".join(blocks), encoding="utf-8")
 
 
+def tts_rate_percent(config: dict[str, Any]) -> str:
+    raw = (config.get("localization", {}) or {}).get("tts_rate", 1.08)
+    if isinstance(raw, str):
+        value = raw.strip()
+        if value.endswith("%"):
+            return value
+        try:
+            raw = float(value)
+        except ValueError:
+            return "+8%"
+    percent = int(round((float(raw) - 1.0) * 100))
+    return f"{percent:+d}%"
+
+
 def format_srt_time(seconds: float) -> str:
     milliseconds = max(0, int(seconds * 1000))
     hours, remainder = divmod(milliseconds, 3_600_000)
@@ -1520,6 +1591,8 @@ def tts_ptbr(
     provider: str = "auto",
     edge_voice: str = "pt-BR-AntonioNeural",
     edge_rate: str = "+8%",
+    config: dict[str, Any] | None = None,
+    subtitles: Path | None = None,
 ) -> None:
     """Generate pt-BR narration with WorkBuddy's edge-tts path first.
 
@@ -1527,8 +1600,15 @@ def tts_ptbr(
     server operation.
     """
     provider = provider.strip().lower()
-    if provider not in {"auto", "edge", "system"}:
-        raise ValueError("localization.tts_provider must be auto, edge or system")
+    if provider not in {"auto", "edge", "system", "pyvideotrans"}:
+        raise ValueError("localization.tts_provider must be auto, edge, system or pyvideotrans")
+    if config and subtitles and provider in {"auto", "pyvideotrans"} and pyvideotrans_enabled(config, "tts"):
+        try:
+            pyvideotrans_tts(config, subtitles, destination)
+            return
+        except RuntimeError:
+            if provider == "pyvideotrans":
+                raise
     if provider in {"auto", "edge"}:
         try:
             edge_tts_ptbr(text, destination, voice=edge_voice, rate=edge_rate)
@@ -2963,7 +3043,7 @@ def produce_candidate(
     )
     hook_version, hook_text = active_hook(config)
     audio_mode = render_audio_mode(strategy.audio_policy)
-    localization_profile = localization_profile_for_candidate(row, candidate_metadata, work, media)
+    localization_profile = localization_profile_for_candidate(row, candidate_metadata, work, media, config)
     audio_override = str(options.get("audio_policy") or "auto").strip().lower() != "auto"
     if not audio_override:
         audio_mode = str(localization_profile["audio_mode"])
@@ -2976,6 +3056,7 @@ def produce_candidate(
             media,
             f"{row['title']}. {row['description']}".strip(),
             enable_asr=bool(config.get("localization", {}).get("asr_enabled", False)),
+            config=config,
         )
     elif audio_mode == "preserve_source" and not media_has_audio(media):
         audio_mode = "bgm_only"
@@ -2983,6 +3064,7 @@ def produce_candidate(
     progress(18, f"音轨策略：{audio_mode}")
     script = ""
     voice: Path | None = None
+    subtitles: Path | None = None
     bgm: Path | None = None
     bgm_source = "source_music" if audio_mode == "preserve_source" else "none"
     if audio_mode == "localized":
@@ -2990,8 +3072,32 @@ def produce_candidate(
         script = build_ptbr_script(transcript or fallback_text, hook=hook_text)
         assert_script_is_portuguese(script)
         progress(32, "葡语脚本检查通过")
-        voice = None
-        progress(48, "葡语脚本检查通过，按要求剔除固定配音")
+        localization_settings = config.get("localization", {}) or {}
+        translated_subtitles = None
+        if localization_profile.get("subtitle_mode") == "ptbr_subtitles":
+            translated_subtitles = translate_source_subtitles_to_ptbr(config, work, work / "subtitles_ptbr.srt")
+        if bool(localization_settings.get("voice_enabled", False)):
+            voice = work / "voice_ptbr.aiff"
+            subtitles_for_tts = translated_subtitles or work / "subtitles_ptbr_script.srt"
+            if not translated_subtitles:
+                write_srt(script, min(60.0, source_duration), subtitles_for_tts)
+            tts_ptbr(
+                script,
+                voice,
+                provider=str(localization_settings.get("tts_provider", "auto")),
+                edge_voice=str(localization_settings.get("edge_tts_voice", "pt-BR-AntonioNeural")),
+                edge_rate=tts_rate_percent(config),
+                config=config,
+                subtitles=subtitles_for_tts,
+            )
+            progress(48, "pt-BR 配音已生成")
+        else:
+            voice = None
+            if translated_subtitles:
+                subtitles = translated_subtitles
+            audio_mode = "bgm_only"
+            audio_reason += ":voice_disabled_bgm_only"
+            progress(48, "葡语脚本检查通过，按配置不生成固定配音")
         if bool(config.get("localization", {}).get("preserve_backing_track", False)):
             try:
                 bgm = demucs_backing_track(media, work)
@@ -3016,8 +3122,13 @@ def produce_candidate(
         "audio_reason": audio_reason,
     }
     (work / "script_ptbr.json").write_text(json.dumps(script_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    subtitles: Path | None = None
-    if audio_mode == "localized" and voice and localization_profile.get("subtitle_mode") == "ptbr_subtitles":
+    if audio_mode == "bgm_only" and subtitles:
+        preferred_duration = min(60.0, source_duration)
+    elif audio_mode == "localized" and voice and (work / "subtitles_ptbr.srt").is_file():
+        voice_duration = media_duration(voice)
+        preferred_duration = min(60.0, source_duration, max(20.0, voice_duration + 3.0))
+        subtitles = work / "subtitles_ptbr.srt"
+    elif audio_mode == "localized" and voice and localization_profile.get("subtitle_mode") == "ptbr_subtitles":
         voice_duration = media_duration(voice)
         preferred_duration = min(60.0, source_duration, max(20.0, voice_duration + 3.0))
         subtitles = work / "subtitles_ptbr.srt"
@@ -3027,7 +3138,10 @@ def produce_candidate(
         preferred_duration = min(60.0, source_duration, max(20.0, voice_duration + 3.0))
     else:
         preferred_duration = min(60.0, source_duration)
-        for stale in (work / "voice_ptbr.aiff", work / "subtitles_ptbr.srt"):
+        stale_paths = [work / "voice_ptbr.aiff"]
+        if subtitles is None:
+            stale_paths.append(work / "subtitles_ptbr.srt")
+        for stale in stale_paths:
             stale.unlink(missing_ok=True)
     render_engine = str(config.get("edit", {}).get("render_engine", "ffmpeg")).strip().lower()
     enforce_dual_variant_remotion(config)
@@ -3132,6 +3246,7 @@ def produce_candidate(
                 duration=float(segment["duration"]),
                 sigma=int(config.get("edit", {}).get("ocr_blur_sigma", 28)),
                 fallback_regions=fallback_regions,
+                backend=str(config.get("edit", {}).get("ocr_backend", "tesseract")),
             )
             render_media = preprocessed
             render_start = 0.0

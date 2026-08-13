@@ -25,16 +25,39 @@ edit:
   variants_per_source: 1
   original_subtitle_strategy: [inpaint, blur, preserve_and_flag]
   source_subtitle_cleanup: ocr_blur
+  ocr_backend: auto
   ocr_blur_sigma: 28
 
 localization:
   target: pt-BR
+  asr_enabled: false
+  whisper_model: tiny
+  voice_enabled: false
   tts_provider: auto
   edge_tts_voice: pt-BR-AntonioNeural
   preserve_backing_track: false
   tts_voice: energetic_male
   tts_rate: 1.05
   max_subtitle_chars_per_line: 36
+  pyvideotrans:
+    enabled: false
+    project_dir: workspace/external_tools/pyvideotrans
+    uv_bin: ~/.local/bin/uv
+    timeout_sec: 900
+    stt_enabled: false
+    sts_enabled: false
+    tts_enabled: false
+    vtv_enabled: false
+    recogn_type: 0
+    model_name: tiny
+    detect_language: auto
+    translate_type: 0
+    source_language_code: auto
+    target_language_code: pt
+    tts_type: 0
+    voice_role: pt-BR-AntonioNeural
+    voice_rate: "+8%"
+    voice_autorate: true
 
 brand:
   logo: assets/brand/logo.png
