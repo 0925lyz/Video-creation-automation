@@ -1,0 +1,21 @@
+football:
+  weight: 1.0
+  terms:
+    zh-CN: [足球, 巴西, 内马尔, 世界杯, 巴甲, 巴甲进球, 巴甲集锦]
+    pt: [brasileirão, brasileirão série a, gols brasileirão, melhores momentos brasileirão]
+    en: [football skills, brazil football, amazing goal, brazil serie a highlights, brasileirao goals]
+    es: [futbol brasil, golazo, historia del futbol]
+
+entertainment:
+  weight: 0.6
+  terms:
+    zh-CN: [电影解说, 电视剧, 娱乐趣闻]
+    en: [movie story, entertainment moments]
+    es: [historias de cine, entretenimiento]
+
+skills_and_curiosity:
+  weight: 0.4
+  terms:
+    zh-CN: [生活技巧, 科普, 奇闻]
+    en: [life hacks, explained, amazing facts]
+    es: [curiosidades, trucos, explicado]
