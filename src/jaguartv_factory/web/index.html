@@ -161,13 +161,12 @@
           <span class="muted" id="serverHealth">正在检测服务器</span>
         </div>
         <form id="assetUploadForm" class="asset-upload-form">
-          <label>管理令牌<input id="assetUploadToken" type="password" autocomplete="off" placeholder="JAGUARTV_UPLOAD_TOKEN" required></label>
           <label>素材类型<select id="assetUploadKind"><option value="source">源视频</option><option value="reaction">Reaction 视频</option></select></label>
           <label class="asset-file-field">选择视频<input id="assetUploadFile" type="file" accept="video/mp4,video/quicktime,video/webm,.mkv,.m4v" required></label>
           <button class="primary-button" id="assetUploadButton" type="submit">上传到服务器</button>
         </form>
         <div class="upload-progress" id="assetUploadProgress" hidden><div><span id="assetUploadMessage">准备上传</span><strong id="assetUploadPercent">0%</strong></div><div class="progress-track"><span id="assetUploadBar" style="width:0%"></span></div></div>
-        <div class="table-wrap asset-table-wrap"><table><thead><tr><th>文件</th><th>类型</th><th>大小</th><th>上传时间</th><th></th></tr></thead><tbody id="assetTable"><tr><td colspan="5"><div class="empty-state">输入管理令牌后加载服务器素材</div></td></tr></tbody></table></div>
+        <div class="table-wrap asset-table-wrap"><table><thead><tr><th>文件</th><th>类型</th><th>大小</th><th>上传时间</th><th></th></tr></thead><tbody id="assetTable"><tr><td colspan="5"><div class="empty-state">服务器素材加载中</div></td></tr></tbody></table></div>
       </section>
 
       <section class="settings-panel session-panel">
@@ -252,7 +251,6 @@
         <label>Reaction 布局<select id="productionReactionMode"><option value="none">不使用</option><option value="picture_in_picture">画中画</option><option value="split_vertical">上下分屏</option><option value="side_by_side">左右分屏</option></select></label>
         <label>服务器 Reaction 路径<input id="productionReactionSource" placeholder="/path/on/server/reaction.mp4"></label>
         <label>或上传 Reaction 文件<input id="productionReactionFile" type="file" accept="video/mp4,video/quicktime,video/webm,.mkv"></label>
-        <label>上传令牌<input id="productionUploadToken" type="password" autocomplete="off" placeholder="JAGUARTV_UPLOAD_TOKEN"></label>
         <label>源视频音量<input id="productionSourceVolume" type="number" min="0" max="2" step="0.05" value="0.72"></label>
         <label>Reaction 音量<input id="productionReactionVolume" type="number" min="0" max="2" step="0.05" value="1"></label>
         <label>批次标签<input id="productionBatchLabel" placeholder="可选；默认不加批次名"></label>
@@ -320,7 +318,6 @@
       <label id="discoverPlatformField">来源平台<select id="discoverPlatform"><option value="youtube">YouTube</option><option value="bilibili">Bilibili</option><option value="douyin">抖音</option><option value="xiaohongshu">小红书</option><option value="tiktok">TikTok</option><option value="facebook">Facebook</option></select></label>
       <label id="discoverUrlField">具体视频 URL（填写后直接导入并可下载）<input id="discoverUrl" type="url" placeholder="https://..."></label>
       <div id="discoverUploadFields" hidden>
-        <label>服务器管理令牌<input id="discoverUploadToken" type="password" autocomplete="off" placeholder="JAGUARTV_UPLOAD_TOKEN"></label>
         <label>上传源视频<input id="discoverUploadFile" type="file" accept="video/mp4,video/quicktime,video/webm,.mkv,.m4v"></label>
         <div class="upload-progress compact-progress" id="discoverUploadProgress" hidden><div><span id="discoverUploadMessage">准备上传</span><strong id="discoverUploadPercent">0%</strong></div><div class="progress-track"><span id="discoverUploadBar" style="width:0%"></span></div></div>
       </div>

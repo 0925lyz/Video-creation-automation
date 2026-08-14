@@ -68,13 +68,6 @@ const number = (value) => new Intl.NumberFormat("zh-CN", { notation: Number(valu
 const percent = (value) => `${(Number(value || 0) * 100).toFixed(2)}%`;
 const dateText = (value) => value ? new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value)) : "未设置";
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[character]));
-const storedUploadToken = () => sessionStorage.getItem("jaguartvUploadToken") || "";
-
-function rememberUploadToken(token) {
-  const value = String(token || "").trim();
-  if (value) sessionStorage.setItem("jaguartvUploadToken", value);
-  return value;
-}
 
 async function api(path, options = {}) {
   const { headers = {}, ...requestOptions } = options;
@@ -99,10 +92,9 @@ async function refreshAll(showToast = false) {
   const button = document.querySelector("#refreshButton");
   button.disabled = true;
   try {
-    const token = storedUploadToken();
     const [overview, candidates, publications, workers, feedback, downloadClaims, keywordGroups, tasks, settings, sessions, health, uploads] = await Promise.all([
       api("/api/overview"), api("/api/candidates?limit=200"), api("/api/publications"), api("/api/workers"), api("/api/feedback"), api("/api/download-claims"), api("/api/keywords"), api("/api/tasks"), api("/api/settings"), api("/api/sessions"), api("/api/health"),
-      token ? api("/api/uploads", { headers: { "X-Upload-Token": token } }).catch(() => []) : Promise.resolve([]),
+      api("/api/uploads").catch(() => []),
     ]);
     Object.assign(state, { overview, candidates, publications, workers, feedback, downloadClaims, keywordGroups, tasks, settings, sessions, health, uploads });
     renderAll();
@@ -680,10 +672,6 @@ function renderServerHealth() {
 function renderUploads() {
   const table = document.querySelector("#assetTable");
   if (!table) return;
-  if (!storedUploadToken()) {
-    table.innerHTML = `<tr><td colspan="5"><div class="empty-state">输入管理令牌后加载服务器素材</div></td></tr>`;
-    return;
-  }
   table.innerHTML = state.uploads.length ? state.uploads.map((item) => `
     <tr>
       <td><strong>${escapeHtml(item.original_filename || item.id)}</strong><small>${escapeHtml(item.id)}</small></td>
@@ -708,13 +696,8 @@ async function parseUploadResponse(response) {
 }
 
 async function uploadServerFile(file, kind, token, onProgress = () => {}) {
-  const publicUpload = kind === "design_image";
-  const authToken = publicUpload ? "" : rememberUploadToken(token);
-  if (!publicUpload && !authToken) throw new Error("请输入服务器管理令牌");
-  const authHeaders = authToken ? { "X-Upload-Token": authToken } : {};
   const init = await api("/api/uploads/init", {
     method: "POST",
-    headers: authHeaders,
     body: JSON.stringify({ filename: file.name, kind, size: file.size }),
   });
   const chunkSize = Number(init.chunk_bytes);
@@ -724,7 +707,7 @@ async function uploadServerFile(file, kind, token, onProgress = () => {}) {
     const end = Math.min(file.size, start + chunkSize);
     const response = await fetch(`/api/uploads/chunk?upload_id=${encodeURIComponent(init.id)}&index=${index}`, {
       method: "POST",
-      headers: { "Content-Type": "application/octet-stream", ...authHeaders },
+      headers: { "Content-Type": "application/octet-stream" },
       body: file.slice(start, end),
     });
     await parseUploadResponse(response);
@@ -733,7 +716,6 @@ async function uploadServerFile(file, kind, token, onProgress = () => {}) {
   onProgress(97, "服务器正在合并文件");
   const completed = await api("/api/uploads/complete", {
     method: "POST",
-    headers: authHeaders,
     body: JSON.stringify({ upload_id: init.id }),
   });
   onProgress(100, kind === "source" ? "上传完成，已进入待制作库存" : kind === "design_image" ? "图片上传完成" : "Reaction 上传完成");
@@ -741,12 +723,8 @@ async function uploadServerFile(file, kind, token, onProgress = () => {}) {
 }
 
 async function downloadUploadAsset(uploadId) {
-  const token = storedUploadToken();
-  if (!token) return toast("请输入服务器管理令牌", "error");
   try {
-    const payload = await api(`/api/uploads/${encodeURIComponent(uploadId)}/link`, {
-      headers: { "X-Upload-Token": token },
-    });
+    const payload = await api(`/api/uploads/${encodeURIComponent(uploadId)}/link`);
     if (!payload.download_url) throw new Error("服务器没有返回下载链接");
     window.location.assign(payload.download_url);
   } catch (error) {
@@ -1135,12 +1113,10 @@ document.querySelector("#assetUploadForm").addEventListener("submit", async (eve
   const button = document.querySelector("#assetUploadButton");
   const file = document.querySelector("#assetUploadFile").files[0];
   const kind = document.querySelector("#assetUploadKind").value;
-  const token = document.querySelector("#assetUploadToken").value;
   if (!file) return toast("请选择要上传的视频", "error");
   button.disabled = true;
   try {
-    const uploaded = await uploadServerFile(file, kind, token, setUploadProgress);
-    document.querySelector("#productionUploadToken").value = rememberUploadToken(token);
+    const uploaded = await uploadServerFile(file, kind, "", setUploadProgress);
     document.querySelector("#assetUploadFile").value = "";
     toast(kind === "source" ? `源视频已入库：${uploaded.candidate_id}` : "Reaction 已保存到服务器");
     await refreshAll();
@@ -1152,26 +1128,10 @@ document.querySelector("#assetUploadForm").addEventListener("submit", async (eve
   }
 });
 
-document.querySelector("#assetUploadToken").addEventListener("change", async (event) => {
-  const token = rememberUploadToken(event.target.value);
-  document.querySelector("#productionUploadToken").value = token;
-  if (!token) return;
-  try {
-    state.uploads = await api("/api/uploads", { headers: { "X-Upload-Token": token } });
-    renderUploads();
-    toast("服务器资产已连接");
-  } catch (error) {
-    state.uploads = [];
-    renderUploads();
-    toast(`连接失败：${error.message}`, "error");
-  }
-});
-
 document.querySelectorAll(".nav-item").forEach((button) => button.addEventListener("click", () => openView(button.dataset.view)));
 document.querySelectorAll("[data-open-view]").forEach((button) => button.addEventListener("click", () => openView(button.dataset.openView)));
 document.querySelector("#refreshButton").addEventListener("click", () => refreshAll(true));
 document.querySelector("#discoverButton").addEventListener("click", () => {
-  document.querySelector("#discoverUploadToken").value = storedUploadToken();
   document.querySelector("#discoverUploadProgress").hidden = true;
   updateDiscoverMode();
   document.querySelector("#discoverDialog").showModal();
@@ -1258,7 +1218,6 @@ function updateDiscoverMode() {
   document.querySelector("#discoverUrlField").hidden = mode !== "url";
   document.querySelector("#discoverUploadFields").hidden = mode !== "upload";
   document.querySelector("#discoverUrl").required = mode === "url";
-  document.querySelector("#discoverUploadToken").required = mode === "upload";
   document.querySelector("#discoverUploadFile").required = mode === "upload";
   const notes = {
     youtube: "粘贴 YouTube 视频 URL；系统会优先使用服务器保存的 YouTube 登录态解析。",
@@ -1330,7 +1289,7 @@ document.querySelector("#productionForm").addEventListener("submit", async (even
   let reactionSource = document.querySelector("#productionReactionSource").value.trim();
   try {
     if (mode !== "none" && file) {
-      const uploaded = await uploadReactionFile(file, document.querySelector("#productionUploadToken").value);
+      const uploaded = await uploadReactionFile(file, "");
       reactionSource = uploaded.path;
     }
     if (mode !== "none" && !reactionSource) throw new Error("启用 Reaction 时必须填写服务器路径或上传视频");
@@ -1414,11 +1373,8 @@ document.querySelector("#discoverForm").addEventListener("submit", async (event)
     const platform = document.querySelector("#discoverPlatform").value;
     if (mode === "upload") {
       const file = document.querySelector("#discoverUploadFile").files[0];
-      const token = document.querySelector("#discoverUploadToken").value;
       if (!file) throw new Error("请选择要上传的源视频");
-      const uploaded = await uploadServerFile(file, "source", token, setDiscoverUploadProgress);
-      document.querySelector("#assetUploadToken").value = rememberUploadToken(token);
-      document.querySelector("#productionUploadToken").value = storedUploadToken();
+      const uploaded = await uploadServerFile(file, "source", "", setDiscoverUploadProgress);
       document.querySelector("#discoverUploadFile").value = "";
       document.querySelector("#discoverDialog").close();
       toast(`源视频已入库：${uploaded.candidate_id}，可在待制作中生成成片`);
@@ -1539,7 +1495,4 @@ document.querySelector("#settingsForm").addEventListener("submit", async (event)
   } catch (error) { toast(error.message, "error"); }
 });
 
-const initialUploadToken = storedUploadToken();
-document.querySelector("#assetUploadToken").value = initialUploadToken;
-document.querySelector("#productionUploadToken").value = initialUploadToken;
 refreshAll();

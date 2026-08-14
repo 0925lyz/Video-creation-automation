@@ -52,11 +52,11 @@ def test_public_brand_asset_path_is_limited_to_brand_assets():
     assert public_brand_asset_path("/assets/brand/missing.png") is None
 
 
-def test_design_image_uploads_do_not_require_upload_token():
+def test_uploads_do_not_require_upload_token():
     assert upload_kind_requires_token("design_image") is False
-    assert upload_kind_requires_token("source") is True
-    assert upload_kind_requires_token("reaction") is True
-    assert upload_kind_requires_token("") is True
+    assert upload_kind_requires_token("source") is False
+    assert upload_kind_requires_token("reaction") is False
+    assert upload_kind_requires_token("") is False
 
 
 def test_initial_category_uses_discovery_keyword_first():
