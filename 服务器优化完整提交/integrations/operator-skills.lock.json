@@ -1,0 +1,19 @@
+{
+  "captured_at": "2026-08-14",
+  "policy": "External Skill code without an explicit redistributable license is not copied. The production functionality is implemented in server-snapshot and the Skill entrypoints are integrity-locked here.",
+  "project_skill": {
+    "name": "jaguartv-content-factory",
+    "path": "server-snapshot/.agents/skills/jaguartv-content-factory",
+    "included": true
+  },
+  "operator_skills": [
+    {"name": "douyin-downloader", "skill_md_sha256": "1e52d685e00e2fc27e54f5c9db9f332be631bef35533e71b28a5fb3c9c1a09fb", "integration": "source_service.py and sources.py"},
+    {"name": "tiktok-crawling", "skill_md_sha256": "d423f5004c6e4c367e8222e0fb538ae2309a900dbfbaf7a354e697ccfe5d8feb", "integration": "browser_scraper.py and sources.py"},
+    {"name": "agent-reach", "skill_md_sha256": "3a0beca2c0ec226026e5c1fd4757f29825b5109b6d15c773ad455e669e2f1693", "integration": "operator research only; no runtime dependency"},
+    {"name": "bilibili-video-crawler", "skill_md_sha256": "14c415abdaa9c3e27fc031fdaf83c0ef1adacf0bc21dfe61f484cd63bff43f11", "integration": "sources.py and cleanup-bilibili-inventory.py"},
+    {"name": "bilibili-downloader-plus", "skill_md_sha256": "d1d466d0822ee8c51228dfa0001ef90c7387cc2f0c94d1ff3887548c96659794", "integration": "sources.py and server-side yt-dlp"},
+    {"name": "yt-dlp-downloader", "skill_md_sha256": "854e13a11e157b45dfdbc53e9e4e833c76ebb8998a699892bc5761c2ddf62a0a", "integration": "pipeline/download.py and sources.py"},
+    {"name": "google-trends", "skill_md_sha256": "29af642b067e1f5c3fd8d26f792104260ef05b6d92532af3cb60fb7d1c924d6d", "integration": "trends.py and systemd timer"},
+    {"name": "openclaw-video-editor", "skill_md_sha256": "b742ed8ed4d3bc5b34e9f5b451f7ca3ac9e0c7bfac900566efa8b83e2e337404", "integration": "FFmpeg rendering and QA workflow reference"}
+  ]
+}

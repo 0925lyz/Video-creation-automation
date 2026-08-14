@@ -1,0 +1,30 @@
+members:
+  - id: allen
+    name: Allen
+    roles:
+      - admin
+      - scout
+      - publisher
+    source_profiles:
+      - allen_football_cn
+    target_accounts:
+      - yt_hoje
+      - tk_hoje
+
+  - id: editor_01
+    name: Editor 01
+    roles:
+      - scout
+      - editor
+    source_profiles:
+      - editor_install_guides
+    target_accounts:
+      - fb_hoje
+      - kwai_hoje
+
+  - id: reviewer_br
+    name: Reviewer BR
+    roles:
+      - reviewer
+    source_profiles: []
+    target_accounts: []
