@@ -19,11 +19,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.request import Request, urlopen
 
 import yaml
 
 from .core import (
+    append_event,
     category_active_today,
+    candidate_has_review_outputs,
     connect_db,
     discover,
     download_top,
@@ -32,6 +35,7 @@ from .core import (
     ingest_uploaded_media,
     inventory_root,
     list_candidates,
+    media_dimensions,
     now_iso,
     produce_top,
     resolve_config_path,
@@ -49,7 +53,8 @@ from .server_store import (
     save_upload_chunk,
     storage_root,
 )
-from .trends import list_hot_keywords, run_trends_job, start_trends_scheduler
+from .source_outro import review_source_outro_summary
+from .trends import list_hot_keywords, run_trends_job, start_trends_scheduler, trends_today
 
 
 WEB_ROOT = Path(__file__).resolve().parent / "web"
@@ -59,6 +64,86 @@ PUBLISH_TARGETS = (*PLATFORMS, "instagram", "other")
 EVENT_TYPES = ("landing_click", "download_started", "install", "registration", "first_watch")
 REVIEW_DECISIONS = ("APPROVED", "REVISION_REQUIRED")
 PART_PACKAGE_PATTERN = re.compile(r"^(?P<parent>.+)_part(?P<number>\d+)$")
+COPYWRITER_MODES = {"tv", "generic"}
+COPYWRITER_PLATFORMS = {"shorts", "tiktok", "kwai", "facebook", "whatsapp", "email", "seo"}
+COPYWRITER_TONES = {"viral", "trust", "urgent", "friendly"}
+PUBLIC_UPLOAD_KINDS = {"design_image"}
+ADMIN_COOKIE_NAME = "jaguartv_admin"
+INITIAL_CATEGORY_RULES = (
+    ("ai短剧", (
+        "ai短剧", "ai 短剧", "短剧", "微短剧", "竖屏剧", "ai drama", "ai short drama",
+        "short drama", "mini drama", "micro drama", "drama ia", "série ia", "serie ia",
+        "novela ia", "história gerada por ia", "historia gerada por ia",
+    )),
+    ("明星名人歌手", (
+        "celebridade", "celebrity", "famoso", "famosa", "famosos", "famosas", "artista",
+        "cantor", "cantora", "singer", "ator", "atriz", "influencer", "anitta", "ludmilla",
+        "ivete sangalo", "pabllo vittar", "luísa sonza", "luisa sonza", "iza", "alok",
+        "isis valverde", "nathalia dill", "amora mautner",
+        "gusttavo lima", "whindersson", "neymar atriz", "明星", "名人", "歌手", "艺人",
+        "演员", "网红", "安妮塔", "卢德米拉",
+    )),
+    ("足球球星", (
+        "neymar", "vinicius", "vinícius", "vini jr", "vini junior", "rodrygo",
+        "endrick", "richarlison", "raphinha", "casemiro", "marquinhos", "alisson",
+        "ronaldinho", "ronaldo fenômeno", "ronaldo fenomeno", "pelé", "pele", "messi",
+        "cristiano ronaldo", "mbappé", "mbappe", "haaland", "craque", "artilheiro",
+        "bola de ouro", "球星", "内马尔", "维尼修斯", "罗德里戈", "恩德里克", "梅西",
+        "C罗", "姆巴佩", "哈兰德", "金球奖",
+    )),
+    ("足球类", (
+        "futebol", "football", "soccer", "libertadores", "brasileirão", "brasileirao",
+        "copa do brasil", "palmeiras", "flamengo", "cruzeiro", "corinthians", "botafogo",
+        "são paulo", "sao paulo", "cerro porteño", "cerro porteno", "gols", "melhores momentos",
+        "sccp", "fiel torcedor", "portland timbers", "cruz azul", "rosario central",
+        "club atlético", "club atletico", "los angeles fc", "lafc", "querétaro", "queretaro",
+        "seattle sounders", "guadalajara",
+        "巴甲", "足球", "解放者杯", "南美杯", "巴西杯", "帕尔梅拉斯", "弗拉门戈",
+    )),
+    ("新闻类", (
+        "notícia", "noticias", "notícias", "news", "g1", "cnn brasil", "eleições",
+        "eleicoes", "presidente", "tse", "dólar", "dolar", "inflação", "inflacao",
+        "previsão do tempo", "previsao do tempo", "tarifa", "congresso", "lula",
+        "新闻", "大选", "总统", "通胀", "天气", "汇率",
+    )),
+    ("音乐类", (
+        "música", "musica", "music", "funk", "sertanejo", "anitta", "ludmilla",
+        "brega", "mpb", "spotify", "festival de música", "festival de musica", "show",
+        "viral song", "歌曲", "音乐", "放克", "乡村音乐", "演唱会", "音乐节",
+    )),
+    ("肥皂剧（电视剧、电影）", (
+        "novela", "telenovela", "globoplay", "globo", "resumo da novela", "spoiler",
+        "tela quente", "filme", "filmes", "cinema", "movie", "movies", "série",
+        "serie", "series", "电视剧", "电影", "肥皂剧", "环球台", "剧情", "剧集",
+    )),
+    ("少儿剧", (
+        "infantil", "criança", "crianca", "kids", "children", "desenho", "cartoon",
+        "animação", "animacao", "nursery", "儿童", "少儿", "动画", "卡通", "亲子",
+    )),
+    ("成人频道", (
+        "adulto", "adult", "canal adulto", "18+", "nsfw", "sensual", "成人",
+    )),
+    ("纪录片（美食、动物、地区发展）", (
+        "documentário", "documentario", "documentary", "comida", "culinária", "culinaria",
+        "gastronomia", "animal", "animais", "natureza", "desenvolvimento", "região",
+        "regiao", "história", "historia", "纪录片", "美食", "动物", "自然", "地区发展",
+    )),
+    ("综艺", (
+        "programa", "reality", "variedades", "show de tv", "entretenimento", "humor",
+        "comédia", "comedia", "综艺", "娱乐", "真人秀", "喜剧",
+    )),
+    ("社交挑战", (
+        "desafio", "challenge", "tiktok brasil", "#fyp", "para você", "para voce",
+        "paravoce", "#viral", "reels", "meme", "trend", "tendência", "tendencia",
+        "挑战", "热门挑战", "社交", "梗图", "爆款", "病毒",
+    )),
+    ("舞蹈", (
+        "dança", "danca", "dance", "coreografia", "choreography", "passinho", "舞蹈", "跳舞",
+    )),
+)
+INITIAL_CATEGORY_LABELS = [label for label, _ in INITIAL_CATEGORY_RULES]
+SOURCE_MEDIA_SUFFIXES = {".mp4", ".mkv", ".webm", ".mov", ".m4v"}
+PRODUCTION_RUNNING_STATUS = "PRODUCTION_RUNNING"
 
 
 def public_brand_asset_path(requested: str) -> Path | None:
@@ -73,6 +158,37 @@ def public_brand_asset_path(requested: str) -> Path | None:
     return path
 
 
+def upload_kind_requires_token(kind: str) -> bool:
+    return str(kind or "").strip().lower() not in PUBLIC_UPLOAD_KINDS
+
+
+def loopback_client(address: str) -> bool:
+    return address in {"127.0.0.1", "::1", "localhost"}
+
+
+def initial_category_for_text(*values: Any) -> str:
+    chunks = [str(value or "").lower() for value in values if str(value or "").strip()]
+    for label, needles in INITIAL_CATEGORY_RULES:
+        if chunks and any(needle in chunks[0] for needle in needles):
+            return label
+    haystack = " ".join(chunks[1:] if len(chunks) > 1 else chunks)
+    for label, needles in INITIAL_CATEGORY_RULES:
+        if any(needle in haystack for needle in needles):
+            return label
+    return "未分类"
+
+
+def normalize_keyword(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip().lower())
+
+
+def explicit_category_label(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return next((label for label in INITIAL_CATEGORY_LABELS if label == text or label in text), "")
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -82,6 +198,308 @@ def int_value(value: Any, default: int = 0) -> int:
         return max(0, int(value))
     except (TypeError, ValueError):
         return default
+
+
+def gemini_model_name(value: str | None = None) -> str:
+    raw = (value if value is not None else os.environ.get("GEMINI_MODEL", "")).strip()
+    model = raw or "gemini-2.5-flash"
+    normalized = model.lower().replace("_", "-")
+    aliases = {
+        "gemini-3.1-pro": "gemini-3.1-pro-preview",
+        "gemini-3.1-pro-latest": "gemini-3.1-pro-preview",
+        "gemini-3.1-pro-preview": "gemini-3.1-pro-preview",
+        "gemini-3.1-flash": "gemini-3.1-flash-lite",
+        "gemini-3.1-flash-lite": "gemini-3.1-flash-lite",
+        "gemini-3.5-flash": "gemini-3.5-flash",
+        "gemini-3.6-flash": "gemini-3.6-flash",
+        "gemini-2.5-flash": "gemini-2.5-flash",
+        "gemini-2.5-pro": "gemini-2.5-pro",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def gemini_model_candidates(primary: str) -> list[str]:
+    candidates = [primary]
+    if primary == "gemini-3.1-pro-preview":
+        candidates.append("gemini-3.1-flash-lite")
+    candidates.append("gemini-2.5-flash")
+    return list(dict.fromkeys(candidates))
+
+
+def copywriter_request(payload: dict[str, Any]) -> dict[str, Any]:
+    input_text = str(payload.get("input") or "").strip()
+    if not input_text:
+        raise ValueError("input is required")
+    if len(input_text) > 800:
+        raise ValueError("input must be 800 characters or fewer")
+    mode = str(payload.get("mode") or "tv").strip().lower()
+    platform = str(payload.get("platform") or "shorts").strip().lower()
+    tone = str(payload.get("tone") or "viral").strip().lower()
+    if mode not in COPYWRITER_MODES:
+        raise ValueError(f"mode must be one of {sorted(COPYWRITER_MODES)}")
+    if platform not in COPYWRITER_PLATFORMS:
+        raise ValueError(f"platform must be one of {sorted(COPYWRITER_PLATFORMS)}")
+    if tone not in COPYWRITER_TONES:
+        raise ValueError(f"tone must be one of {sorted(COPYWRITER_TONES)}")
+    count = int_value(payload.get("count"), 5)
+    if count not in {3, 5, 8}:
+        raise ValueError("count must be 3, 5, or 8")
+    heat = int_value(payload.get("heat"), 7)
+    if heat < 1 or heat > 10:
+        raise ValueError("heat must be between 1 and 10")
+    cta = str(payload.get("cta") or ("Baixe em Jarg.top" if mode == "tv" else "Saiba mais")).strip()
+    if len(cta) > 180:
+        raise ValueError("cta must be 180 characters or fewer")
+    return {
+        "input": input_text,
+        "mode": mode,
+        "platform": platform,
+        "tone": tone,
+        "heat": heat,
+        "count": count,
+        "cta": cta,
+    }
+
+
+def copywriter_prompt(request: dict[str, Any]) -> str:
+    mode_rules = (
+        "TV product promotion mode: write Brazilian Portuguese marketing copy for JaguarTV. "
+        "Product facts: JaguarTV, Jarg.top, live TV, sports, movies, series, Android phone, Android TV, TV box, Brazil. "
+        "Never promise specific copyrighted channels, guaranteed free access, prices, or availability unless the user supplied them. "
+        "Use Jarg.top only as the download/action destination."
+        if request["mode"] == "tv"
+        else "Generic content mode: write directly about the user's keywords as publishable Brazilian Portuguese content. "
+        "Do not write advice about marketing, copywriting, campaigns, or how to talk about the topic. "
+        "Do not mention JaguarTV, Jarg.top, TV ao vivo, Android TV, download sites, or any TV product. "
+        "If the keywords describe football, street football, a challenge, Brazil, food, music, health, education, or any other topic, make the output about that topic itself."
+    )
+    return f"""
+You are a senior Brazilian Portuguese copywriter and Chinese bilingual reviewer.
+The operator inputs Chinese keywords and needs ready-to-publish pt-BR copy plus Chinese audit translations.
+
+User keywords in Chinese:
+{request['input']}
+
+Generation settings:
+- mode: {request['mode']}
+- platform: {request['platform']}
+- tone: {request['tone']}
+- viral intensity: {request['heat']}/10
+- variant count: {request['count']}
+- CTA/action: {request['cta']}
+
+Rules:
+{mode_rules}
+- Output must be natural Brazilian Portuguese, not European Portuguese.
+- Keep claims honest and avoid unverifiable guarantees.
+- Generate exactly {request['count']} titles and exactly {request['count']} platform captions.
+- Captions should match the platform and be usable without extra editing.
+- Also include a Chinese audit translation that helps a Chinese-speaking operator review the pt-BR meaning.
+- Return JSON only. No markdown, no code fences, no commentary.
+
+Return this exact JSON shape:
+{{
+  "strategy": "multi-line pt-BR strategy summary",
+  "titles": ["pt-BR title 1"],
+  "captions": ["1. [Platform] pt-BR caption 1"],
+  "cta": "pt-BR CTA/action",
+  "hashtags": "#Tag1 #Tag2",
+  "emails": [
+    {{"name": "pt-BR stage name", "subject": "pt-BR subject", "preview": "pt-BR preview", "body": "pt-BR body", "cta": "pt-BR CTA"}}
+  ],
+  "seo": {{"title": "pt-BR SEO title", "description": "pt-BR meta description", "keywords": ["keyword"]}},
+  "zhAudit": {{
+    "strategy": "中文审核策略说明",
+    "titles": ["中文标题含义 1"],
+    "captions": ["1. [平台] 中文正文含义 1"],
+    "cta": "中文 CTA 含义",
+    "hashtags": "中文标签含义",
+    "emails": [
+      {{"name": "中文阶段名", "subject": "中文主题含义", "preview": "中文预览含义", "body": "中文正文含义", "cta": "中文 CTA"}}
+    ],
+    "seo": {{"title": "中文 SEO 标题含义", "description": "中文 SEO 描述含义", "keywords": ["中文关键词"]}}
+  }},
+  "note": "pt-BR compliance/performance note"
+}}
+""".strip()
+
+
+def extract_json_object(text: str) -> dict[str, Any]:
+    clean = text.strip()
+    fence = re.search(r"```(?:json)?\s*(.*?)```", clean, flags=re.DOTALL | re.IGNORECASE)
+    if fence:
+        clean = fence.group(1).strip()
+    if not clean.startswith("{"):
+        start = clean.find("{")
+        end = clean.rfind("}")
+        if start < 0 or end < start:
+            raise ValueError("Gemini response did not contain JSON")
+        clean = clean[start:end + 1]
+    try:
+        data = json.loads(clean)
+    except json.JSONDecodeError as error:
+        raise ValueError("Gemini response was not valid JSON") from error
+    if not isinstance(data, dict):
+        raise ValueError("Gemini response JSON must be an object")
+    return data
+
+
+def gemini_text(response: dict[str, Any]) -> str:
+    candidates = response.get("candidates")
+    if not isinstance(candidates, list) or not candidates:
+        raise ValueError("Gemini response did not include candidates")
+    parts = (candidates[0].get("content") or {}).get("parts") or []
+    text = "".join(str(part.get("text") or "") for part in parts if isinstance(part, dict))
+    if not text.strip():
+        raise ValueError("Gemini response text was empty")
+    return text
+
+
+def _string_list(value: Any, *, expected: int | None = None, field: str) -> list[str]:
+    if not isinstance(value, list):
+        raise ValueError(f"Gemini field {field} must be a list")
+    items = [str(item).strip() for item in value if str(item or "").strip()]
+    if expected is not None and len(items) < expected:
+        raise ValueError(f"Gemini field {field} must contain at least {expected} items")
+    return items[:expected] if expected else items
+
+
+def _email_list(value: Any, field: str) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        raise ValueError(f"Gemini field {field} must be a list")
+    emails: list[dict[str, str]] = []
+    for item in value[:5]:
+        if not isinstance(item, dict):
+            continue
+        emails.append({
+            "name": str(item.get("name") or "").strip(),
+            "subject": str(item.get("subject") or "").strip(),
+            "preview": str(item.get("preview") or "").strip(),
+            "body": str(item.get("body") or "").strip(),
+            "cta": str(item.get("cta") or "").strip(),
+        })
+    if not emails:
+        raise ValueError(f"Gemini field {field} must contain at least one email")
+    return emails
+
+
+def post_json(endpoint: str, headers: dict[str, str], body: dict[str, Any], timeout: int) -> tuple[int, dict[str, Any]]:
+    request = Request(
+        endpoint,
+        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            raw = response.read()
+            status = int(response.status)
+    except Exception as error:
+        response = getattr(error, "fp", None)
+        status = int(getattr(error, "code", 0) or 0)
+        raw = response.read() if response else b""
+        if not status:
+            raise RuntimeError(str(error)) from error
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"non-JSON response from Gemini: {raw[:180]!r}") from error
+    return status, data
+
+
+def normalize_gemini_copywriter_result(
+    result: dict[str, Any],
+    request: dict[str, Any],
+    model: str,
+) -> dict[str, Any]:
+    seo = result.get("seo") or {}
+    zh_audit = result.get("zhAudit") or {}
+    if not isinstance(seo, dict) or not isinstance(zh_audit, dict):
+        raise ValueError("Gemini response is missing seo or zhAudit objects")
+    zh_seo = zh_audit.get("seo") or {}
+    if not isinstance(zh_seo, dict):
+        raise ValueError("Gemini response is missing zhAudit.seo object")
+    normalized = {
+        "mode": request["mode"],
+        "strategy": str(result.get("strategy") or "").strip(),
+        "titles": _string_list(result.get("titles"), expected=request["count"], field="titles"),
+        "captions": _string_list(result.get("captions"), expected=request["count"], field="captions"),
+        "cta": str(result.get("cta") or request["cta"]).strip(),
+        "hashtags": str(result.get("hashtags") or "").strip(),
+        "emails": _email_list(result.get("emails"), "emails"),
+        "seo": {
+            "title": str(seo.get("title") or "").strip(),
+            "description": str(seo.get("description") or "").strip(),
+            "keywords": _string_list(seo.get("keywords") or [], field="seo.keywords"),
+        },
+        "zhAudit": {
+            "strategy": str(zh_audit.get("strategy") or "").strip(),
+            "titles": _string_list(zh_audit.get("titles"), expected=request["count"], field="zhAudit.titles"),
+            "captions": _string_list(zh_audit.get("captions"), expected=request["count"], field="zhAudit.captions"),
+            "cta": str(zh_audit.get("cta") or "").strip(),
+            "hashtags": str(zh_audit.get("hashtags") or "").strip(),
+            "emails": _email_list(zh_audit.get("emails"), "zhAudit.emails"),
+            "seo": {
+                "title": str(zh_seo.get("title") or "").strip(),
+                "description": str(zh_seo.get("description") or "").strip(),
+                "keywords": _string_list(zh_seo.get("keywords") or [], field="zhAudit.seo.keywords"),
+            },
+        },
+        "note": str(result.get("note") or "").strip(),
+        "source": "gemini",
+        "model": model,
+    }
+    for field in ("strategy", "cta", "hashtags", "note"):
+        if not normalized[field]:
+            raise ValueError(f"Gemini field {field} is required")
+    if not normalized["seo"]["title"] or not normalized["seo"]["description"]:
+        raise ValueError("Gemini seo.title and seo.description are required")
+    if not normalized["zhAudit"]["strategy"]:
+        raise ValueError("Gemini zhAudit.strategy is required")
+    return normalized
+
+
+def generate_copywriter_with_gemini(payload: dict[str, Any]) -> dict[str, Any]:
+    request = copywriter_request(payload)
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY is not configured")
+    primary_model = gemini_model_name()
+    timeout = max(5, min(90, int_value(os.environ.get("GEMINI_TIMEOUT_SECONDS"), 20)))
+    body = {
+        "contents": [{"parts": [{"text": copywriter_prompt(request)}]}],
+        "generationConfig": {
+            "temperature": 0.78 if request["tone"] in {"viral", "urgent"} else 0.55,
+            "topP": 0.9,
+            "maxOutputTokens": 4096,
+            "responseMimeType": "application/json",
+        },
+    }
+    errors: list[str] = []
+    for model in gemini_model_candidates(primary_model):
+        endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{quote(model, safe='-_.')}:generateContent"
+        try:
+            status, data = post_json(
+                endpoint,
+                {"x-goog-api-key": api_key, "Content-Type": "application/json"},
+                body,
+                timeout=timeout,
+            )
+            if status >= 400:
+                detail = str((data.get("error") or {}).get("message") or data)
+                errors.append(f"{model}: API {status}: {detail[:180]}")
+                continue
+            result = normalize_gemini_copywriter_result(extract_json_object(gemini_text(data)), request, model)
+            if model != primary_model:
+                result["primary_model"] = primary_model
+                result["note"] = (
+                    f"{result['note']}\nModelo principal {primary_model} nao respondeu a tempo; "
+                    f"foi usado {model}."
+                )
+            return result
+        except (RuntimeError, ValueError) as error:
+            errors.append(f"{model}: {error}")
+    raise RuntimeError("Gemini unavailable after retries: " + " | ".join(errors)[-700:])
 
 
 def signed_upload_url(upload_id: str, lifetime_sec: int = 24 * 3600) -> str:
@@ -103,6 +521,106 @@ def upload_rows(config: dict[str, Any]) -> list[dict[str, Any]]:
         row["download_url"] = signed_upload_url(str(item.get("id") or ""))
         rows.append(row)
     return rows
+
+
+def candidate_source_media(config: dict[str, Any], candidate_id: str) -> Path | None:
+    candidate_id = unquote(candidate_id).strip()
+    if not candidate_id:
+        return None
+    connection = connect_db(config)
+    if not connection.execute("SELECT 1 FROM candidates WHERE id=?", (candidate_id,)).fetchone():
+        return None
+    work = workspace_dir(config) / "jobs" / candidate_id
+    return next(
+        (
+            path for path in work.glob("source.*")
+            if path.is_file() and path.suffix.lower() in SOURCE_MEDIA_SUFFIXES
+        ),
+        None,
+    )
+
+
+def production_recovery_status(config: dict[str, Any], candidate_id: str) -> str:
+    if candidate_has_review_outputs(config, candidate_id):
+        return "READY_FOR_REVIEW"
+    if candidate_source_media(config, candidate_id):
+        return "DOWNLOADED"
+    return "PRODUCTION_FAILED"
+
+
+def recover_interrupted_productions(config: dict[str, Any]) -> int:
+    connection = connect_db(config)
+    rows = connection.execute(
+        "SELECT id FROM candidates WHERE status=?", (PRODUCTION_RUNNING_STATUS,)
+    ).fetchall()
+    recovered = 0
+    for row in rows:
+        candidate_id = str(row["id"])
+        status = production_recovery_status(config, candidate_id)
+        timestamp = now_iso()
+        payload = {
+            "recovered_from": PRODUCTION_RUNNING_STATUS,
+            "status": status,
+            "reason": "dashboard service restarted before production task finished",
+        }
+        connection.execute(
+            "UPDATE candidates SET status=?,updated_at=? WHERE id=?",
+            (status, timestamp, candidate_id),
+        )
+        append_event(connection, candidate_id, "PRODUCTION_RECOVERED", payload)
+        recovered += 1
+    connection.commit()
+    return recovered
+
+
+def review_output_asset_by_id(config: dict[str, Any], asset_id: str) -> dict[str, Any] | None:
+    asset_id = unquote(asset_id).strip()
+    if not asset_id:
+        return None
+    for assets in review_output_index(config).values():
+        for asset in assets:
+            if str(asset.get("id") or "") == asset_id:
+                return asset
+    return None
+
+
+def candidate_design_info(config: dict[str, Any], candidate_id: str) -> dict[str, Any]:
+    requested_asset = ""
+    if "::asset::" in candidate_id:
+        candidate_id, requested_asset = candidate_id.split("::asset::", 1)
+    output_asset = review_output_asset_by_id(config, requested_asset) if requested_asset else None
+    output_path = Path(str((output_asset or {}).get("_path") or ""))
+    if output_path.is_file():
+        output_width, output_height = media_dimensions(output_path)
+        return {
+            "candidate_id": candidate_id,
+            "source_preview_url": str((output_asset or {}).get("video_url") or ""),
+            "design_canvas_width": int(output_width),
+            "design_canvas_height": int(output_height),
+            "source_fit": "contain",
+            "design_base_asset_id": str((output_asset or {}).get("id") or ""),
+            "design_base_variant": str((output_asset or {}).get("variant") or ""),
+        }
+    source_media = candidate_source_media(config, candidate_id)
+    result = {
+        "candidate_id": candidate_id,
+        "source_preview_url": "",
+        "design_canvas_width": 1080,
+        "design_canvas_height": 1920,
+        "source_fit": "contain",
+        "design_base_asset_id": "",
+        "design_base_variant": "",
+    }
+    if source_media is None:
+        return result
+    source_width, source_height = media_dimensions(source_media)
+    result.update({
+        "source_preview_url": f"/api/candidates/{quote(candidate_id, safe='')}/source?v={int(source_media.stat().st_mtime)}",
+        "design_canvas_width": int(source_width),
+        "design_canvas_height": int(source_height),
+        "source_fit": "contain",
+    })
+    return result
 
 
 def system_health(config: dict[str, Any]) -> dict[str, Any]:
@@ -134,6 +652,41 @@ def system_health(config: dict[str, Any]) -> dict[str, Any]:
             "chunk_bytes": int((config.get("storage", {}) or {}).get("upload_chunk_bytes", 8 * 1024 * 1024)),
             "max_bytes": int((config.get("storage", {}) or {}).get("max_upload_bytes", 2 * 1024 * 1024 * 1024)),
         },
+        "gemini": {
+            "enabled": bool(os.environ.get("GEMINI_API_KEY", "").strip()),
+            "model": gemini_model_name(),
+        },
+    }
+
+
+def trends_status(config: dict[str, Any]) -> dict[str, Any]:
+    settings = config.get("trends", {}) or {}
+    today_keywords = list_hot_keywords(config, None)
+    latest_date = ""
+    latest_count = 0
+    connection = connect_db(config)
+    latest = connection.execute(
+        """
+        SELECT date,COUNT(*) count
+        FROM hot_keywords
+        GROUP BY date
+        ORDER BY date DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    if latest:
+        latest_date = str(latest["date"] or "")
+        latest_count = int(latest["count"] or 0)
+    return {
+        "enabled": settings.get("enabled", True) is not False,
+        "generated_at": now_iso(),
+        "today_count": len(today_keywords),
+        "latest_date": latest_date,
+        "latest_count": latest_count,
+        "source": str(settings.get("source") or "google_trends"),
+        "geo": str(settings.get("geo") or "BR"),
+        "schedule_timezone": str(settings.get("schedule_timezone") or config.get("run", {}).get("timezone") or "UTC"),
+        "cron": str(settings.get("cron") or "0 8 * * *"),
     }
 
 
@@ -142,6 +695,17 @@ def dashboard_overview(config: dict[str, Any]) -> dict[str, Any]:
     status_counts = {
         row["status"]: row["count"]
         for row in connection.execute("SELECT status,COUNT(*) count FROM candidates GROUP BY status")
+    }
+    parent_status_counts = {
+        row["status"]: row["count"]
+        for row in connection.execute(
+            """
+            SELECT status,COUNT(*) count
+            FROM candidates
+            WHERE COALESCE(parent_id,'')=''
+            GROUP BY status
+            """
+        )
     }
     publication_counts = {
         row["status"]: row["count"]
@@ -166,7 +730,7 @@ def dashboard_overview(config: dict[str, Any]) -> dict[str, Any]:
         FROM ranked WHERE rank=1
         """
     ).fetchone()
-    total = sum(status_counts.values())
+    total = sum(parent_status_counts.values())
     ready = status_counts.get("READY_FOR_REVIEW", 0)
     approved = status_counts.get("APPROVED", 0)
     orphan_reviews = server_review_rows(config, exclude={
@@ -178,7 +742,7 @@ def dashboard_overview(config: dict[str, Any]) -> dict[str, Any]:
     total += len(orphan_reviews)
     ready += orphan_status_counts.get("READY_FOR_REVIEW", 0)
     approved += orphan_status_counts.get("APPROVED", 0)
-    merged_status_counts = dict(status_counts)
+    merged_status_counts = dict(parent_status_counts)
     for key, value in orphan_status_counts.items():
         merged_status_counts[key] = merged_status_counts.get(key, 0) + value
     published = connection.execute(
@@ -315,7 +879,7 @@ def review_output_index(config: dict[str, Any]) -> dict[str, list[dict[str, Any]
         if root.exists():
             package_ids.update(
                 path.name for path in root.iterdir()
-                if path.is_dir() and (path / "video.mp4").is_file()
+                if path.is_dir() and any(child.is_file() and child.suffix.lower() == ".mp4" for child in path.iterdir())
             )
 
     index: dict[str, list[dict[str, Any]]] = {}
@@ -324,12 +888,20 @@ def review_output_index(config: dict[str, Any]) -> dict[str, list[dict[str, Any]
         server_dir = server_root / package_id
         local_video = local_dir / "video.mp4"
         server_video = server_dir / "video.mp4"
+        local_first_video = next((path for path in sorted(local_dir.glob("*.mp4")) if path.is_file()), None)
+        server_first_video = next((path for path in sorted(server_dir.glob("*.mp4")) if path.is_file()), None)
         if local_video.is_file():
             media_dir = local_dir
             media_relative = f"{package_id}/video.mp4"
         elif server_video.is_file():
             media_dir = server_dir
             media_relative = f"review/{package_id}/video.mp4"
+        elif local_first_video is not None:
+            media_dir = local_dir
+            media_relative = f"{package_id}/{local_first_video.name}"
+        elif server_first_video is not None:
+            media_dir = server_dir
+            media_relative = f"review/{package_id}/{server_first_video.name}"
         else:
             continue
 
@@ -337,12 +909,16 @@ def review_output_index(config: dict[str, Any]) -> dict[str, list[dict[str, Any]
         if not metadata_path.is_file():
             metadata_path = server_dir / "metadata.json"
         server_files: dict[str, Any] = {}
+        review_metadata: dict[str, Any] = {}
         if metadata_path.is_file():
             try:
                 review_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
                 server_files = review_metadata.get("server_storage", {}).get("files", {}) or {}
             except (json.JSONDecodeError, OSError):
                 pass
+        batch_label = str(review_metadata.get("batch_label") or "").strip()
+        strategy = review_metadata.get("strategy") or {}
+        content_type = str(strategy.get("content_type") or review_metadata.get("content_type") or "").strip()
 
         cover = media_dir / "cover.jpg"
         cover_url = ""
@@ -362,10 +938,15 @@ def review_output_index(config: dict[str, Any]) -> dict[str, list[dict[str, Any]
             if not server_url and server_video.is_file():
                 server_url = public_url(config, f"review/{package_id}/{video.name}")
             variant = "通用版" if "通用版" in video.name or video.name == "video.mp4" else ("FB版" if "FB版" in video.name else "")
-            base_label = f"片段 {part_number:02d}" if part_number is not None else "成片"
+            is_batch_output = bool(batch_label) and (
+                batch_label in video.name or (video.name == "video.mp4" and content_type == "design_overlay")
+            )
+            base_label = f"片段 {part_number:02d}" if part_number is not None else (batch_label if is_batch_output else "成片")
             asset = {
                 "id": package_id if video.name == "video.mp4" else f"{package_id}:{video.stem}",
                 "label": f"{base_label} · {variant}" if variant else base_label,
+                "batch_label": batch_label if is_batch_output else "",
+                "content_type": content_type,
                 "variant": variant,
                 "part_number": part_number,
                 "video_url": video_url,
@@ -373,6 +954,7 @@ def review_output_index(config: dict[str, Any]) -> dict[str, list[dict[str, Any]
                 "server_url": server_url,
                 "cover_url": cover_url,
                 "filename": f"{package_id}.mp4" if video.name == "video.mp4" else video.name,
+                "_path": str(video),
                 "_metadata_path": str(metadata_path) if metadata_path.is_file() else "",
             }
             index.setdefault(package_id, []).append(asset)
@@ -556,8 +1138,6 @@ def delete_candidates(config: dict[str, Any], payload: dict[str, Any]) -> dict[s
     candidate_ids = list(dict.fromkeys(candidate_ids))
     if not candidate_ids:
         raise ValueError("select at least one candidate")
-    if len(candidate_ids) > 100:
-        raise ValueError("a batch can contain at most 100 candidates")
 
     workspace = workspace_dir(config)
     storage = storage_root(config)
@@ -625,6 +1205,24 @@ def delete_candidates(config: dict[str, Any], payload: dict[str, Any]) -> dict[s
     }
 
 
+def source_keyword_metadata(connection: Any, candidate_id: str) -> dict[str, str]:
+    if not candidate_id:
+        return {}
+    source_row = connection.execute(
+        "SELECT metadata_json FROM candidates WHERE id=?", (candidate_id,)
+    ).fetchone()
+    if not source_row:
+        return {}
+    try:
+        source_metadata = json.loads(source_row["metadata_json"] or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return {
+        "keyword": str(source_metadata.get("keyword") or ""),
+        "category": str(source_metadata.get("category") or ""),
+    }
+
+
 def candidate_rows(config: dict[str, Any], status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
     rows = list_candidates(config, status, limit)
     result = []
@@ -651,9 +1249,19 @@ def candidate_rows(config: dict[str, Any], status: str | None = None, limit: int
             metadata = json.loads(item.get("metadata_json") or "{}")
         except json.JSONDecodeError:
             pass
+        parent_metadata = source_keyword_metadata(connection, str(item.get("parent_id") or ""))
+        source_keyword = str(metadata.get("keyword") or parent_metadata.get("keyword") or "")
+        source_category = str(metadata.get("category") or parent_metadata.get("category") or "")
         item.pop("metadata_json", None)
         item["published_flag"] = bool(item.get("published_flag"))
-        item["keyword"] = str(metadata.get("keyword") or "")
+        item["keyword"] = source_keyword
+        item["initial_category"] = initial_category_for_text(
+            source_keyword,
+            source_category,
+            item.get("title"),
+            item.get("description"),
+        )
+        item["initial_keyword"] = source_keyword or source_category
         item["score_breakdown"] = metadata.get("score_breakdown") or {}
         analysis = metadata.get("analysis") or {}
         strategy = analysis.get("strategy") or {}
@@ -693,6 +1301,7 @@ def candidate_rows(config: dict[str, Any], status: str | None = None, limit: int
                 item["highlight_score"] = float(
                     review_metadata.get("segment", {}).get("highlight_score") or item["highlight_score"]
                 )
+                item["source_outro_trim"] = review_source_outro_summary(review_metadata.get("source_outro_trim"))
             except (json.JSONDecodeError, OSError):
                 pass
         failure = failures.get(item["id"])
@@ -725,6 +1334,7 @@ def server_review_rows(config: dict[str, Any], exclude: set[str] | None = None) 
     review_root = storage_root(config) / "review"
     if not review_root.exists():
         return []
+    connection = connect_db(config)
     outputs_by_candidate = review_output_index(config)
     items: list[dict[str, Any]] = []
     for metadata_path in sorted(review_root.glob("*/metadata.json"), key=lambda path: path.stat().st_mtime, reverse=True):
@@ -760,6 +1370,9 @@ def server_review_rows(config: dict[str, Any], exclude: set[str] | None = None) 
         outputs = outputs_by_candidate.get(package_dir.name, [])
         primary_output = outputs[0] if outputs else {}
         updated_at = datetime.fromtimestamp(metadata_path.stat().st_mtime, tz=timezone.utc).isoformat()
+        source_keywords = source_keyword_metadata(connection, str(metadata.get("source_job_id") or ""))
+        source_keyword = str(metadata.get("keyword") or source_keywords.get("keyword") or "")
+        source_category = str(metadata.get("category") or source_keywords.get("category") or "")
         items.append({
             "id": candidate,
             "platform": str(source.get("platform") or "server"),
@@ -775,7 +1388,14 @@ def server_review_rows(config: dict[str, Any], exclude: set[str] | None = None) 
             "status": review_state,
             "created_at": updated_at,
             "updated_at": updated_at,
-            "keyword": "",
+            "keyword": source_keyword,
+            "initial_category": initial_category_for_text(
+                source_keyword,
+                source_category,
+                source.get("title"),
+                source.get("platform"),
+            ),
+            "initial_keyword": source_keyword or source_category,
             "score_breakdown": {},
             "batch_label": str(metadata.get("batch_label") or ""),
             "content_type": str(strategy["content_type"]),
@@ -799,6 +1419,7 @@ def server_review_rows(config: dict[str, Any], exclude: set[str] | None = None) 
             "failure_detail": "",
             "failure_at": "",
             "published_flag": False,
+            "source_outro_trim": review_source_outro_summary(metadata.get("source_outro_trim")),
         })
     return items
 
@@ -948,6 +1569,9 @@ def save_callback(config: dict[str, Any], payload: dict[str, Any]) -> dict[str, 
     if not isinstance(extra, dict):
         raise ValueError("extra_data must be an object")
     connection = connect_db(config)
+    if not connection.execute("SELECT 1 FROM candidates WHERE id=?", (candidate,)).fetchone():
+        raise ValueError("candidate does not exist")
+    connection.execute("BEGIN IMMEDIATE")
     cursor = connection.execute(
         """
         INSERT INTO callback_logs(
@@ -960,9 +1584,43 @@ def save_callback(config: dict[str, Any], payload: dict[str, Any]) -> dict[str, 
             json.dumps(extra, ensure_ascii=False), callback_at,
         ),
     )
+    snapshot = connection.execute(
+        """
+        INSERT INTO performance_snapshots(
+          candidate_id,platform,captured_at,views,clicks,registrations
+        ) VALUES(?,?,?,?,?,?)
+        """,
+        (
+            candidate, platform, callback_at,
+            metrics["views"], metrics["clicks"], metrics["registrations"],
+        ),
+    )
+    for index in range(metrics["registrations"]):
+        connection.execute(
+            """
+            INSERT INTO conversion_events(
+              candidate_id,platform,hook_version,event_type,occurred_at,visitor_id,payload_json
+            ) VALUES(?,?,?,?,?,?,?)
+            """,
+            (
+                candidate, platform, str(payload.get("hook_version") or ""),
+                "registration", callback_at, "",
+                json.dumps({
+                    "source": "callback",
+                    "publisher": publisher,
+                    "video_id": str(payload.get("video_id") or ""),
+                    "ordinal": index + 1,
+                }, ensure_ascii=False),
+            ),
+        )
     connection.commit()
     print(f"callback {callback_at} candidate={candidate} platform={platform}")
-    return {"success": True, "log_id": int(cursor.lastrowid)}
+    return {
+        "success": True,
+        "log_id": int(cursor.lastrowid),
+        "snapshot_id": int(snapshot.lastrowid),
+        "registration_events": metrics["registrations"],
+    }
 
 
 def move_candidate_to_review(config: dict[str, Any], candidate: str) -> dict[str, Any]:
@@ -1071,6 +1729,22 @@ def conversion_totals(connection: Any, candidate_id: str | None = None) -> dict[
     return totals
 
 
+def candidate_from_utm_content(
+    utm_content: str,
+    known_candidates: set[str],
+    explicit_hook: str = "",
+) -> tuple[str, str]:
+    value = str(utm_content or "").strip()
+    if not value:
+        return "", explicit_hook
+    if value in known_candidates:
+        return value, explicit_hook
+    candidate, separator, parsed_hook = value.rpartition("_")
+    if separator and candidate in known_candidates and parsed_hook:
+        return candidate, explicit_hook or parsed_hook
+    return value, explicit_hook
+
+
 def save_events(config: dict[str, Any], payload: dict[str, Any]) -> dict[str, int]:
     """Ingest one event or a batch: {"events": [...]} or a single event object."""
     events = payload.get("events") if isinstance(payload.get("events"), list) else [payload]
@@ -1088,8 +1762,7 @@ def save_events(config: dict[str, Any], payload: dict[str, Any]) -> dict[str, in
         candidate = str(event.get("candidate_id") or "").strip()
         hook_version = str(event.get("hook_version") or "").strip()
         if utm_content and not candidate:
-            candidate, _, parsed_hook = utm_content.partition("_")
-            hook_version = hook_version or parsed_hook
+            candidate, hook_version = candidate_from_utm_content(utm_content, known, hook_version)
         if event_type not in EVENT_TYPES or not candidate:
             skipped += 1
             continue
@@ -1258,6 +1931,68 @@ def save_keyword_group(config: dict[str, Any], payload: dict[str, Any]) -> dict[
     return {"saved": name, "groups": len(data)}
 
 
+def category_keyword_rows(config: dict[str, Any], date_value: str | None = None) -> dict[str, Any]:
+    target = trends_today(config) if not date_value or date_value == "today" else date_value
+    rows = list_hot_keywords(config, target)
+    groups = load_keyword_groups(config)
+    term_to_category: dict[str, str] = {}
+    for group in groups:
+        terms_by_language = group.get("terms") or {}
+        group_category = (
+            explicit_category_label(group.get("category"))
+            or explicit_category_label(group.get("category_label"))
+            or explicit_category_label(group.get("name"))
+        )
+        flattened_terms = [
+            str(term)
+            for terms in terms_by_language.values()
+            if isinstance(terms, list)
+            for term in terms
+            if str(term).strip()
+        ]
+        for term in flattened_terms:
+            category = initial_category_for_text(term)
+            if category not in INITIAL_CATEGORY_LABELS and group_category:
+                category = group_category
+            if category in INITIAL_CATEGORY_LABELS:
+                term_to_category[normalize_keyword(term)] = category
+
+    grouped = {
+        label: {"label": label, "keywords": [], "count": 0}
+        for label in INITIAL_CATEGORY_LABELS
+    }
+    seen_by_category: dict[str, set[str]] = {label: set() for label in INITIAL_CATEGORY_LABELS}
+    for item in rows:
+        keyword = str(item.get("keyword") or "").strip()
+        if not keyword:
+            continue
+        source = str(item.get("source") or "").strip()
+        category = explicit_category_label(source)
+        if not category:
+            category = term_to_category.get(normalize_keyword(keyword), "")
+        if not category:
+            category = initial_category_for_text(keyword)
+        if category not in INITIAL_CATEGORY_LABELS:
+            category = "新闻类" if source.lower().startswith("google") else "社交挑战"
+        key = normalize_keyword(keyword)
+        if key in seen_by_category[category]:
+            continue
+        seen_by_category[category].add(key)
+        grouped[category]["keywords"].append({
+            "keyword": keyword,
+            "source": source,
+            "created_at": str(item.get("created_at") or ""),
+        })
+
+    for label, row in grouped.items():
+        row["count"] = len(row["keywords"])
+    return {
+        "date": target,
+        "generated_at": now_iso(),
+        "rows": [grouped[label] for label in INITIAL_CATEGORY_LABELS],
+    }
+
+
 def skip_candidate(config: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     candidate = str(payload.get("candidate_id") or "").strip()
     if not candidate:
@@ -1381,6 +2116,9 @@ class DashboardApplication(ThreadingHTTPServer):
         self.tasks: dict[str, dict[str, Any]] = {}
         self.tasks_lock = threading.Lock()
         self.production_lock = threading.Lock()
+        recovered = recover_interrupted_productions(config)
+        if recovered:
+            print(f"dashboard recovered {recovered} interrupted production candidate(s)")
 
     def start_action(self, payload: dict[str, Any]) -> str:
         candidate_ids = payload.get("candidate_ids") or []
@@ -1391,8 +2129,6 @@ class DashboardApplication(ThreadingHTTPServer):
         if single and single not in candidate_ids:
             candidate_ids.append(single)
         candidate_ids = list(dict.fromkeys(candidate_ids))
-        if len(candidate_ids) > 100:
-            raise ValueError("a batch can contain at most 100 candidates")
         task_id = uuid.uuid4().hex[:12]
         task = {
             "id": task_id, "action": payload.get("action"), "status": "RUNNING",
@@ -1437,7 +2173,7 @@ class DashboardApplication(ThreadingHTTPServer):
                 ).fetchone()
                 work = workspace_dir(self.config) / "jobs" / candidate
                 source_missing = not any(
-                    path.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov"}
+                    path.suffix.lower() in SOURCE_MEDIA_SUFFIXES
                     for path in work.glob("source.*")
                 )
                 if row and (row["status"] in {"DISCOVERED", "DOWNLOAD_FAILED"} or (row["status"] == "PRODUCTION_FAILED" and source_missing)):
@@ -1460,6 +2196,14 @@ class DashboardApplication(ThreadingHTTPServer):
 
                 self.update_task(task_id, message=f"等待制作资源 · {index + 1}/{total}")
                 with self.production_lock:
+                    started = now_iso()
+                    connection = connect_db(self.config)
+                    connection.execute(
+                        "UPDATE candidates SET status=?,updated_at=? WHERE id=?",
+                        (PRODUCTION_RUNNING_STATUS, started, candidate),
+                    )
+                    append_event(connection, candidate, "PRODUCTION_STARTED", {"task_id": task_id})
+                    connection.commit()
                     result = produce_top(
                         self.config, 1, candidate, progress_callback=production_progress, options=options
                     )
@@ -1493,13 +2237,50 @@ class DashboardApplication(ThreadingHTTPServer):
                 if not url:
                     raise ValueError("url is required")
                 self.update_task(task_id, progress=15, message="正在读取视频信息")
+                candidate_id = inspect_url(
+                    self.config,
+                    url,
+                    requested_platform=str(payload.get("platform") or ""),
+                    allow_stub=True,
+                )
+                self.update_task(
+                    task_id,
+                    progress=45,
+                    current_candidate=candidate_id,
+                    candidate_ids=[candidate_id],
+                    message="正在下载到服务器",
+                )
+                row = connect_db(self.config).execute(
+                    "SELECT status FROM candidates WHERE id=?", (candidate_id,)
+                ).fetchone()
+                if row and row["status"] == "DOWNLOADED":
+                    download_result = {"selected": 1, "downloaded": 1, "failed": 0, "already_downloaded": True}
+                elif row and row["status"] == "TOO_LONG":
+                    raise RuntimeError("URL 已导入，但视频超过 30 分钟，只能删除，不能进入待制作")
+                else:
+                    download_result = download_top(self.config, 1, candidate_id)
+                if int(download_result.get("failed", 0)) or int(download_result.get("downloaded", 0) == 0):
+                    failure = connect_db(self.config).execute(
+                        """
+                        SELECT payload_json FROM events
+                        WHERE candidate_id=? AND event_type='DOWNLOAD_FAILED'
+                        ORDER BY id DESC LIMIT 1
+                        """,
+                        (candidate_id,),
+                    ).fetchone()
+                    detail = ""
+                    if failure:
+                        try:
+                            payload_json = json.loads(failure["payload_json"] or "{}")
+                            detail = str(payload_json.get("stderr") or payload_json.get("error") or "").strip()
+                        except json.JSONDecodeError:
+                            detail = str(failure["payload_json"] or "").strip()
+                    suffix = f"：{detail[-500:]}" if detail else ""
+                    raise RuntimeError(f"URL 已导入，但服务器下载失败，请在下载失败列表重试或检查登录态{suffix}")
                 result = {
-                    "candidate_id": inspect_url(
-                        self.config,
-                        url,
-                        requested_platform=str(payload.get("platform") or ""),
-                        allow_stub=True,
-                    )
+                    "candidate_id": candidate_id,
+                    "download": download_result,
+                    "status": "DOWNLOADED",
                 }
             elif action in {"download", "produce", "skip"}:
                 result = self.run_candidate_batch(
@@ -1531,6 +2312,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
         try:
+            if self.admin_required_path(parsed.path) and not self.authorized_for_admin(parsed):
+                return self.send_admin_unauthorized(parsed.path)
             if parsed.path == "/api/overview":
                 return self.send_json(dashboard_overview(self.server.config))
             if parsed.path == "/api/candidates":
@@ -1556,6 +2339,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if date_value == "today":
                     date_value = ""
                 return self.send_json(list_hot_keywords(self.server.config, date_value or None))
+            if parsed.path == "/api/category-keywords":
+                date_value = (query.get("date") or [""])[0].strip()
+                return self.send_json(category_keyword_rows(self.server.config, date_value or None))
+            if parsed.path == "/api/trends/status":
+                return self.send_json(trends_status(self.server.config))
+            if parsed.path == "/api/trends/run":
+                return self.send_json({"error": "use POST /api/trends/run"}, HTTPStatus.METHOD_NOT_ALLOWED)
             if parsed.path == "/api/settings":
                 return self.send_json(system_settings(self.server.config))
             if parsed.path == "/api/sessions":
@@ -1578,6 +2368,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return self.send_json({"download_url": signed_upload_url(upload_id)})
             if parsed.path.startswith("/api/uploads/") and parsed.path.endswith("/download"):
                 return self.send_private_upload(parsed, head_only=False)
+            if parsed.path.startswith("/api/candidates/") and parsed.path.endswith("/design"):
+                parts = parsed.path.strip("/").split("/")
+                if len(parts) != 4:
+                    return self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+                return self.send_json(candidate_design_info(self.server.config, unquote(parts[2])))
+            if parsed.path.startswith("/api/candidates/") and parsed.path.endswith("/source"):
+                return self.send_candidate_source(parsed, head_only=False)
             if parsed.path == "/api/attribution":
                 candidate = (query.get("candidate_id") or [""])[0].strip()
                 if not candidate:
@@ -1597,8 +2394,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_HEAD(self) -> None:
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
+        if self.admin_required_path(parsed.path) and not self.authorized_for_admin(parsed):
+            return self.send_admin_unauthorized(parsed.path)
         if parsed.path.startswith("/api/uploads/") and parsed.path.endswith("/download"):
             return self.send_private_upload(parsed, head_only=True)
+        if parsed.path.startswith("/api/candidates/") and parsed.path.endswith("/source"):
+            return self.send_candidate_source(parsed, head_only=True)
         if parsed.path.startswith("/media/"):
             download = str((query.get("download") or [""])[0]).lower() in {"1", "true", "yes"}
             return self.send_media(parsed.path.removeprefix("/media/"), download=download)
@@ -1607,37 +2408,41 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         try:
+            if self.admin_required_path(parsed.path) and not self.authorized_for_admin(parsed):
+                return self.send_admin_unauthorized(parsed.path)
             if parsed.path == "/api/uploads/init":
-                if not self.authorized_for_uploads():
+                payload = self.read_json()
+                kind = str(payload.get("kind") or "").lower()
+                if not self.authorized_for_upload_kind(kind):
                     return self.send_json(
                         {"error": "missing or invalid upload token"}, HTTPStatus.UNAUTHORIZED
                     )
-                payload = self.read_json()
                 result = init_chunked_upload(
                     self.server.config,
                     filename=str(payload.get("filename") or ""),
-                    kind=str(payload.get("kind") or "").lower(),
+                    kind=kind,
                     content_length=int(payload.get("size") or 0),
                 )
                 return self.send_json(result, HTTPStatus.CREATED)
             if parsed.path == "/api/uploads/chunk":
-                if not self.authorized_for_uploads():
+                query = parse_qs(parsed.query)
+                upload_id = str((query.get("upload_id") or [""])[0])
+                if not self.authorized_for_upload_kind(self.pending_upload_kind(upload_id)):
                     return self.send_json(
                         {"error": "missing or invalid upload token"}, HTTPStatus.UNAUTHORIZED
                     )
-                query = parse_qs(parsed.query)
-                upload_id = str((query.get("upload_id") or [""])[0])
                 index = int((query.get("index") or ["-1"])[0])
                 length = int(self.headers.get("Content-Length") or 0)
                 result = save_upload_chunk(self.server.config, upload_id, index, self.rfile, length)
                 return self.send_json(result, HTTPStatus.CREATED)
             if parsed.path == "/api/uploads/complete":
-                if not self.authorized_for_uploads():
+                payload = self.read_json()
+                upload_id = str(payload.get("upload_id") or "")
+                if not self.authorized_for_upload_kind(self.pending_upload_kind(upload_id)):
                     return self.send_json(
                         {"error": "missing or invalid upload token"}, HTTPStatus.UNAUTHORIZED
                     )
-                payload = self.read_json()
-                result = complete_chunked_upload(self.server.config, str(payload.get("upload_id") or ""))
+                result = complete_chunked_upload(self.server.config, upload_id)
                 if result["kind"] == "source":
                     result["candidate_id"] = ingest_uploaded_media(self.server.config, result)
                 result["download_url"] = signed_upload_url(result["id"])
@@ -1666,6 +2471,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/actions":
                 task_id = self.server.start_action(payload)
                 return self.send_json({"task_id": task_id, "status": "RUNNING"}, HTTPStatus.ACCEPTED)
+            if parsed.path == "/api/copywriter/generate":
+                try:
+                    return self.send_json(
+                        {"result": generate_copywriter_with_gemini(payload)},
+                        HTTPStatus.OK,
+                    )
+                except RuntimeError as error:
+                    return self.send_json({"error": str(error)}, HTTPStatus.SERVICE_UNAVAILABLE)
             if parsed.path == "/api/candidates/delete":
                 return self.send_json(delete_candidates(self.server.config, payload), HTTPStatus.OK)
             if parsed.path == "/api/publications":
@@ -1677,6 +2490,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/download-claims/metrics":
                 return self.send_json(update_download_claim_metrics(self.server.config, payload), HTTPStatus.OK)
             if parsed.path == "/api/callback":
+                if not self.authorized_for_callback():
+                    return self.send_json(
+                        {"error": "missing or invalid callback token"},
+                        HTTPStatus.UNAUTHORIZED,
+                    )
                 return self.send_json(save_callback(self.server.config, payload), HTTPStatus.OK)
             if parsed.path == "/api/metrics":
                 return self.send_json({"id": save_metrics(self.server.config, payload)}, HTTPStatus.CREATED)
@@ -1731,6 +2549,68 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except Exception as error:
             self.send_json({"error": str(error)}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
+    def admin_required_path(self, path: str) -> bool:
+        if os.environ.get("JAGUARTV_DASHBOARD_PUBLIC", "1").strip().lower() in {"1", "true", "yes", "on"}:
+            return False
+        if path == "/api/health":
+            return False
+        if path in {"/api/events", "/api/callback"}:
+            return False
+        if path == "/api/uploads" or path.startswith("/api/uploads/"):
+            return False
+        if path.startswith("/media/") or path.startswith("/assets/brand/"):
+            return False
+        return True
+
+    def admin_token(self) -> str:
+        return os.environ.get("JAGUARTV_DASHBOARD_TOKEN", "").strip()
+
+    def query_token(self, parsed: Any) -> str:
+        query = parse_qs(parsed.query)
+        return str((query.get("admin_token") or query.get("dashboard_token") or [""])[0]).strip()
+
+    def cookie_token(self) -> str:
+        cookie = self.headers.get("Cookie", "")
+        for part in cookie.split(";"):
+            name, separator, value = part.strip().partition("=")
+            if separator and name == ADMIN_COOKIE_NAME:
+                return unquote(value)
+        return ""
+
+    def authorized_for_admin(self, parsed: Any | None = None) -> bool:
+        token = self.admin_token()
+        if not token:
+            return loopback_client(self.client_address[0])
+        provided = [
+            self.headers.get("X-Dashboard-Token", "").strip(),
+            self.headers.get("Authorization", "").removeprefix("Bearer ").strip(),
+            self.cookie_token(),
+        ]
+        if parsed is not None:
+            provided.append(self.query_token(parsed))
+        return any(secrets.compare_digest(value, token) for value in provided if value)
+
+    def admin_cookie_header(self) -> str:
+        token = self.admin_token()
+        if not token:
+            return ""
+        parsed = urlparse(self.path)
+        if self.query_token(parsed) and self.authorized_for_admin(parsed):
+            return (
+                f"{ADMIN_COOKIE_NAME}={quote(token)}; Path=/; Max-Age={7 * 24 * 3600}; "
+                "HttpOnly; SameSite=Lax; Secure"
+            )
+        return ""
+
+    def send_admin_unauthorized(self, path: str) -> None:
+        return self.send_json(
+            {
+                "error": "dashboard authentication required",
+                "hint": "open with ?admin_token=... once or send X-Dashboard-Token/Authorization",
+            },
+            HTTPStatus.UNAUTHORIZED,
+        )
+
     def authorized_for_events(self) -> bool:
         """JaguarTV postbacks must present the shared bearer token.
 
@@ -1743,12 +2623,38 @@ class DashboardHandler(BaseHTTPRequestHandler):
         header = self.headers.get("Authorization", "")
         return header.removeprefix("Bearer ").strip() == token
 
+    def authorized_for_callback(self) -> bool:
+        token = (
+            os.environ.get("JAGUARTV_CALLBACK_TOKEN", "").strip()
+            or os.environ.get("JAGUARTV_EVENTS_TOKEN", "").strip()
+        )
+        if not token:
+            return loopback_client(self.client_address[0])
+        header = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+        provided = self.headers.get("X-Callback-Token", "").strip() or header
+        return secrets.compare_digest(provided, token)
+
     def authorized_for_uploads(self) -> bool:
         token = os.environ.get("JAGUARTV_UPLOAD_TOKEN", "").strip()
         if not token:
             return self.client_address[0] in {"127.0.0.1", "::1"}
         provided = self.headers.get("X-Upload-Token", "").strip()
         return secrets.compare_digest(provided, token)
+
+    def authorized_for_upload_kind(self, kind: str) -> bool:
+        if not upload_kind_requires_token(kind):
+            return True
+        return self.authorized_for_uploads()
+
+    def pending_upload_kind(self, upload_id: str) -> str:
+        if not re.fullmatch(r"[a-f0-9]{32}", str(upload_id or "")):
+            return ""
+        try:
+            base = storage_root(self.server.config) / "uploads" / ".pending" / upload_id
+            manifest = json.loads((base / "manifest.json").read_text(encoding="utf-8"))
+            return str(manifest.get("kind") or "").lower()
+        except (OSError, ValueError, json.JSONDecodeError):
+            return ""
 
     def valid_upload_signature(self, upload_id: str, query: dict[str, list[str]]) -> bool:
         token = os.environ.get("JAGUARTV_UPLOAD_TOKEN", "").strip()
@@ -1786,6 +2692,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             head_only=head_only,
         )
 
+    def send_candidate_source(self, parsed: Any, *, head_only: bool) -> None:
+        parts = parsed.path.strip("/").split("/")
+        if len(parts) != 4:
+            return self.send_error(HTTPStatus.NOT_FOUND)
+        source = candidate_source_media(self.server.config, parts[2])
+        if source is None:
+            return self.send_error(HTTPStatus.NOT_FOUND)
+        self.send_file(source, cache="private, no-store", head_only=head_only)
+
     def read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length") or 0)
         if length > 1_000_000:
@@ -1799,6 +2714,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
+        if cookie := self.admin_cookie_header():
+            self.send_header("Set-Cookie", cookie)
         self.end_headers()
         self.wfile.write(body)
 
@@ -1857,6 +2774,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(length))
         self.send_header("Cache-Control", cache)
         self.send_header("Accept-Ranges", "bytes")
+        if cookie := self.admin_cookie_header():
+            self.send_header("Set-Cookie", cookie)
         if disposition:
             self.send_header("Content-Disposition", disposition)
         if partial:

@@ -17,6 +17,7 @@ from jaguartv_factory.core import (
     ingest_uploaded_media,
     load_config,
     now_iso,
+    produce_candidate,
     produce_top,
     render_overlay_assets,
     terms_for_platform,
@@ -27,6 +28,7 @@ from jaguartv_factory.dashboard import (
     candidate_rows,
     delete_candidates,
     download_claim_rows,
+    recover_interrupted_productions,
     save_download_claim,
     skip_candidate,
     update_download_claim_metrics,
@@ -261,6 +263,18 @@ def test_chunked_upload_assembles_and_lists_private_asset(tmp_path: Path):
     assert Path(completed["path"]).read_bytes() == payload
     assert list_uploads(config)[0]["original_filename"] == "reaction.mp4"
     assert find_upload(config, started["id"])["size"] == len(payload)
+
+
+def test_design_image_upload_accepts_png_and_rejects_video(tmp_path: Path):
+    config = {"_root": str(tmp_path), "storage": {"root": "workspace/server_media"}}
+    started = init_chunked_upload(config, filename="logo.png", kind="design_image", content_length=4)
+    save_upload_chunk(config, started["id"], 0, BytesIO(b"logo"), 4)
+    completed = complete_chunked_upload(config, started["id"])
+
+    assert completed["kind"] == "design_image"
+    assert find_upload(config, started["id"])["original_filename"] == "logo.png"
+    with pytest.raises(ValueError, match="unsupported design_image extension"):
+        init_chunked_upload(config, filename="logo.mp4", kind="design_image", content_length=4)
 
 
 def test_source_upload_becomes_downloaded_candidate(tmp_path: Path, monkeypatch):
@@ -684,6 +698,35 @@ def test_delete_server_only_review_package(tmp_path: Path):
     assert candidate_rows(config) == []
 
 
+def test_candidate_rows_exposes_source_outro_trim_summary(tmp_path: Path):
+    config = make_config(tmp_path)
+    config["storage"] = {"root": "workspace/server_media"}
+    insert_candidate(config, "outro-row", "READY_FOR_REVIEW")
+    package = tmp_path / "workspace" / "ready_for_review" / "outro-row"
+    package.mkdir(parents=True)
+    (package / "video.mp4").write_bytes(b"video")
+    (package / "metadata.json").write_text(json.dumps({
+        "job_id": "outro-row",
+        "source": {"platform": "youtube", "url": "https://example.test/v", "title": "Demo"},
+        "segment": {"duration_sec": 12, "highlight_score": 70},
+        "source_outro_trim": {
+            "enabled": True,
+            "applied": True,
+            "trim_end_sec": 3.5,
+            "confidence": 0.88,
+            "reason": "auto_trim:promo_terms:follow",
+            "before_frame": "workspace/jobs/outro-row/outro_before_frame.jpg",
+            "after_frame": "workspace/jobs/outro-row/outro_after_frame.jpg",
+        },
+    }), encoding="utf-8")
+
+    row = candidate_rows(config, "READY_FOR_REVIEW")[0]
+
+    assert row["source_outro_trim"]["state"] == "已自动裁剪"
+    assert row["source_outro_trim"]["trim_end_sec"] == 3.5
+    assert row["source_outro_trim"]["confidence"] == 0.88
+
+
 def test_inventory_exposes_latest_failure_reason(tmp_path: Path):
     config = make_config(tmp_path)
     insert_candidate(config, status="DOWNLOAD_FAILED")
@@ -722,3 +765,252 @@ def test_retry_production_redownloads_when_failed_source_is_missing(tmp_path: Pa
 
     assert result["failed"] == 0
     assert calls == [("download", "c1"), ("produce", "c1")]
+
+
+def test_interrupted_production_recovers_to_downloaded_when_source_exists(tmp_path: Path):
+    config = make_config(tmp_path)
+    insert_candidate(config, "interrupted", "PRODUCTION_RUNNING")
+    work = tmp_path / "workspace" / "jobs" / "interrupted"
+    work.mkdir(parents=True)
+    (work / "source.mp4").write_bytes(b"video")
+
+    recovered = recover_interrupted_productions(config)
+
+    assert recovered == 1
+    row = connect_db(config).execute("SELECT status FROM candidates WHERE id=?", ("interrupted",)).fetchone()
+    assert row["status"] == "DOWNLOADED"
+
+
+def test_produce_marks_candidate_running_before_render(tmp_path: Path, monkeypatch):
+    config = make_config(tmp_path)
+    insert_candidate(config, "to-produce", "DOWNLOADED")
+    work = tmp_path / "workspace" / "jobs" / "to-produce"
+    work.mkdir(parents=True)
+    (work / "source.mp4").write_bytes(b"video")
+    observed = []
+
+    def fake_produce(config_arg, limit, candidate, progress_callback=None, options=None):
+        row = connect_db(config).execute("SELECT status FROM candidates WHERE id=?", ("to-produce",)).fetchone()
+        observed.append(row["status"])
+        connection = connect_db(config)
+        connection.execute(
+            "UPDATE candidates SET status='READY_FOR_REVIEW',updated_at=? WHERE id=?",
+            (now_iso(), "to-produce"),
+        )
+        connection.commit()
+        return {"selected": 1, "produced": 1, "failed": 0}
+
+    monkeypatch.setattr("jaguartv_factory.dashboard.produce_top", fake_produce)
+    app = DashboardApplication(("127.0.0.1", 0), config)
+    try:
+        app.tasks["produce-task"] = {"status": "RUNNING"}
+        result = app.run_candidate_batch("produce-task", "produce", ["to-produce"], {})
+    finally:
+        app.server_close()
+
+    assert result["failed"] == 0
+    assert observed == ["PRODUCTION_RUNNING"]
+
+
+def test_source_outro_trim_is_upstream_of_analysis_and_review_metadata(tmp_path: Path, monkeypatch):
+    config = {
+        "_root": str(tmp_path),
+        "run": {"workspace": "workspace"},
+        "edit": {
+            "render_engine": "remotion",
+            "layout_mode": "original",
+            "output_duration_sec": [12, 60],
+            "short_video_threshold_sec": 10,
+            "max_segments_per_source": 1,
+            "source_subtitle_cleanup": "off",
+        },
+        "remotion": {"dual_variant": {"enabled": True}, "promo_duration_sec": 1.5, "add_bgm_under_source": False},
+        "audio": {"source_mode": "auto"},
+        "localization": {"asr_enabled": False, "voice_enabled": False},
+        "selection": {"max_source_duration_sec": 1800},
+        "compliance": {"require_verified_rights": False},
+        "storage": {"root": "workspace/server_media"},
+        "brand": {"default_kit": "jaguartv", "kits": {"jaguartv": {"watermark": {}, "endcard": {}, "cover": {}}}},
+    }
+    insert_candidate(config, "trim-candidate", "DOWNLOADED")
+    work = tmp_path / "workspace" / "jobs" / "trim-candidate"
+    work.mkdir(parents=True)
+    source = work / "source.mp4"
+    source.write_bytes(b"source")
+    trimmed = work / "source_outro_trimmed.mp4"
+    row = connect_db(config).execute("SELECT * FROM candidates WHERE id=?", ("trim-candidate",)).fetchone()
+    analyzed_media = []
+    clean_inputs = []
+    variant_inputs = []
+    detect_calls = []
+
+    def fake_detect(config_arg, media, work_dir, duration, options, run_command):
+        detect_calls.append(Path(media).name)
+        trimmed.write_bytes(b"trimmed")
+        payload = {
+            "enabled": True,
+            "should_trim": True,
+            "applied": True,
+            "trim_end_sec": 4.0,
+            "confidence": 0.91,
+            "reason": "auto_trim:low_motion_static_tail,promo_terms:follow",
+            "evidence": {"promo_terms": ["follow"], "visual": {"tail_static": True}},
+            "before_frame": "workspace/jobs/trim-candidate/outro_before_frame.jpg",
+            "after_frame": "workspace/jobs/trim-candidate/outro_after_frame.jpg",
+            "clean_source_path": str(trimmed),
+        }
+        (work_dir / "source_outro_detection.json").write_text(json.dumps(payload), encoding="utf-8")
+        return payload
+
+    def fake_analyze(media, **kwargs):
+        analyzed_media.append(Path(media).name)
+        assert kwargs["source_duration"] == 32.0
+        return [{"index": 1, "total": 1, "start": 0.0, "duration": 12.0, "highlight_score": 80, "highlight_reasons": ["test"]}]
+
+    def fake_clean(config_arg, media, voice, bgm, output, duration, audio_mode, start_time):
+        clean_inputs.append(Path(media).name)
+        output.write_bytes(b"clean")
+
+    def fake_variant(config_arg, clean_media, output, *, variant, subtitles=None, job_id=None, candidate_id=None):
+        variant_inputs.append((variant, Path(clean_media).name))
+        output.write_bytes(f"{variant}-render".encode())
+        return {"variant": variant, "path": str(output), "filename": output.name, "duration": 13.5 if variant == "通用版" else 12.0, "size": output.stat().st_size, "mobile_format": {"applied": False}, "endcard_class": "9:16" if variant == "通用版" else ""}
+
+    monkeypatch.setattr("jaguartv_factory.core.detect_source_outro", fake_detect)
+    monkeypatch.setattr("jaguartv_factory.core.media_duration", lambda path: 36.0 if Path(path).name == "source.mp4" else 32.0 if Path(path).name == "source_outro_trimmed.mp4" else 12.0)
+    monkeypatch.setattr("jaguartv_factory.core.media_dimensions", lambda path: (1080, 1920))
+    monkeypatch.setattr("jaguartv_factory.core.localization_profile_for_candidate", lambda *args, **kwargs: {"audio_mode": "preserve_source", "class": "music_or_no_speech", "reason": "test"})
+    monkeypatch.setattr("jaguartv_factory.core.media_has_audio", lambda path: True)
+    monkeypatch.setattr("jaguartv_factory.core.enforce_dual_variant_remotion", lambda config_arg: None)
+    monkeypatch.setattr("jaguartv_factory.core.short_video_threshold", lambda config_arg: 10.0)
+    monkeypatch.setattr("jaguartv_factory.core.analyze_video", fake_analyze)
+    monkeypatch.setattr("jaguartv_factory.core.render_clean_segment", fake_clean)
+    monkeypatch.setattr("jaguartv_factory.core.remotion_output_variants", lambda config_arg: ["通用版", "FB版"])
+    monkeypatch.setattr("jaguartv_factory.core.render_video_remotion_variant", fake_variant)
+    monkeypatch.setattr("jaguartv_factory.core.normalize_mobile_review_video", lambda path, config_arg: {"applied": False})
+    monkeypatch.setattr("jaguartv_factory.core.qa_video", lambda path, config_arg=None: {"passed": True, "duration": 12.0, "width": 1080, "height": 1920, "codec": "h264", "playable": True})
+    monkeypatch.setattr("jaguartv_factory.core.render_cover_image", lambda config_arg, kit, source_video, destination: destination.write_bytes(b"cover") or "fake_cover")
+    monkeypatch.setattr("jaguartv_factory.core.archive_review_package", lambda config_arg, package_id, review=None: {"archived": False})
+
+    review = produce_candidate(config, row)
+
+    assert detect_calls == ["source.mp4"]
+    assert analyzed_media == ["source_outro_trimmed.mp4"]
+    assert clean_inputs == ["source_outro_trimmed.mp4"]
+    assert [item[0] for item in variant_inputs] == ["通用版", "FB版"]
+    assert {item[1] for item in variant_inputs} == {variant_inputs[0][1]}
+    assert variant_inputs[0][1].endswith("_clean_input.mp4")
+    metadata = json.loads((review / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["source_outro_trim"]["applied"] is True
+    assert metadata["source_outro_trim"]["trim_end_sec"] == 4.0
+    assert metadata["source_outro_trim_summary"]["state"] == "已自动裁剪"
+    assert (review / "review.json").is_file()
+    manifest = json.loads((work / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["assets"]["source"].endswith("source_outro_trimmed.mp4")
+    assert manifest["assets"]["original_source"].endswith("source.mp4")
+    stored = connect_db(config).execute(
+        "SELECT parent_id,title,status FROM candidates WHERE id=?", (row["id"],)
+    ).fetchone()
+    assert stored["parent_id"] is None
+    assert stored["status"] == "READY_FOR_REVIEW"
+    assert not stored["title"].endswith("(Slice 1)")
+
+
+def test_url_ingest_downloads_to_waiting_for_production(tmp_path: Path, monkeypatch):
+    config = make_config(tmp_path)
+    calls = []
+
+    def fake_inspect(config_arg, url, requested_platform="", allow_stub=False):
+        calls.append(("inspect", url, requested_platform, allow_stub))
+        return "url-candidate"
+
+    def fake_download(config_arg, limit, candidate):
+        calls.append(("download", candidate))
+        return {"selected": 1, "downloaded": 1, "failed": 0}
+
+    monkeypatch.setattr("jaguartv_factory.dashboard.inspect_url", fake_inspect)
+    monkeypatch.setattr("jaguartv_factory.dashboard.download_top", fake_download)
+    app = DashboardApplication(("127.0.0.1", 0), config)
+    try:
+        app.tasks["ingest-task"] = {"status": "RUNNING", "total": 1}
+        app._run_action("ingest-task", {
+            "action": "ingest",
+            "platform": "youtube",
+            "url": "https://youtu.be/demo",
+        })
+        task = app.tasks["ingest-task"]
+    finally:
+        app.server_close()
+
+    assert task["status"] == "COMPLETED"
+    assert task["result"]["candidate_id"] == "url-candidate"
+    assert task["result"]["status"] == "DOWNLOADED"
+    assert task["result"]["download"]["downloaded"] == 1
+    assert calls == [
+        ("inspect", "https://youtu.be/demo", "youtube", True),
+        ("download", "url-candidate"),
+    ]
+
+
+def test_url_ingest_is_successful_when_candidate_is_already_downloaded(tmp_path: Path, monkeypatch):
+    config = make_config(tmp_path)
+    insert_candidate(config, "already-downloaded", "DOWNLOADED")
+    monkeypatch.setattr(
+        "jaguartv_factory.dashboard.inspect_url",
+        lambda config_arg, url, requested_platform="", allow_stub=False: "already-downloaded",
+    )
+
+    def fail_download(*args, **kwargs):
+        raise AssertionError("already-downloaded URL should not be downloaded again")
+
+    monkeypatch.setattr("jaguartv_factory.dashboard.download_top", fail_download)
+    app = DashboardApplication(("127.0.0.1", 0), config)
+    try:
+        app.tasks["ingest-task"] = {"status": "RUNNING", "total": 1}
+        app._run_action("ingest-task", {
+            "action": "ingest",
+            "platform": "youtube",
+            "url": "https://youtu.be/demo",
+        })
+        task = app.tasks["ingest-task"]
+    finally:
+        app.server_close()
+
+    assert task["status"] == "COMPLETED"
+    assert task["result"]["candidate_id"] == "already-downloaded"
+    assert task["result"]["status"] == "DOWNLOADED"
+    assert task["result"]["download"]["already_downloaded"] is True
+
+
+def test_url_ingest_failure_reports_download_reason(tmp_path: Path, monkeypatch):
+    config = make_config(tmp_path)
+    insert_candidate(config, "download-failed", "DOWNLOAD_FAILED")
+    connection = connect_db(config)
+    connection.execute(
+        "INSERT INTO events(candidate_id,event_type,payload_json,created_at) VALUES(?,?,?,?)",
+        ("download-failed", "DOWNLOAD_FAILED", json.dumps({"stderr": "Sign in to confirm you are not a bot"}), now_iso()),
+    )
+    connection.commit()
+    monkeypatch.setattr(
+        "jaguartv_factory.dashboard.inspect_url",
+        lambda config_arg, url, requested_platform="", allow_stub=False: "download-failed",
+    )
+    monkeypatch.setattr(
+        "jaguartv_factory.dashboard.download_top",
+        lambda config_arg, limit, candidate: {"selected": 1, "downloaded": 0, "failed": 1},
+    )
+    app = DashboardApplication(("127.0.0.1", 0), config)
+    try:
+        app.tasks["ingest-task"] = {"status": "RUNNING", "total": 1}
+        app._run_action("ingest-task", {
+            "action": "ingest",
+            "platform": "youtube",
+            "url": "https://youtu.be/demo",
+        })
+        task = app.tasks["ingest-task"]
+    finally:
+        app.server_close()
+
+    assert task["status"] == "FAILED"
+    assert "服务器下载失败" in task["error"]
+    assert "not a bot" in task["error"]
