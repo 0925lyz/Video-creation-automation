@@ -13,9 +13,16 @@ import {
 type BrandProps = {
   variant: "FB版" | "通用版";
   sourceVideo: string;
+  imgLogo?: string;
   imgTuYi?: string;
   imgTuEr?: string;
   imgEndcard?: string;
+  topBadge?: string;
+  bottomHeadline?: string;
+  bottomSubline?: string;
+  endcardCta?: string;
+  customDesign?: boolean;
+  designLayers?: DesignLayer[];
   captions?: CaptionCue[];
   captionStyle?: CaptionStyle;
   width: number;
@@ -33,6 +40,20 @@ type BrandProps = {
   endcardFit?: "cover" | "contain";
   overlayPlacement?: "video_corners" | "mobile_top_band";
   sourceAspectRatio?: number;
+};
+
+type DesignLayer = {
+  id: string;
+  type: "text" | "image";
+  x: number;
+  y: number;
+  text?: string;
+  color?: string;
+  font_size_ratio?: number;
+  max_width?: number;
+  font_weight?: number;
+  src?: string;
+  width?: number;
 };
 
 type CaptionCue = {
@@ -55,9 +76,16 @@ type CaptionStyle = {
 const fallbackProps: BrandProps = {
   variant: "通用版",
   sourceVideo: "",
+  imgLogo: "",
   imgTuYi: "",
   imgTuEr: "",
   imgEndcard: "",
+  topBadge: "",
+  bottomHeadline: "",
+  bottomSubline: "",
+  endcardCta: "",
+  customDesign: false,
+  designLayers: [],
   width: 1280,
   height: 720,
   fps: 30,
@@ -111,7 +139,9 @@ function JaguarTVVariant(props: BrandProps) {
         ) : (
           <AbsoluteFill style={{width, height, backgroundColor: "#050505"}} />
         )}
-        {isGeneric ? <CornerOverlays {...p} /> : null}
+        {p.customDesign ? <FreeformDesignOverlay layers={p.designLayers || []} /> : null}
+        {isGeneric && !p.customDesign ? <CornerOverlays {...p} /> : null}
+        {isGeneric && !p.customDesign ? <DesignCopyOverlay {...p} /> : null}
         <CaptionOverlays captions={p.captions || []} style={p.captionStyle || fallbackProps.captionStyle} />
       </Sequence>
       {isGeneric && p.imgEndcard ? (
@@ -120,6 +150,117 @@ function JaguarTVVariant(props: BrandProps) {
             <Img src={assetSrc(p.imgEndcard)} style={{width, height, objectFit: p.endcardFit || "cover"}} />
           </AbsoluteFill>
         </Sequence>
+      ) : null}
+    </AbsoluteFill>
+  );
+}
+
+function FreeformDesignOverlay({layers}: {layers: DesignLayer[]}) {
+  const {width, height} = useVideoConfig();
+  return (
+    <AbsoluteFill style={{pointerEvents: "none", fontFamily: "Arial, Helvetica, sans-serif"}}>
+      {layers.map((layer) => {
+        const common: React.CSSProperties = {
+          position: "absolute",
+          left: Math.round(width * Math.max(0, Math.min(1, Number(layer.x) || 0))),
+          top: Math.round(height * Math.max(0, Math.min(1, Number(layer.y) || 0))),
+        };
+        if (layer.type === "image" && layer.src) {
+          return (
+            <Img
+              key={layer.id}
+              src={assetSrc(layer.src)}
+              style={{
+                ...common,
+                width: Math.round(width * Math.max(0.03, Math.min(1, Number(layer.width) || 0.2))),
+                height: "auto",
+                objectFit: "contain",
+              }}
+            />
+          );
+        }
+        if (layer.type === "text" && layer.text) {
+          return (
+            <div key={layer.id} style={{
+              ...common,
+              maxWidth: Math.round(width * Math.max(0.1, Math.min(1, Number(layer.max_width) || 0.9))),
+              color: layer.color || "#ffffff",
+              fontSize: Math.max(8, Math.round(height * Math.max(0.01, Math.min(0.25, Number(layer.font_size_ratio) || 0.05)))),
+              fontWeight: Math.max(100, Math.min(900, Number(layer.font_weight) || 800)),
+              lineHeight: 1.15,
+              whiteSpace: "pre-wrap",
+              overflowWrap: "normal",
+              textShadow: "0 2px 7px rgba(0,0,0,.72)",
+            }}>{layer.text}</div>
+          );
+        }
+        return null;
+      })}
+    </AbsoluteFill>
+  );
+}
+
+function DesignCopyOverlay(p: BrandProps) {
+  const {width, height} = useVideoConfig();
+  const isMobileTopBand = p.overlayPlacement === "mobile_top_band";
+  const sourceAspect = Math.max(0.1, p.sourceAspectRatio || width / height);
+  const containedHeight = Math.min(height, Math.round(width / sourceAspect));
+  const topBand = Math.max(0, Math.floor((height - containedHeight) / 2));
+  const lowerBand = Math.max(0, height - containedHeight - topBand);
+  const topY = isMobileTopBand && topBand > 96 ? Math.round(topBand * 0.2) : Math.round(height * 0.035);
+  const bottomY = isMobileTopBand && lowerBand > 96 ? Math.round(lowerBand * 0.2) : Math.round(height * 0.035);
+  const headline = String(p.bottomHeadline || "").trim();
+  const subline = String(p.bottomSubline || "").trim();
+  const cta = String(p.endcardCta || "").trim();
+  return (
+    <AbsoluteFill style={{pointerEvents: "none", fontFamily: "Arial, Helvetica, sans-serif"}}>
+      <div style={{
+        position: "absolute",
+        left: Math.round(width * 0.035),
+        top: topY,
+        display: "flex",
+        alignItems: "center",
+        gap: Math.round(width * 0.016),
+        maxWidth: Math.round(width * 0.54),
+      }}>
+        {p.imgLogo ? (
+          <Img src={assetSrc(p.imgLogo)} style={{
+            width: Math.round(width * 0.12),
+            maxHeight: Math.round(height * 0.07),
+            objectFit: "contain",
+            filter: "drop-shadow(0 3px 10px rgba(0,0,0,.55))",
+          }} />
+        ) : null}
+        {p.topBadge ? (
+          <div style={{
+            padding: `${Math.round(height * 0.006)}px ${Math.round(width * 0.018)}px`,
+            borderRadius: Math.round(width * 0.012),
+            background: "rgba(5, 5, 5, .72)",
+            color: "#fff",
+            fontSize: Math.round(height * 0.024),
+            fontWeight: 900,
+            lineHeight: 1,
+            textShadow: "0 2px 6px rgba(0,0,0,.65)",
+          }}>{p.topBadge}</div>
+        ) : null}
+      </div>
+      {(headline || subline || cta) ? (
+        <div style={{
+          position: "absolute",
+          left: Math.round(width * 0.05),
+          right: Math.round(width * 0.05),
+          bottom: bottomY,
+          padding: `${Math.round(height * 0.014)}px ${Math.round(width * 0.028)}px`,
+          borderRadius: Math.round(width * 0.018),
+          background: "linear-gradient(90deg, rgba(3, 84, 62, .88), rgba(5, 5, 5, .7))",
+          color: "#fff",
+          boxShadow: "0 10px 30px rgba(0,0,0,.32)",
+          textShadow: "0 2px 6px rgba(0,0,0,.55)",
+        }}>
+          {headline ? <div style={{fontSize: Math.round(height * 0.033), fontWeight: 900, lineHeight: 1.05}}>{headline}</div> : null}
+          {subline ? <div style={{marginTop: Math.round(height * 0.006), fontSize: Math.round(height * 0.021), fontWeight: 700, opacity: .92}}>{subline}</div> : null}
+          {cta ? <div style={{marginTop: Math.round(height * 0.008), color: "#f2d14b", fontSize: Math.round(height * 0.022), fontWeight: 900}}>{cta}</div> : null}
+        </div>
       ) : null}
     </AbsoluteFill>
   );

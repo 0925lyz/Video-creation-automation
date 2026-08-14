@@ -5,12 +5,20 @@ import pytest
 
 from jaguartv_factory.core import connect_db, now_iso
 from jaguartv_factory.dashboard import (
+    copywriter_prompt,
+    copywriter_request,
+    candidate_design_info,
     dashboard_overview,
+    extract_json_object,
+    gemini_model_candidates,
+    gemini_model_name,
+    generate_copywriter_with_gemini,
     public_brand_asset_path,
     render_job_rows,
     save_metrics,
     save_publication,
     save_review,
+    upload_kind_requires_token,
 )
 from jaguartv_factory.sessions import check_session, list_sessions, save_session
 
@@ -38,6 +46,130 @@ def insert_candidate(config: dict, candidate_id: str = "candidate-1") -> None:
     connection.commit()
 
 
+def test_copywriter_request_validates_mode_and_count():
+    request = copywriter_request({
+        "input": "足球，巴西街头足球挑战",
+        "mode": "generic",
+        "platform": "tiktok",
+        "tone": "viral",
+        "count": 3,
+        "heat": 7,
+        "cta": "Saiba mais",
+    })
+
+    assert request["mode"] == "generic"
+    assert request["count"] == 3
+    with pytest.raises(ValueError):
+        copywriter_request({"input": "demo", "mode": "bad"})
+    with pytest.raises(ValueError):
+        copywriter_request({"input": "demo", "count": 4})
+
+
+def test_gemini_model_name_maps_31_pro_alias():
+    assert gemini_model_name("gemini-3.1-Pro") == "gemini-3.1-pro-preview"
+
+
+def test_gemini_model_candidates_fallback_within_31_family():
+    assert gemini_model_candidates("gemini-3.1-pro-preview")[:2] == [
+        "gemini-3.1-pro-preview",
+        "gemini-3.1-flash-lite",
+    ]
+
+
+def test_copywriter_prompt_keeps_generic_mode_off_tv_product():
+    prompt = copywriter_prompt(copywriter_request({
+        "input": "足球，巴西街头足球挑战",
+        "mode": "generic",
+        "platform": "tiktok",
+    }))
+
+    assert "write directly about the user's keywords" in prompt
+    assert "Do not mention JaguarTV" in prompt
+
+
+def test_extract_json_object_accepts_gemini_fenced_json():
+    result = extract_json_object('```json\n{"strategy":"ok","titles":["a"]}\n```')
+
+    assert result["strategy"] == "ok"
+
+
+def test_generate_copywriter_with_gemini_normalizes_response(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    response_payload = {
+        "candidates": [{
+            "content": {
+                "parts": [{
+                    "text": json.dumps({
+                        "strategy": "Tema principal em pt-BR: desafio de futebol de rua no Brasil",
+                        "titles": [
+                            "Desafio de futebol de rua no Brasil: quem ganha?",
+                            "O lance que merece replay",
+                            "Quando a rua vira campo",
+                        ],
+                        "captions": [
+                            "1. [TikTok] A rua vira campo e cada drible decide.",
+                            "2. [TikTok] Quem ficou com mais estilo nesse desafio?",
+                            "3. [TikTok] Tecnica ou ousadia?",
+                        ],
+                        "cta": "Saiba mais",
+                        "hashtags": "#FutebolDeRua #Desafio #Brasil",
+                        "emails": [{
+                            "name": "Abertura",
+                            "subject": "Olha esse desafio",
+                            "preview": "Rua, bola e disputa.",
+                            "body": "A cena mostra futebol de rua no Brasil.",
+                            "cta": "Ver o momento",
+                        }],
+                        "seo": {
+                            "title": "Desafio de futebol de rua no Brasil",
+                            "description": "Lances e reacoes de futebol de rua.",
+                            "keywords": ["futebol de rua", "desafio", "Brasil"],
+                        },
+                        "zhAudit": {
+                            "strategy": "围绕巴西街头足球挑战生成内容。",
+                            "titles": ["巴西街头足球挑战：谁赢？", "值得回放的动作", "街道变球场"],
+                            "captions": ["1. [TikTok] 街道变球场。", "2. [TikTok] 谁更有风格？", "3. [TikTok] 技术还是胆量？"],
+                            "cta": "引导查看更多。",
+                            "hashtags": "标签突出街头足球、挑战和巴西。",
+                            "emails": [{
+                                "name": "开场",
+                                "subject": "看这个挑战",
+                                "preview": "街头、足球和对决。",
+                                "body": "这段内容展示巴西街头足球。",
+                                "cta": "查看这个瞬间",
+                            }],
+                            "seo": {
+                                "title": "巴西街头足球挑战",
+                                "description": "街头足球动作和反应。",
+                                "keywords": ["街头足球", "挑战", "巴西"],
+                            },
+                        },
+                        "note": "Revise antes de publicar.",
+                    })
+                }]
+            }
+        }]
+    }
+
+    def fake_post_json(url, headers, body, timeout):
+        assert headers["x-goog-api-key"] == "test-key"
+        assert "generateContent" in url
+        assert "JaguarTV" in body["contents"][0]["parts"][0]["text"]
+        return 200, response_payload
+
+    monkeypatch.setattr("jaguartv_factory.dashboard.post_json", fake_post_json)
+    result = generate_copywriter_with_gemini({
+        "input": "足球，巴西街头足球挑战",
+        "mode": "generic",
+        "platform": "tiktok",
+        "count": 3,
+    })
+
+    assert result["source"] == "gemini"
+    assert result["titles"][0].startswith("Desafio")
+    assert "JaguarTV" not in "\n".join(result["captions"])
+
+
 def test_public_brand_asset_path_is_limited_to_brand_assets():
     asset = public_brand_asset_path("/assets/brand/endcard_landscape_blue_v2.png")
 
@@ -45,6 +177,23 @@ def test_public_brand_asset_path_is_limited_to_brand_assets():
     assert asset.name == "endcard_landscape_blue_v2.png"
     assert public_brand_asset_path("/assets/brand/../../config/pipeline.yaml") is None
     assert public_brand_asset_path("/assets/brand/missing.png") is None
+
+
+def test_design_image_uploads_do_not_require_upload_token():
+    assert upload_kind_requires_token("design_image") is False
+    assert upload_kind_requires_token("source") is True
+    assert upload_kind_requires_token("reaction") is True
+    assert upload_kind_requires_token("") is True
+
+
+def test_candidate_design_info_defaults_when_source_not_downloaded(tmp_path: Path):
+    config = dashboard_config(tmp_path)
+    insert_candidate(config)
+
+    info = candidate_design_info(config, "candidate-1")
+
+    assert info["source_preview_url"] == ""
+    assert (info["design_canvas_width"], info["design_canvas_height"]) == (1080, 1920)
 
 
 def test_dashboard_schema_and_overview(tmp_path: Path):

@@ -5,6 +5,7 @@ import html
 import json
 import math
 import os
+import copy
 import random
 import re
 import selectors
@@ -32,6 +33,12 @@ from .reaction import compose_reaction, reaction_spec
 from .scoring import score_candidate_v2
 from .server_store import archive_review_package, storage_root
 from .strategy import render_audio_mode, resolve_production_strategy
+from .pyvideotrans_adapter import (
+    pyvideotrans_enabled,
+    pyvideotrans_stt,
+    pyvideotrans_translate_srt,
+    pyvideotrans_tts,
+)
 from .workbuddy_adapter import (
     demucs_backing_track,
     detect_chinese_text_regions,
@@ -155,8 +162,11 @@ def workspace_dir(config: dict[str, Any]) -> Path:
 
 def connect_db(config: dict[str, Any]) -> sqlite3.Connection:
     db_path = workspace_dir(config) / "factory.db"
-    connection = sqlite3.connect(db_path)
+    connection = sqlite3.connect(db_path, timeout=float(config.get("run", {}).get("sqlite_timeout_sec", 30)))
     connection.row_factory = sqlite3.Row
+    connection.execute(f"PRAGMA busy_timeout={int(float(config.get('run', {}).get('sqlite_timeout_sec', 30)) * 1000)}")
+    connection.execute("PRAGMA journal_mode=WAL")
+    connection.execute("PRAGMA synchronous=NORMAL")
     connection.executescript(
         """
         CREATE TABLE IF NOT EXISTS candidates (
@@ -1082,7 +1092,21 @@ def parse_srt(path: Path) -> str:
     return " ".join(lines)
 
 
-def transcribe_with_whisper(media: Path, output_dir: Path) -> str:
+def transcribe_with_whisper(media: Path, output_dir: Path, config: dict[str, Any] | None = None) -> str:
+    if config and pyvideotrans_enabled(config, "stt"):
+        try:
+            srt = pyvideotrans_stt(config, media, output_dir / "source.pyvideotrans.srt")
+            transcript = parse_srt(srt)
+            if transcript.strip():
+                (output_dir / "transcript_source.json").write_text(
+                    json.dumps({"provider": "pyvideotrans", "subtitle": str(srt), "text": transcript}, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                return transcript
+        except RuntimeError as error:
+            (output_dir / "pyvideotrans_stt_fallback.json").write_text(
+                json.dumps({"error": str(error)}, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
     try:
         from faster_whisper import WhisperModel
     except ImportError as error:
@@ -1098,7 +1122,14 @@ def transcribe_with_whisper(media: Path, output_dir: Path) -> str:
     return transcript
 
 
-def source_text(work: Path, media: Path, fallback: str, *, enable_asr: bool = True) -> str:
+def source_text(
+    work: Path,
+    media: Path,
+    fallback: str,
+    *,
+    enable_asr: bool = True,
+    config: dict[str, Any] | None = None,
+) -> str:
     subtitles = sorted([*work.glob("source*.srt"), *work.glob("source*.vtt")])
     for subtitle in subtitles:
         text = parse_srt(subtitle)
@@ -1106,7 +1137,7 @@ def source_text(work: Path, media: Path, fallback: str, *, enable_asr: bool = Tr
             return text
     if enable_asr:
         try:
-            return transcribe_with_whisper(media, work)
+            return transcribe_with_whisper(media, work, config)
         except RuntimeError:
             pass
     payload = {"provider": "metadata_fallback", "language": "unknown", "text": fallback}
@@ -1144,7 +1175,7 @@ def choose_audio_strategy(
 
     if requested != "preserve" and bool(config.get("localization", {}).get("asr_enabled", False)):
         try:
-            transcript = transcribe_with_whisper(media, work).strip()
+            transcript = transcribe_with_whisper(media, work, config).strip()
         except RuntimeError:
             transcript = ""
         if len(transcript) >= 30:
@@ -1158,7 +1189,13 @@ def choose_audio_strategy(
     return "bgm_only", "", "no_speech_evidence_source_has_no_audio"
 
 
-def localization_profile_for_candidate(row: sqlite3.Row, metadata: dict[str, Any], work: Path, media: Path) -> dict[str, Any]:
+def localization_profile_for_candidate(
+    row: sqlite3.Row,
+    metadata: dict[str, Any],
+    work: Path,
+    media: Path,
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     subtitle_files = sorted([*work.glob("source*.srt"), *work.glob("source*.vtt")])
     subtitle_text = ""
     for subtitle in subtitle_files[:3]:
@@ -1176,7 +1213,11 @@ def localization_profile_for_candidate(row: sqlite3.Row, metadata: dict[str, Any
     ocr_reason = ""
     if not chinese_subtitles and platform in {"bilibili", "douyin", "xiaohongshu"}:
         try:
-            ocr_regions = detect_chinese_text_regions(media, sample_count=8)
+            ocr_regions = detect_chinese_text_regions(
+                media,
+                sample_count=8,
+                backend=str(((config or {}).get("edit", {}) or {}).get("ocr_backend", "tesseract")),
+            )
             ocr_reason = "ocr_screen_chinese_detected" if ocr_regions else "ocr_no_screen_chinese"
         except RuntimeError as error:
             ocr_reason = f"ocr_unavailable:{error}"
@@ -1225,12 +1266,15 @@ def should_ocr_blur_source_subtitles(
 ) -> bool:
     if str(cleanup_mode).strip().lower() != "ocr_blur":
         return False
+    chinese_platforms = {"bilibili", "douyin", "xiaohongshu"}
+    normalized_platform = platform.strip().lower()
+    if normalized_platform not in chinese_platforms:
+        return False
     if (
         str(localization_profile.get("subtitle_mode") or "") == "ptbr_subtitles"
         and bool(localization_profile.get("chinese_on_screen", localization_profile.get("chinese_subtitles")))
     ):
         return True
-    chinese_platforms = {"bilibili", "douyin", "xiaohongshu"}
     text_has_chinese = bool(re.search(r"[\u4e00-\u9fff]", title_text))
     profile_has_chinese = bool(localization_profile.get("title_has_chinese"))
     language_is_chinese = str(detected_language or localization_profile.get("detected_language") or "").lower().startswith("zh")
@@ -1239,7 +1283,7 @@ def should_ocr_blur_source_subtitles(
         text_has_chinese
         or profile_has_chinese
         or language_is_chinese
-        or (platform.strip().lower() in chinese_platforms and inferred_chinese_audio)
+        or inferred_chinese_audio
     )
 
 
@@ -1298,6 +1342,26 @@ def translate_to_ptbr(text: str) -> str:
     if not translated:
         raise RuntimeError("pt-BR translation returned empty text")
     return translated
+
+
+def source_subtitle_file(work: Path) -> Path | None:
+    return next(iter(sorted([*work.glob("source*.srt"), *work.glob("source*.vtt")])), None)
+
+
+def translate_source_subtitles_to_ptbr(config: dict[str, Any], work: Path, destination: Path) -> Path | None:
+    source = source_subtitle_file(work)
+    if not source or source.suffix.lower() != ".srt":
+        return None
+    if not pyvideotrans_enabled(config, "sts"):
+        return None
+    try:
+        return pyvideotrans_translate_srt(config, source, destination)
+    except RuntimeError as error:
+        (work / "pyvideotrans_sts_fallback.json").write_text(
+            json.dumps({"source": str(source), "error": str(error)}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return None
 
 
 def build_ptbr_script(source: str, *, hook: str = DEFAULT_HOOK) -> str:
@@ -1505,6 +1569,20 @@ def write_srt(text: str, duration: float, destination: Path) -> None:
     destination.write_text("\n".join(blocks), encoding="utf-8")
 
 
+def tts_rate_percent(config: dict[str, Any]) -> str:
+    raw = (config.get("localization", {}) or {}).get("tts_rate", 1.08)
+    if isinstance(raw, str):
+        value = raw.strip()
+        if value.endswith("%"):
+            return value
+        try:
+            raw = float(value)
+        except ValueError:
+            return "+8%"
+    percent = int(round((float(raw) - 1.0) * 100))
+    return f"{percent:+d}%"
+
+
 def format_srt_time(seconds: float) -> str:
     milliseconds = max(0, int(seconds * 1000))
     hours, remainder = divmod(milliseconds, 3_600_000)
@@ -1520,6 +1598,8 @@ def tts_ptbr(
     provider: str = "auto",
     edge_voice: str = "pt-BR-AntonioNeural",
     edge_rate: str = "+8%",
+    config: dict[str, Any] | None = None,
+    subtitles: Path | None = None,
 ) -> None:
     """Generate pt-BR narration with WorkBuddy's edge-tts path first.
 
@@ -1527,8 +1607,15 @@ def tts_ptbr(
     server operation.
     """
     provider = provider.strip().lower()
-    if provider not in {"auto", "edge", "system"}:
-        raise ValueError("localization.tts_provider must be auto, edge or system")
+    if provider not in {"auto", "edge", "system", "pyvideotrans"}:
+        raise ValueError("localization.tts_provider must be auto, edge, system or pyvideotrans")
+    if config and subtitles and provider in {"auto", "pyvideotrans"} and pyvideotrans_enabled(config, "tts"):
+        try:
+            pyvideotrans_tts(config, subtitles, destination)
+            return
+        except RuntimeError:
+            if provider == "pyvideotrans":
+                raise
     if provider in {"auto", "edge"}:
         try:
             edge_tts_ptbr(text, destination, voice=edge_voice, rate=edge_rate)
@@ -2270,6 +2357,31 @@ def remotion_template_dir() -> Path:
     return Path(__file__).resolve().parent / "remotion_template"
 
 
+def remotion_runtime_is_healthy(runtime: Path) -> bool:
+    remotion_bin = runtime / "node_modules" / ".bin" / "remotion"
+    if not remotion_bin.exists():
+        return False
+    probe = run_command([str(remotion_bin), "versions"], cwd=runtime, check=False, timeout=20)
+    if probe.returncode != 0:
+        return False
+    node_probe = run_command(
+        [
+            "node",
+            "-e",
+            "\n".join([
+                "const opts = {paths: [process.cwd()]};",
+                "require.resolve('remotion', opts);",
+                "require.resolve('@remotion/renderer', opts);",
+                "require.resolve('webpack/lib/dependencies/CriticalDependencyWarning', opts);",
+            ]),
+        ],
+        cwd=runtime,
+        check=False,
+        timeout=20,
+    )
+    return node_probe.returncode == 0
+
+
 def ensure_remotion_runtime(config: dict[str, Any]) -> Path:
     """Prepare a workspace-local Remotion runtime.
 
@@ -2281,15 +2393,11 @@ def ensure_remotion_runtime(config: dict[str, Any]) -> Path:
     template = remotion_template_dir()
     runtime = workspace_dir(config) / "remotion_runtime"
     shutil.copytree(template, runtime, dirs_exist_ok=True, ignore=shutil.ignore_patterns("node_modules"))
-    remotion_bin = runtime / "node_modules" / ".bin" / "remotion"
-    installed = False
-    if remotion_bin.exists():
-        probe = run_command([str(remotion_bin), "--version"], cwd=runtime, check=False, timeout=20)
-        installed = probe.returncode == 0
-        if not installed:
-            shutil.rmtree(runtime / "node_modules", ignore_errors=True)
-            lockfile = runtime / "package-lock.json"
-            lockfile.unlink(missing_ok=True)
+    installed = remotion_runtime_is_healthy(runtime)
+    if not installed:
+        shutil.rmtree(runtime / "node_modules", ignore_errors=True)
+        lockfile = runtime / "package-lock.json"
+        lockfile.unlink(missing_ok=True)
     if not installed:
         installer = shutil.which("npm")
         args = [installer, "install", "--no-audit", "--no-fund"] if installer else []
@@ -2303,6 +2411,8 @@ def ensure_remotion_runtime(config: dict[str, Any]) -> Path:
                 "Remotion dependencies install failed. Ensure Node.js/npm network access works.\n"
                 + (result.stderr or result.stdout)[-4000:]
             )
+        if not remotion_runtime_is_healthy(runtime):
+            raise RuntimeError("Remotion dependencies install finished but runtime health check still failed")
     return runtime
 
 
@@ -2358,6 +2468,186 @@ def batch_label_for_output(options: dict[str, Any]) -> str:
         return ""
     label = re.sub(r'[\\/:*?"<>|\s]+', "-", label).strip(".-")
     return label[:36]
+
+
+def production_design_config(config: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
+    design = options.get("design") if isinstance(options, dict) else None
+    if not isinstance(design, dict) or not design:
+        return config
+    patched = copy.deepcopy(config)
+    patched.setdefault("edit", {})["render_engine"] = "remotion"
+    remotion = patched.setdefault("remotion", {})
+    remotion.setdefault("dual_variant", {})
+    remotion["dual_variant"]["enabled"] = True
+    if "layers" in design:
+        patched.setdefault("edit", {})["layout_mode"] = "original"
+        raw_layers = design.get("layers") if isinstance(design.get("layers"), list) else []
+        raw_variants = design.get("variants") if isinstance(design.get("variants"), list) else ["通用版", "FB版"]
+        variants = [str(item).strip() for item in raw_variants if str(item).strip() in {"通用版", "FB版"}]
+        if not variants:
+            variants = ["通用版", "FB版"]
+        layers: list[dict[str, Any]] = []
+        for index, raw in enumerate(raw_layers):
+            if not isinstance(raw, dict):
+                continue
+            layer_type = str(raw.get("type") or "").strip().lower()
+            base = {
+                "id": str(raw.get("id") or f"layer-{index + 1}")[:80],
+                "type": layer_type,
+                "x": max(0.0, min(1.0, float(raw.get("x", 0.0)))),
+                "y": max(0.0, min(1.0, float(raw.get("y", 0.0)))),
+            }
+            if layer_type == "text":
+                text = str(raw.get("text") or "")
+                if not text.strip():
+                    continue
+                color = str(raw.get("color") or "#ffffff").strip()
+                if not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+                    color = "#ffffff"
+                layers.append({
+                    **base,
+                    "text": text,
+                    "color": color,
+                    "font_size_ratio": max(0.01, min(0.25, float(raw.get("font_size_ratio", 0.05)))),
+                    "max_width": max(0.1, min(1.0, float(raw.get("max_width", 0.9)))),
+                    "font_weight": max(100, min(900, int(raw.get("font_weight", 800)))),
+                })
+            elif layer_type == "image":
+                path = str(raw.get("path") or "").strip()
+                if not path:
+                    continue
+                layers.append({
+                    **base,
+                    "path": path,
+                    "width": max(0.03, min(1.0, float(raw.get("width", 0.2)))),
+                })
+        base_video_path = str(design.get("base_video_path") or "").strip()
+        custom_design_payload = {
+            "enabled": True,
+            "layers": layers,
+            "variants": variants,
+            "preserve_source_canvas": True,
+            "whole_source": True,
+        }
+        if base_video_path:
+            custom_design_payload["base_video_path"] = base_video_path
+        base_asset_id = str(design.get("base_asset_id") or "").strip()
+        if base_asset_id:
+            custom_design_payload["base_asset_id"] = base_asset_id
+        base_asset_ids = design.get("base_asset_ids") if isinstance(design.get("base_asset_ids"), dict) else {}
+        filtered_asset_ids = {
+            str(key): str(value).strip()
+            for key, value in base_asset_ids.items()
+            if str(key) in {"通用版", "FB版"} and str(value).strip()
+        }
+        if filtered_asset_ids:
+            custom_design_payload["base_asset_ids"] = filtered_asset_ids
+        remotion["custom_design"] = custom_design_payload
+        return patched
+    if str(design.get("overlay_left") or "").strip():
+        remotion["dual_variant"]["tu_yi"] = str(design.get("overlay_left")).strip()
+    if str(design.get("overlay_right") or "").strip():
+        remotion["dual_variant"]["tu_er"] = str(design.get("overlay_right")).strip()
+    if str(design.get("endcard_portrait") or "").strip():
+        remotion["dual_variant"]["lv_tu"] = str(design.get("endcard_portrait")).strip()
+    if str(design.get("endcard_landscape") or "").strip():
+        remotion["dual_variant"]["lan_tu"] = str(design.get("endcard_landscape")).strip()
+    for source, target in (
+        ("top_badge", "top_badge"),
+        ("headline", "bottom_headline"),
+        ("subline", "bottom_subline"),
+        ("cta", "endcard_cta"),
+    ):
+        value = str(design.get(source) or "").strip()
+        if value:
+            remotion[target] = value
+    logo = str(design.get("logo") or "").strip()
+    if logo:
+        brand = patched.setdefault("brand", {})
+        kit_name = str(brand.get("default_kit") or "jaguartv")
+        kit = brand.setdefault("kits", {}).setdefault(kit_name, {})
+        kit.setdefault("watermark", {})["image"] = logo
+    return patched
+
+
+def design_image_path(config: dict[str, Any], value: str) -> Path:
+    path = resolve_config_path(config, value).expanduser().resolve()
+    allowed_roots = [
+        (storage_root(config) / "uploads" / "design_image").resolve(),
+        resolve_config_path(config, "assets/brand").resolve(),
+    ]
+    if not path.is_file() or not any(root in path.parents for root in allowed_roots):
+        raise ValueError(f"design image must be an uploaded image or brand asset: {path.name}")
+    return path
+
+
+def design_base_video_path(config: dict[str, Any], value: str) -> Path:
+    path = resolve_config_path(config, value).expanduser().resolve()
+    allowed_roots = [
+        (workspace_dir(config) / "ready_for_review").resolve(),
+        (storage_root(config) / "review").resolve(),
+        inventory_root(config).resolve(),
+    ]
+    if not path.is_file() or path.suffix.lower() not in {".mp4", ".mov", ".mkv", ".webm", ".m4v"}:
+        raise ValueError("design base video must be an existing server-produced video")
+    if not any(root == path or root in path.parents for root in allowed_roots):
+        raise ValueError("design base video must come from server output inventory")
+    return path
+
+
+def review_output_video_path_by_id(config: dict[str, Any], asset_id: str) -> Path | None:
+    asset_id = urllib.parse.unquote(str(asset_id or "").strip())
+    if not asset_id:
+        return None
+    roots = [workspace_dir(config) / "ready_for_review", storage_root(config) / "review"]
+    for root in roots:
+        if not root.exists():
+            continue
+        for package_dir in root.iterdir():
+            if not package_dir.is_dir():
+                continue
+            for video in sorted(path for path in package_dir.glob("*.mp4") if path.is_file()):
+                current_id = package_dir.name if video.name == "video.mp4" else f"{package_dir.name}:{video.stem}"
+                if current_id == asset_id:
+                    return video.resolve()
+    return None
+
+
+def remotion_output_variants(config: dict[str, Any]) -> list[str]:
+    custom_design = ((config.get("remotion", {}) or {}).get("custom_design", {}) or {})
+    raw_variants = custom_design.get("variants") if custom_design.get("enabled") else None
+    if isinstance(raw_variants, str):
+        raw_variants = [part.strip() for part in raw_variants.split(",")]
+    if not isinstance(raw_variants, list):
+        return ["通用版", "FB版"]
+    variants = [str(item).strip() for item in raw_variants if str(item).strip() in {"通用版", "FB版"}]
+    return variants or ["通用版", "FB版"]
+
+
+def custom_design_preserves_source(config: dict[str, Any]) -> bool:
+    custom_design = ((config.get("remotion", {}) or {}).get("custom_design", {}) or {})
+    return bool(custom_design.get("enabled")) and bool(custom_design.get("preserve_source_canvas", False))
+
+
+def remotion_design_base_video(config: dict[str, Any], variant: str | None = None) -> Path | None:
+    custom_design = ((config.get("remotion", {}) or {}).get("custom_design", {}) or {})
+    if not custom_design.get("enabled"):
+        return None
+    base_asset_ids = custom_design.get("base_asset_ids") if isinstance(custom_design.get("base_asset_ids"), dict) else {}
+    asset_id = ""
+    if variant:
+        asset_id = str(base_asset_ids.get(variant) or "").strip()
+    if not asset_id:
+        asset_id = str(custom_design.get("base_asset_id") or "").strip()
+    if asset_id:
+        path = review_output_video_path_by_id(config, asset_id)
+        if path is None:
+            raise ValueError(f"design base asset does not exist: {asset_id}")
+        return path
+    value = str(custom_design.get("base_video_path") or "").strip()
+    if not value:
+        return None
+    return design_base_video_path(config, value)
 
 
 def configured_remotion_asset(config: dict[str, Any], key: str) -> Path:
@@ -2658,11 +2948,29 @@ def render_video_remotion_variant(
     output = output.expanduser().resolve()
     runtime = ensure_remotion_runtime(config)
     source_width, source_height = media_dimensions(clean_media)
-    canvas = remotion_canvas_for_source(config, source_width, source_height)
+    if custom_design_preserves_source(config):
+        canvas = {
+            "width": source_width,
+            "height": source_height,
+            "source_fit": "cover",
+            "overlay_placement": "video_corners",
+            "mobile_format": {
+                "applied": False,
+                "mode": "source_canvas_design",
+                "source_width": source_width,
+                "source_height": source_height,
+            },
+        }
+    else:
+        canvas = remotion_canvas_for_source(config, source_width, source_height)
     width, height = int(canvas["width"]), int(canvas["height"])
     content_duration = media_duration(clean_media)
     remotion_settings = config.get("remotion", {}) or {}
-    promo_seconds = max(1.0, min(6.0, float(remotion_settings.get("promo_duration_sec", 1.5))))
+    custom_design = remotion_settings.get("custom_design", {}) or {}
+    custom_design_enabled = bool(custom_design.get("enabled"))
+    promo_seconds = 0.0 if custom_design_enabled else max(
+        1.0, min(6.0, float(remotion_settings.get("promo_duration_sec", 1.5)))
+    )
     public_dir = runtime / "public" / "renders" / output.stem
     if public_dir.exists():
         shutil.rmtree(public_dir)
@@ -2687,14 +2995,43 @@ def render_video_remotion_variant(
         "endcardFit": "contain" if (canvas.get("mobile_format") or {}).get("applied") else "cover",
         "overlayPlacement": str(canvas["overlay_placement"]),
         "sourceAspectRatio": source_width / max(1, source_height),
+        "customDesign": custom_design_enabled,
     }
     if remotion_captions_enabled_for_variant(config, variant):
         caption_cues = remotion_caption_cues(subtitles, max_end=content_duration)
         if caption_cues:
             props["captions"] = caption_cues
             props["captionStyle"] = remotion_caption_style(config)
+    if custom_design_enabled:
+        design_layers: list[dict[str, Any]] = []
+        for index, layer in enumerate(custom_design.get("layers") or []):
+            rendered_layer = dict(layer)
+            if rendered_layer.get("type") == "image":
+                image_path = design_image_path(config, str(rendered_layer.pop("path", "")))
+                rendered_layer["src"] = copy_remotion_public_asset(
+                    image_path,
+                    public_dir,
+                    f"design_{index + 1}{image_path.suffix or '.png'}",
+                )
+            design_layers.append(rendered_layer)
+        props["designLayers"] = design_layers
+    else:
+        logo_path = str(brand_kit(config).get("watermark", {}).get("image") or "").strip()
+        if logo_path and variant == "通用版":
+            logo = resolve_config_path(config, logo_path)
+            if logo.is_file():
+                props["imgLogo"] = copy_remotion_public_asset(logo, public_dir, f"logo{logo.suffix or '.png'}")
+        for key, prop_key in (
+            ("top_badge", "topBadge"),
+            ("bottom_headline", "bottomHeadline"),
+            ("bottom_subline", "bottomSubline"),
+            ("endcard_cta", "endcardCta"),
+        ):
+            value = str(remotion_settings.get(key) or "").strip()
+            if value:
+                props[prop_key] = value
     endcard_class = ""
-    if variant == "通用版":
+    if variant == "通用版" and not custom_design_enabled:
         tu_yi = configured_remotion_asset(config, "tu_yi")
         tu_er = configured_remotion_asset(config, "tu_er")
         props["imgTuYi"] = copy_remotion_public_asset(tu_yi, public_dir, f"tu_yi{tu_yi.suffix or '.png'}")
@@ -2922,6 +3259,119 @@ def short_segments(config: dict[str, Any], source_duration: float, preferred_dur
     return segments or [{"index": 1, "total": 1, "start": 0.0, "duration": min(maximum, source_duration)}]
 
 
+def produce_design_overlay_from_base(
+    config: dict[str, Any],
+    row: sqlite3.Row,
+    options: dict[str, Any],
+    progress: Callable[[int, str], None],
+) -> Path:
+    work = workspace_dir(config) / "jobs" / row["id"]
+    work.mkdir(parents=True, exist_ok=True)
+    progress(12, "正在读取服务器成片底视频")
+    candidate_metadata: dict[str, Any] = {}
+    try:
+        candidate_metadata = json.loads(row["metadata_json"] or "{}")
+    except (json.JSONDecodeError, KeyError):
+        pass
+    date_label = candidate_date_label(row)
+    source_label = source_filename_label(str(row["platform"]))
+    batch_label = batch_label_for_output(options) or "文案设计版"
+    filename_source_label = f"{source_label}-{batch_label}"
+    inventory_index = next_inventory_index(config, date_label, filename_source_label)
+    filename_stem = f"{date_label}-{filename_source_label}-{inventory_index}"
+    variant_outputs: list[dict[str, Any]] = []
+    for variant in remotion_output_variants(config):
+        base_video = remotion_design_base_video(config, variant)
+        if base_video is None:
+            raise RuntimeError("文案设计需要先选择一条服务器成片作为底视频")
+        variant_output = work / f"{filename_stem}-{variant}.mp4"
+        progress(32, f"正在基于服务器成片叠加文案设计：{variant}")
+        info = render_video_remotion_variant(
+            config,
+            base_video,
+            variant_output,
+            variant=variant,
+            subtitles=None,
+            job_id=f"{row['id']}-design",
+            candidate_id=row["id"],
+        )
+        info["duration"] = media_duration(variant_output)
+        info["size"] = variant_output.stat().st_size
+        info["source_label"] = source_label
+        info["batch_label"] = batch_label
+        inventory_dir = inventory_root(config) / batch_label / variant / source_label
+        inventory_dir.mkdir(parents=True, exist_ok=True)
+        inventory_path = inventory_dir / variant_output.name
+        shutil.copy2(variant_output, inventory_path)
+        info["inventory_path"] = str(inventory_path)
+        qa_variant = qa_video(variant_output, config)
+        qa_variant["variant"] = variant
+        info["qa"] = qa_variant
+        if not qa_variant["passed"]:
+            raise RuntimeError(f"QA failed for design overlay {variant}: {qa_variant}")
+        variant_outputs.append(info)
+    output = Path(str(variant_outputs[0]["path"]))
+    review_root = workspace_dir(config) / "ready_for_review"
+    package_id = row["id"]
+    review = review_root / package_id
+    review.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(output, review / "video.mp4")
+    for info in variant_outputs:
+        variant_path = Path(str(info["path"]))
+        if variant_path.is_file():
+            shutil.copy2(variant_path, review / variant_path.name)
+    cover = review / "cover.jpg"
+    cover_source = render_cover_image(config, brand_kit(config), output, cover)
+    duration = media_duration(output)
+    metadata = {
+        "job_id": package_id,
+        "source": {
+            "candidate_id": row["id"],
+            "platform": row["platform"],
+            "url": row["url"],
+            "title": row["title"],
+            "base_video": str(remotion_design_base_video(config, remotion_output_variants(config)[0]) or ""),
+        },
+        "segment": {
+            "index": 1,
+            "total": 1,
+            "start_sec": 0.0,
+            "duration_sec": duration,
+            "highlight_score": 0,
+            "highlight_reasons": ["design_overlay_on_server_output"],
+        },
+        "strategy": {
+            "content_type": "design_overlay",
+            "segment_strategy": "server_output_overlay",
+            "audio_policy": "preserve_output_audio",
+        },
+        "publishing_text": str(candidate_metadata.get("title") or row["title"] or ""),
+        "tracking": tracking_links(config, package_id),
+        "outputs": {
+            "video": str(output),
+            "cover": str(cover),
+            "cover_source": cover_source,
+            "variants": variant_outputs,
+        },
+        "batch_label": batch_label,
+        "rights_status": str(options.get("rights_status") or "MANUAL_REVIEW"),
+        "rights_note": "Design overlay generated from existing server-produced output.",
+        "qa": variant_outputs[0].get("qa", {}),
+        "created_at": now_iso(),
+    }
+    (review / "metadata.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    connection = connect_db(config)
+    connection.execute(
+        "UPDATE candidates SET status='READY_FOR_REVIEW',updated_at=? WHERE id=?",
+        (now_iso(), row["id"]),
+    )
+    append_event(connection, row["id"], "READY_FOR_REVIEW", {"package": package_id, "mode": "design_overlay"})
+    connection.commit()
+    archive_review_package(config, review)
+    progress(100, "文案设计版已基于服务器成片生成")
+    return review
+
+
 def produce_candidate(
     config: dict[str, Any], row: sqlite3.Row,
     progress_callback: Callable[[int, str], None] | None = None,
@@ -2933,12 +3383,18 @@ def produce_candidate(
 
     require_binary("ffmpeg")
     require_binary("ffprobe")
+    options = options or {}
+    config = production_design_config(config, options)
+    custom_design = ((config.get("remotion", {}) or {}).get("custom_design", {}) or {})
+    if custom_design.get("enabled") and (
+        custom_design.get("base_video_path") or custom_design.get("base_asset_id") or custom_design.get("base_asset_ids")
+    ):
+        return produce_design_overlay_from_base(config, row, options, progress)
     progress(5, "正在读取源素材")
     work = workspace_dir(config) / "jobs" / row["id"]
     media = next((path for path in work.glob("source.*") if path.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov"}), None)
     if not media:
         raise RuntimeError(f"No downloaded media for {row['id']}")
-    options = options or {}
     try:
         candidate_metadata = json.loads(row["metadata_json"] or "{}")
     except (json.JSONDecodeError, KeyError):
@@ -2963,7 +3419,7 @@ def produce_candidate(
     )
     hook_version, hook_text = active_hook(config)
     audio_mode = render_audio_mode(strategy.audio_policy)
-    localization_profile = localization_profile_for_candidate(row, candidate_metadata, work, media)
+    localization_profile = localization_profile_for_candidate(row, candidate_metadata, work, media, config)
     audio_override = str(options.get("audio_policy") or "auto").strip().lower() != "auto"
     if not audio_override:
         audio_mode = str(localization_profile["audio_mode"])
@@ -2976,6 +3432,7 @@ def produce_candidate(
             media,
             f"{row['title']}. {row['description']}".strip(),
             enable_asr=bool(config.get("localization", {}).get("asr_enabled", False)),
+            config=config,
         )
     elif audio_mode == "preserve_source" and not media_has_audio(media):
         audio_mode = "bgm_only"
@@ -2983,6 +3440,7 @@ def produce_candidate(
     progress(18, f"音轨策略：{audio_mode}")
     script = ""
     voice: Path | None = None
+    subtitles: Path | None = None
     bgm: Path | None = None
     bgm_source = "source_music" if audio_mode == "preserve_source" else "none"
     if audio_mode == "localized":
@@ -2990,8 +3448,32 @@ def produce_candidate(
         script = build_ptbr_script(transcript or fallback_text, hook=hook_text)
         assert_script_is_portuguese(script)
         progress(32, "葡语脚本检查通过")
-        voice = None
-        progress(48, "葡语脚本检查通过，按要求剔除固定配音")
+        localization_settings = config.get("localization", {}) or {}
+        translated_subtitles = None
+        if localization_profile.get("subtitle_mode") == "ptbr_subtitles":
+            translated_subtitles = translate_source_subtitles_to_ptbr(config, work, work / "subtitles_ptbr.srt")
+        if bool(localization_settings.get("voice_enabled", False)):
+            voice = work / "voice_ptbr.aiff"
+            subtitles_for_tts = translated_subtitles or work / "subtitles_ptbr_script.srt"
+            if not translated_subtitles:
+                write_srt(script, min(60.0, source_duration), subtitles_for_tts)
+            tts_ptbr(
+                script,
+                voice,
+                provider=str(localization_settings.get("tts_provider", "auto")),
+                edge_voice=str(localization_settings.get("edge_tts_voice", "pt-BR-AntonioNeural")),
+                edge_rate=tts_rate_percent(config),
+                config=config,
+                subtitles=subtitles_for_tts,
+            )
+            progress(48, "pt-BR 配音已生成")
+        else:
+            voice = None
+            if translated_subtitles:
+                subtitles = translated_subtitles
+            audio_mode = "bgm_only"
+            audio_reason += ":voice_disabled_bgm_only"
+            progress(48, "葡语脚本检查通过，按配置不生成固定配音")
         if bool(config.get("localization", {}).get("preserve_backing_track", False)):
             try:
                 bgm = demucs_backing_track(media, work)
@@ -3016,8 +3498,13 @@ def produce_candidate(
         "audio_reason": audio_reason,
     }
     (work / "script_ptbr.json").write_text(json.dumps(script_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    subtitles: Path | None = None
-    if audio_mode == "localized" and voice and localization_profile.get("subtitle_mode") == "ptbr_subtitles":
+    if audio_mode == "bgm_only" and subtitles:
+        preferred_duration = min(60.0, source_duration)
+    elif audio_mode == "localized" and voice and (work / "subtitles_ptbr.srt").is_file():
+        voice_duration = media_duration(voice)
+        preferred_duration = min(60.0, source_duration, max(20.0, voice_duration + 3.0))
+        subtitles = work / "subtitles_ptbr.srt"
+    elif audio_mode == "localized" and voice and localization_profile.get("subtitle_mode") == "ptbr_subtitles":
         voice_duration = media_duration(voice)
         preferred_duration = min(60.0, source_duration, max(20.0, voice_duration + 3.0))
         subtitles = work / "subtitles_ptbr.srt"
@@ -3027,7 +3514,10 @@ def produce_candidate(
         preferred_duration = min(60.0, source_duration, max(20.0, voice_duration + 3.0))
     else:
         preferred_duration = min(60.0, source_duration)
-        for stale in (work / "voice_ptbr.aiff", work / "subtitles_ptbr.srt"):
+        stale_paths = [work / "voice_ptbr.aiff"]
+        if subtitles is None:
+            stale_paths.append(work / "subtitles_ptbr.srt")
+        for stale in stale_paths:
             stale.unlink(missing_ok=True)
     render_engine = str(config.get("edit", {}).get("render_engine", "ffmpeg")).strip().lower()
     enforce_dual_variant_remotion(config)
@@ -3041,7 +3531,10 @@ def produce_candidate(
         bgm, bgm_source = select_bgm(config, row["id"])
         progress(58, "已准备源音下的轻量 Funk BGM")
     transcript_file = next(iter(sorted([*work.glob("source*.srt"), *work.glob("source*.vtt")])), None)
-    if source_duration <= short_video_threshold(config):
+    custom_design = ((config.get("remotion", {}) or {}).get("custom_design", {}) or {})
+    if bool(custom_design.get("enabled")) and bool(custom_design.get("whole_source")):
+        segments = [whole_source_segment(source_duration, "whole_source_design")]
+    elif source_duration <= short_video_threshold(config):
         segment_duration = min(source_duration, max(float(short_duration_bounds(config)[1]), preferred_duration))
         segments = [whole_source_segment(segment_duration, strategy.segment_strategy)]
     else:
@@ -3132,6 +3625,7 @@ def produce_candidate(
                 duration=float(segment["duration"]),
                 sigma=int(config.get("edit", {}).get("ocr_blur_sigma", 28)),
                 fallback_regions=fallback_regions,
+                backend=str(config.get("edit", {}).get("ocr_backend", "tesseract")),
             )
             render_media = preprocessed
             render_start = 0.0
@@ -3144,7 +3638,7 @@ def produce_candidate(
                 config, render_media, voice, bgm, clean, float(segment["duration"]),
                 audio_mode=audio_mode, start_time=render_start,
             )
-            for variant in ("通用版", "FB版"):
+            for variant in remotion_output_variants(config):
                 variant_output = work / f"{filename_stem}-{variant}.mp4"
                 info = render_video_remotion_variant(
                     config,
@@ -3162,7 +3656,11 @@ def produce_candidate(
                         reaction,
                         content_duration=float(segment["duration"]),
                     )
-                mobile_format = normalize_mobile_review_video(variant_output, config)
+                mobile_format = (
+                    dict(info["mobile_format"])
+                    if custom_design_preserves_source(config)
+                    else normalize_mobile_review_video(variant_output, config)
+                )
                 if not mobile_format.get("applied") and info.get("mobile_format", {}).get("applied"):
                     mobile_format = dict(info["mobile_format"])
                 info["mobile_format"] = mobile_format
@@ -3328,7 +3826,7 @@ def produce_candidate(
         storage_result = archive_review_package(config, package_id, review)
         append_event(connect_db(config), row["id"], "SERVER_ARCHIVED", storage_result)
         reviews.append(review)
-        
+
         # Insert child candidate into database
         conn = connect_db(config)
         child_title = f"{row['title']} (Slice {segment_index})"

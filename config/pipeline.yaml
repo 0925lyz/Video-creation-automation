@@ -127,9 +127,10 @@ remotion:
     text_color: "#ffffff"
     background_color: "#050505"
     accent_color: "#f2d14b"
-  top_badge: "VÍDEO DO DIA 🔥"
-  bottom_headline: "Assista esportes ao vivo"
-  bottom_subline: "Canais, jogos e entretenimento em um só app"
+  top_badge: ""
+  bottom_headline: ""
+  bottom_subline: ""
+  endcard_cta: ""
 
 hyperframes:
   enabled: false

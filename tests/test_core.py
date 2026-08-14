@@ -9,13 +9,16 @@ from jaguartv_factory.core import (
     candidate_market_rejection,
     choose_audio_strategy,
     connect_db,
+    design_image_path,
     enforce_dual_variant_remotion,
     format_srt_time,
     generate_funk_bgm,
     likely_language,
     load_config,
     mobile_review_format_needed,
+    production_design_config,
     require_binary,
+    ensure_remotion_runtime,
     remotion_canvas_for_source,
     remotion_caption_cues,
     remotion_caption_style,
@@ -35,6 +38,91 @@ from jaguartv_factory import cli
 def test_language_detection():
     assert likely_language("这是一个足球视频")[0] == "zh"
     assert likely_language("Você não vai acreditar que o Brasil marcou")[0] == "pt"
+
+
+def test_freeform_design_preserves_newlines_and_ignores_blank_text(tmp_path: Path):
+    config = {"_root": str(tmp_path), "edit": {}, "remotion": {"dual_variant": {}}}
+    patched = production_design_config(config, {"design": {"layers": [
+        {"id": "text", "type": "text", "text": "Linha um\nLinha dois", "x": 0.2, "y": 0.3,
+         "font_size_ratio": 0.06, "max_width": 0.7, "color": "#12ab34"},
+        {"id": "blank", "type": "text", "text": "\n  ", "x": 0, "y": 0},
+        {"id": "logo", "type": "image", "path": "/srv/logo.png", "x": 0.75, "y": 0.04, "width": 0.2},
+    ]}})
+
+    assert patched is not config
+    assert patched["edit"]["render_engine"] == "remotion"
+    layers = patched["remotion"]["custom_design"]["layers"]
+    assert [layer["id"] for layer in layers] == ["text", "logo"]
+    assert layers[0]["text"] == "Linha um\nLinha dois"
+    assert layers[1]["path"] == "/srv/logo.png"
+    assert patched["remotion"]["custom_design"]["variants"] == ["通用版", "FB版"]
+    assert patched["edit"]["layout_mode"] == "original"
+    assert patched["remotion"]["custom_design"]["preserve_source_canvas"] is True
+    assert patched["remotion"]["custom_design"]["whole_source"] is True
+
+
+def test_remotion_runtime_reinstalls_when_deep_dependency_is_missing(tmp_path: Path, monkeypatch):
+    template = tmp_path / "template"
+    (template / "src").mkdir(parents=True)
+    (template / "package.json").write_text('{"dependencies":{"remotion":"4.0.508"}}', encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    runtime = workspace / "remotion_runtime"
+    remotion_bin = runtime / "node_modules" / ".bin" / "remotion"
+    remotion_bin.parent.mkdir(parents=True)
+    remotion_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+    (runtime / "node_modules" / "webpack").mkdir(parents=True)
+
+    calls: list[list[str]] = []
+
+    class Result:
+        def __init__(self, returncode: int = 0):
+            self.returncode = returncode
+            self.stderr = ""
+            self.stdout = ""
+
+    def fake_run_command(args, **kwargs):
+        calls.append([str(part) for part in args])
+        if args[:2] == ["/usr/bin/npm", "install"]:
+            remotion_bin.parent.mkdir(parents=True, exist_ok=True)
+            remotion_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+            (runtime / "node_modules" / "webpack" / "lib" / "dependencies").mkdir(parents=True, exist_ok=True)
+            (runtime / "node_modules" / "webpack" / "lib" / "dependencies" / "CriticalDependencyWarning.js").write_text(
+                "module.exports = function CriticalDependencyWarning() {};",
+                encoding="utf-8",
+            )
+        if args[:2] == ["node", "-e"]:
+            return Result(1 if len([call for call in calls if call[:2] == ["node", "-e"]]) == 1 else 0)
+        return Result(0)
+
+    monkeypatch.setattr("jaguartv_factory.core.remotion_template_dir", lambda: template)
+    monkeypatch.setattr("jaguartv_factory.core.require_binary", lambda name: name)
+    monkeypatch.setattr("jaguartv_factory.core.shutil.which", lambda name: "/usr/bin/npm" if name == "npm" else None)
+    monkeypatch.setattr("jaguartv_factory.core.run_command", fake_run_command)
+
+    assert ensure_remotion_runtime({"_root": str(tmp_path), "run": {"workspace": "workspace"}}) == runtime
+    assert any(call[:2] == ["/usr/bin/npm", "install"] for call in calls)
+
+
+def test_freeform_design_accepts_single_variant(tmp_path: Path):
+    config = {"_root": str(tmp_path), "edit": {}, "remotion": {"dual_variant": {}}}
+    patched = production_design_config(config, {"design": {"variants": ["FB版"], "layers": [
+        {"id": "text", "type": "text", "text": "FB only", "x": 0.2, "y": 0.3},
+    ]}})
+
+    assert patched["remotion"]["custom_design"]["variants"] == ["FB版"]
+
+
+def test_design_image_path_is_limited_to_uploads_and_brand_assets(tmp_path: Path):
+    config = {"_root": str(tmp_path), "storage": {"root": "workspace/server_media"}}
+    uploaded = tmp_path / "workspace" / "server_media" / "uploads" / "design_image" / "logo.png"
+    uploaded.parent.mkdir(parents=True)
+    uploaded.write_bytes(b"image")
+    secret = tmp_path / "secret.png"
+    secret.write_bytes(b"secret")
+
+    assert design_image_path(config, str(uploaded)) == uploaded
+    with pytest.raises(ValueError, match="uploaded image or brand asset"):
+        design_image_path(config, str(secret))
 
 
 def test_srt_generation(tmp_path: Path):
@@ -75,6 +163,16 @@ def test_remotion_caption_variant_config():
     style = remotion_caption_style(config)
     assert style["position"] == "bottom"
     assert style["fontSizeRatio"] == 0.075
+
+
+def test_pipeline_does_not_auto_add_remotion_promo_copy():
+    config = load_config(Path("config/pipeline.yaml"))
+    remotion = config["remotion"]
+
+    assert remotion.get("top_badge", "") == ""
+    assert remotion.get("bottom_headline", "") == ""
+    assert remotion.get("bottom_subline", "") == ""
+    assert remotion.get("endcard_cta", "") == ""
 
 
 def test_hyperframes_package_rejects_nested_project_dir():
@@ -234,7 +332,7 @@ def test_remotion_canvas_uses_3x4_black_letterbox_for_landscape():
     assert vertical["source_fit"] == "cover"
 
 
-def test_ocr_blur_runs_for_chinese_platform_even_without_external_subtitles():
+def test_ocr_blur_runs_only_for_chinese_source_platforms():
     assert should_ocr_blur_source_subtitles(
         "ocr_blur",
         platform="bilibili",
@@ -251,18 +349,36 @@ def test_ocr_blur_runs_for_chinese_platform_even_without_external_subtitles():
     ) is True
     assert should_ocr_blur_source_subtitles(
         "ocr_blur",
-        platform="bilibili",
+        platform="xiaohongshu",
         detected_language="zh",
         title_text="巴西足球中文字幕",
         localization_profile={"subtitle_mode": "none", "class": 3},
     ) is True
     assert should_ocr_blur_source_subtitles(
         "ocr_blur",
+        platform="facebook",
+        detected_language="zh",
+        title_text="巴西足球中文字幕",
+        localization_profile={
+            "subtitle_mode": "ptbr_subtitles",
+            "chinese_on_screen": True,
+            "title_has_chinese": True,
+        },
+    ) is False
+    assert should_ocr_blur_source_subtitles(
+        "ocr_blur",
         platform="youtube",
         detected_language="unknown",
         title_text="阿根廷巴西球迷場上大鬥毆",
         localization_profile={"subtitle_mode": "none", "title_has_chinese": True},
-    ) is True
+    ) is False
+    assert should_ocr_blur_source_subtitles(
+        "ocr_blur",
+        platform="tiktok",
+        detected_language="zh",
+        title_text="巴西足球",
+        localization_profile={"subtitle_mode": "ptbr_subtitles", "chinese_on_screen": True},
+    ) is False
     assert should_ocr_blur_source_subtitles(
         "ocr_blur",
         platform="youtube",

@@ -19,11 +19,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.request import Request, urlopen
 
 import yaml
 
 from .core import (
+    append_event,
     category_active_today,
+    candidate_has_review_outputs,
     connect_db,
     discover,
     download_top,
@@ -32,6 +35,7 @@ from .core import (
     ingest_uploaded_media,
     inventory_root,
     list_candidates,
+    media_dimensions,
     now_iso,
     produce_top,
     resolve_config_path,
@@ -59,6 +63,12 @@ PUBLISH_TARGETS = (*PLATFORMS, "instagram", "other")
 EVENT_TYPES = ("landing_click", "download_started", "install", "registration", "first_watch")
 REVIEW_DECISIONS = ("APPROVED", "REVISION_REQUIRED")
 PART_PACKAGE_PATTERN = re.compile(r"^(?P<parent>.+)_part(?P<number>\d+)$")
+COPYWRITER_MODES = {"tv", "generic"}
+COPYWRITER_PLATFORMS = {"shorts", "tiktok", "kwai", "facebook", "whatsapp", "email", "seo"}
+COPYWRITER_TONES = {"viral", "trust", "urgent", "friendly"}
+PUBLIC_UPLOAD_KINDS = {"design_image"}
+SOURCE_MEDIA_SUFFIXES = {".mp4", ".mkv", ".webm", ".mov", ".m4v"}
+PRODUCTION_RUNNING_STATUS = "PRODUCTION_RUNNING"
 
 
 def public_brand_asset_path(requested: str) -> Path | None:
@@ -73,6 +83,10 @@ def public_brand_asset_path(requested: str) -> Path | None:
     return path
 
 
+def upload_kind_requires_token(kind: str) -> bool:
+    return str(kind or "").strip().lower() not in PUBLIC_UPLOAD_KINDS
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -82,6 +96,308 @@ def int_value(value: Any, default: int = 0) -> int:
         return max(0, int(value))
     except (TypeError, ValueError):
         return default
+
+
+def gemini_model_name(value: str | None = None) -> str:
+    raw = (value if value is not None else os.environ.get("GEMINI_MODEL", "")).strip()
+    model = raw or "gemini-2.5-flash"
+    normalized = model.lower().replace("_", "-")
+    aliases = {
+        "gemini-3.1-pro": "gemini-3.1-pro-preview",
+        "gemini-3.1-pro-latest": "gemini-3.1-pro-preview",
+        "gemini-3.1-pro-preview": "gemini-3.1-pro-preview",
+        "gemini-3.1-flash": "gemini-3.1-flash-lite",
+        "gemini-3.1-flash-lite": "gemini-3.1-flash-lite",
+        "gemini-3.5-flash": "gemini-3.5-flash",
+        "gemini-3.6-flash": "gemini-3.6-flash",
+        "gemini-2.5-flash": "gemini-2.5-flash",
+        "gemini-2.5-pro": "gemini-2.5-pro",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def gemini_model_candidates(primary: str) -> list[str]:
+    candidates = [primary]
+    if primary == "gemini-3.1-pro-preview":
+        candidates.append("gemini-3.1-flash-lite")
+    candidates.append("gemini-2.5-flash")
+    return list(dict.fromkeys(candidates))
+
+
+def copywriter_request(payload: dict[str, Any]) -> dict[str, Any]:
+    input_text = str(payload.get("input") or "").strip()
+    if not input_text:
+        raise ValueError("input is required")
+    if len(input_text) > 800:
+        raise ValueError("input must be 800 characters or fewer")
+    mode = str(payload.get("mode") or "tv").strip().lower()
+    platform = str(payload.get("platform") or "shorts").strip().lower()
+    tone = str(payload.get("tone") or "viral").strip().lower()
+    if mode not in COPYWRITER_MODES:
+        raise ValueError(f"mode must be one of {sorted(COPYWRITER_MODES)}")
+    if platform not in COPYWRITER_PLATFORMS:
+        raise ValueError(f"platform must be one of {sorted(COPYWRITER_PLATFORMS)}")
+    if tone not in COPYWRITER_TONES:
+        raise ValueError(f"tone must be one of {sorted(COPYWRITER_TONES)}")
+    count = int_value(payload.get("count"), 5)
+    if count not in {3, 5, 8}:
+        raise ValueError("count must be 3, 5, or 8")
+    heat = int_value(payload.get("heat"), 7)
+    if heat < 1 or heat > 10:
+        raise ValueError("heat must be between 1 and 10")
+    cta = str(payload.get("cta") or ("Baixe em Jarg.top" if mode == "tv" else "Saiba mais")).strip()
+    if len(cta) > 180:
+        raise ValueError("cta must be 180 characters or fewer")
+    return {
+        "input": input_text,
+        "mode": mode,
+        "platform": platform,
+        "tone": tone,
+        "heat": heat,
+        "count": count,
+        "cta": cta,
+    }
+
+
+def copywriter_prompt(request: dict[str, Any]) -> str:
+    mode_rules = (
+        "TV product promotion mode: write Brazilian Portuguese marketing copy for JaguarTV. "
+        "Product facts: JaguarTV, Jarg.top, live TV, sports, movies, series, Android phone, Android TV, TV box, Brazil. "
+        "Never promise specific copyrighted channels, guaranteed free access, prices, or availability unless the user supplied them. "
+        "Use Jarg.top only as the download/action destination."
+        if request["mode"] == "tv"
+        else "Generic content mode: write directly about the user's keywords as publishable Brazilian Portuguese content. "
+        "Do not write advice about marketing, copywriting, campaigns, or how to talk about the topic. "
+        "Do not mention JaguarTV, Jarg.top, TV ao vivo, Android TV, download sites, or any TV product. "
+        "If the keywords describe football, street football, a challenge, Brazil, food, music, health, education, or any other topic, make the output about that topic itself."
+    )
+    return f"""
+You are a senior Brazilian Portuguese copywriter and Chinese bilingual reviewer.
+The operator inputs Chinese keywords and needs ready-to-publish pt-BR copy plus Chinese audit translations.
+
+User keywords in Chinese:
+{request['input']}
+
+Generation settings:
+- mode: {request['mode']}
+- platform: {request['platform']}
+- tone: {request['tone']}
+- viral intensity: {request['heat']}/10
+- variant count: {request['count']}
+- CTA/action: {request['cta']}
+
+Rules:
+{mode_rules}
+- Output must be natural Brazilian Portuguese, not European Portuguese.
+- Keep claims honest and avoid unverifiable guarantees.
+- Generate exactly {request['count']} titles and exactly {request['count']} platform captions.
+- Captions should match the platform and be usable without extra editing.
+- Also include a Chinese audit translation that helps a Chinese-speaking operator review the pt-BR meaning.
+- Return JSON only. No markdown, no code fences, no commentary.
+
+Return this exact JSON shape:
+{{
+  "strategy": "multi-line pt-BR strategy summary",
+  "titles": ["pt-BR title 1"],
+  "captions": ["1. [Platform] pt-BR caption 1"],
+  "cta": "pt-BR CTA/action",
+  "hashtags": "#Tag1 #Tag2",
+  "emails": [
+    {{"name": "pt-BR stage name", "subject": "pt-BR subject", "preview": "pt-BR preview", "body": "pt-BR body", "cta": "pt-BR CTA"}}
+  ],
+  "seo": {{"title": "pt-BR SEO title", "description": "pt-BR meta description", "keywords": ["keyword"]}},
+  "zhAudit": {{
+    "strategy": "中文审核策略说明",
+    "titles": ["中文标题含义 1"],
+    "captions": ["1. [平台] 中文正文含义 1"],
+    "cta": "中文 CTA 含义",
+    "hashtags": "中文标签含义",
+    "emails": [
+      {{"name": "中文阶段名", "subject": "中文主题含义", "preview": "中文预览含义", "body": "中文正文含义", "cta": "中文 CTA"}}
+    ],
+    "seo": {{"title": "中文 SEO 标题含义", "description": "中文 SEO 描述含义", "keywords": ["中文关键词"]}}
+  }},
+  "note": "pt-BR compliance/performance note"
+}}
+""".strip()
+
+
+def extract_json_object(text: str) -> dict[str, Any]:
+    clean = text.strip()
+    fence = re.search(r"```(?:json)?\s*(.*?)```", clean, flags=re.DOTALL | re.IGNORECASE)
+    if fence:
+        clean = fence.group(1).strip()
+    if not clean.startswith("{"):
+        start = clean.find("{")
+        end = clean.rfind("}")
+        if start < 0 or end < start:
+            raise ValueError("Gemini response did not contain JSON")
+        clean = clean[start:end + 1]
+    try:
+        data = json.loads(clean)
+    except json.JSONDecodeError as error:
+        raise ValueError("Gemini response was not valid JSON") from error
+    if not isinstance(data, dict):
+        raise ValueError("Gemini response JSON must be an object")
+    return data
+
+
+def gemini_text(response: dict[str, Any]) -> str:
+    candidates = response.get("candidates")
+    if not isinstance(candidates, list) or not candidates:
+        raise ValueError("Gemini response did not include candidates")
+    parts = (candidates[0].get("content") or {}).get("parts") or []
+    text = "".join(str(part.get("text") or "") for part in parts if isinstance(part, dict))
+    if not text.strip():
+        raise ValueError("Gemini response text was empty")
+    return text
+
+
+def _string_list(value: Any, *, expected: int | None = None, field: str) -> list[str]:
+    if not isinstance(value, list):
+        raise ValueError(f"Gemini field {field} must be a list")
+    items = [str(item).strip() for item in value if str(item or "").strip()]
+    if expected is not None and len(items) < expected:
+        raise ValueError(f"Gemini field {field} must contain at least {expected} items")
+    return items[:expected] if expected else items
+
+
+def _email_list(value: Any, field: str) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        raise ValueError(f"Gemini field {field} must be a list")
+    emails: list[dict[str, str]] = []
+    for item in value[:5]:
+        if not isinstance(item, dict):
+            continue
+        emails.append({
+            "name": str(item.get("name") or "").strip(),
+            "subject": str(item.get("subject") or "").strip(),
+            "preview": str(item.get("preview") or "").strip(),
+            "body": str(item.get("body") or "").strip(),
+            "cta": str(item.get("cta") or "").strip(),
+        })
+    if not emails:
+        raise ValueError(f"Gemini field {field} must contain at least one email")
+    return emails
+
+
+def post_json(endpoint: str, headers: dict[str, str], body: dict[str, Any], timeout: int) -> tuple[int, dict[str, Any]]:
+    request = Request(
+        endpoint,
+        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            raw = response.read()
+            status = int(response.status)
+    except Exception as error:
+        response = getattr(error, "fp", None)
+        status = int(getattr(error, "code", 0) or 0)
+        raw = response.read() if response else b""
+        if not status:
+            raise RuntimeError(str(error)) from error
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"non-JSON response from Gemini: {raw[:180]!r}") from error
+    return status, data
+
+
+def normalize_gemini_copywriter_result(
+    result: dict[str, Any],
+    request: dict[str, Any],
+    model: str,
+) -> dict[str, Any]:
+    seo = result.get("seo") or {}
+    zh_audit = result.get("zhAudit") or {}
+    if not isinstance(seo, dict) or not isinstance(zh_audit, dict):
+        raise ValueError("Gemini response is missing seo or zhAudit objects")
+    zh_seo = zh_audit.get("seo") or {}
+    if not isinstance(zh_seo, dict):
+        raise ValueError("Gemini response is missing zhAudit.seo object")
+    normalized = {
+        "mode": request["mode"],
+        "strategy": str(result.get("strategy") or "").strip(),
+        "titles": _string_list(result.get("titles"), expected=request["count"], field="titles"),
+        "captions": _string_list(result.get("captions"), expected=request["count"], field="captions"),
+        "cta": str(result.get("cta") or request["cta"]).strip(),
+        "hashtags": str(result.get("hashtags") or "").strip(),
+        "emails": _email_list(result.get("emails"), "emails"),
+        "seo": {
+            "title": str(seo.get("title") or "").strip(),
+            "description": str(seo.get("description") or "").strip(),
+            "keywords": _string_list(seo.get("keywords") or [], field="seo.keywords"),
+        },
+        "zhAudit": {
+            "strategy": str(zh_audit.get("strategy") or "").strip(),
+            "titles": _string_list(zh_audit.get("titles"), expected=request["count"], field="zhAudit.titles"),
+            "captions": _string_list(zh_audit.get("captions"), expected=request["count"], field="zhAudit.captions"),
+            "cta": str(zh_audit.get("cta") or "").strip(),
+            "hashtags": str(zh_audit.get("hashtags") or "").strip(),
+            "emails": _email_list(zh_audit.get("emails"), "zhAudit.emails"),
+            "seo": {
+                "title": str(zh_seo.get("title") or "").strip(),
+                "description": str(zh_seo.get("description") or "").strip(),
+                "keywords": _string_list(zh_seo.get("keywords") or [], field="zhAudit.seo.keywords"),
+            },
+        },
+        "note": str(result.get("note") or "").strip(),
+        "source": "gemini",
+        "model": model,
+    }
+    for field in ("strategy", "cta", "hashtags", "note"):
+        if not normalized[field]:
+            raise ValueError(f"Gemini field {field} is required")
+    if not normalized["seo"]["title"] or not normalized["seo"]["description"]:
+        raise ValueError("Gemini seo.title and seo.description are required")
+    if not normalized["zhAudit"]["strategy"]:
+        raise ValueError("Gemini zhAudit.strategy is required")
+    return normalized
+
+
+def generate_copywriter_with_gemini(payload: dict[str, Any]) -> dict[str, Any]:
+    request = copywriter_request(payload)
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY is not configured")
+    primary_model = gemini_model_name()
+    timeout = max(5, min(90, int_value(os.environ.get("GEMINI_TIMEOUT_SECONDS"), 20)))
+    body = {
+        "contents": [{"parts": [{"text": copywriter_prompt(request)}]}],
+        "generationConfig": {
+            "temperature": 0.78 if request["tone"] in {"viral", "urgent"} else 0.55,
+            "topP": 0.9,
+            "maxOutputTokens": 4096,
+            "responseMimeType": "application/json",
+        },
+    }
+    errors: list[str] = []
+    for model in gemini_model_candidates(primary_model):
+        endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{quote(model, safe='-_.')}:generateContent"
+        try:
+            status, data = post_json(
+                endpoint,
+                {"x-goog-api-key": api_key, "Content-Type": "application/json"},
+                body,
+                timeout=timeout,
+            )
+            if status >= 400:
+                detail = str((data.get("error") or {}).get("message") or data)
+                errors.append(f"{model}: API {status}: {detail[:180]}")
+                continue
+            result = normalize_gemini_copywriter_result(extract_json_object(gemini_text(data)), request, model)
+            if model != primary_model:
+                result["primary_model"] = primary_model
+                result["note"] = (
+                    f"{result['note']}\nModelo principal {primary_model} nao respondeu a tempo; "
+                    f"foi usado {model}."
+                )
+            return result
+        except (RuntimeError, ValueError) as error:
+            errors.append(f"{model}: {error}")
+    raise RuntimeError("Gemini unavailable after retries: " + " | ".join(errors)[-700:])
 
 
 def signed_upload_url(upload_id: str, lifetime_sec: int = 24 * 3600) -> str:
@@ -103,6 +419,106 @@ def upload_rows(config: dict[str, Any]) -> list[dict[str, Any]]:
         row["download_url"] = signed_upload_url(str(item.get("id") or ""))
         rows.append(row)
     return rows
+
+
+def candidate_source_media(config: dict[str, Any], candidate_id: str) -> Path | None:
+    candidate_id = unquote(candidate_id).strip()
+    if not candidate_id:
+        return None
+    connection = connect_db(config)
+    if not connection.execute("SELECT 1 FROM candidates WHERE id=?", (candidate_id,)).fetchone():
+        return None
+    work = workspace_dir(config) / "jobs" / candidate_id
+    return next(
+        (
+            path for path in work.glob("source.*")
+            if path.is_file() and path.suffix.lower() in SOURCE_MEDIA_SUFFIXES
+        ),
+        None,
+    )
+
+
+def production_recovery_status(config: dict[str, Any], candidate_id: str) -> str:
+    if candidate_has_review_outputs(config, candidate_id):
+        return "READY_FOR_REVIEW"
+    if candidate_source_media(config, candidate_id):
+        return "DOWNLOADED"
+    return "PRODUCTION_FAILED"
+
+
+def recover_interrupted_productions(config: dict[str, Any]) -> int:
+    connection = connect_db(config)
+    rows = connection.execute(
+        "SELECT id FROM candidates WHERE status=?", (PRODUCTION_RUNNING_STATUS,)
+    ).fetchall()
+    recovered = 0
+    for row in rows:
+        candidate_id = str(row["id"])
+        status = production_recovery_status(config, candidate_id)
+        timestamp = now_iso()
+        payload = {
+            "recovered_from": PRODUCTION_RUNNING_STATUS,
+            "status": status,
+            "reason": "dashboard service restarted before production task finished",
+        }
+        connection.execute(
+            "UPDATE candidates SET status=?,updated_at=? WHERE id=?",
+            (status, timestamp, candidate_id),
+        )
+        append_event(connection, candidate_id, "PRODUCTION_RECOVERED", payload)
+        recovered += 1
+    connection.commit()
+    return recovered
+
+
+def review_output_asset_by_id(config: dict[str, Any], asset_id: str) -> dict[str, Any] | None:
+    asset_id = unquote(asset_id).strip()
+    if not asset_id:
+        return None
+    for assets in review_output_index(config).values():
+        for asset in assets:
+            if str(asset.get("id") or "") == asset_id:
+                return asset
+    return None
+
+
+def candidate_design_info(config: dict[str, Any], candidate_id: str) -> dict[str, Any]:
+    requested_asset = ""
+    if "::asset::" in candidate_id:
+        candidate_id, requested_asset = candidate_id.split("::asset::", 1)
+    output_asset = review_output_asset_by_id(config, requested_asset) if requested_asset else None
+    output_path = Path(str((output_asset or {}).get("_path") or ""))
+    if output_path.is_file():
+        output_width, output_height = media_dimensions(output_path)
+        return {
+            "candidate_id": candidate_id,
+            "source_preview_url": str((output_asset or {}).get("video_url") or ""),
+            "design_canvas_width": int(output_width),
+            "design_canvas_height": int(output_height),
+            "source_fit": "contain",
+            "design_base_asset_id": str((output_asset or {}).get("id") or ""),
+            "design_base_variant": str((output_asset or {}).get("variant") or ""),
+        }
+    source_media = candidate_source_media(config, candidate_id)
+    result = {
+        "candidate_id": candidate_id,
+        "source_preview_url": "",
+        "design_canvas_width": 1080,
+        "design_canvas_height": 1920,
+        "source_fit": "contain",
+        "design_base_asset_id": "",
+        "design_base_variant": "",
+    }
+    if source_media is None:
+        return result
+    source_width, source_height = media_dimensions(source_media)
+    result.update({
+        "source_preview_url": f"/api/candidates/{quote(candidate_id, safe='')}/source?v={int(source_media.stat().st_mtime)}",
+        "design_canvas_width": int(source_width),
+        "design_canvas_height": int(source_height),
+        "source_fit": "contain",
+    })
+    return result
 
 
 def system_health(config: dict[str, Any]) -> dict[str, Any]:
@@ -134,6 +550,41 @@ def system_health(config: dict[str, Any]) -> dict[str, Any]:
             "chunk_bytes": int((config.get("storage", {}) or {}).get("upload_chunk_bytes", 8 * 1024 * 1024)),
             "max_bytes": int((config.get("storage", {}) or {}).get("max_upload_bytes", 2 * 1024 * 1024 * 1024)),
         },
+        "gemini": {
+            "enabled": bool(os.environ.get("GEMINI_API_KEY", "").strip()),
+            "model": gemini_model_name(),
+        },
+    }
+
+
+def trends_status(config: dict[str, Any]) -> dict[str, Any]:
+    settings = config.get("trends", {}) or {}
+    today_keywords = list_hot_keywords(config, None)
+    latest_date = ""
+    latest_count = 0
+    connection = connect_db(config)
+    latest = connection.execute(
+        """
+        SELECT date,COUNT(*) count
+        FROM hot_keywords
+        GROUP BY date
+        ORDER BY date DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    if latest:
+        latest_date = str(latest["date"] or "")
+        latest_count = int(latest["count"] or 0)
+    return {
+        "enabled": settings.get("enabled", True) is not False,
+        "generated_at": now_iso(),
+        "today_count": len(today_keywords),
+        "latest_date": latest_date,
+        "latest_count": latest_count,
+        "source": str(settings.get("source") or "google_trends"),
+        "geo": str(settings.get("geo") or "BR"),
+        "schedule_timezone": str(settings.get("schedule_timezone") or config.get("run", {}).get("timezone") or "UTC"),
+        "cron": str(settings.get("cron") or "0 8 * * *"),
     }
 
 
@@ -315,7 +766,7 @@ def review_output_index(config: dict[str, Any]) -> dict[str, list[dict[str, Any]
         if root.exists():
             package_ids.update(
                 path.name for path in root.iterdir()
-                if path.is_dir() and (path / "video.mp4").is_file()
+                if path.is_dir() and any(child.is_file() and child.suffix.lower() == ".mp4" for child in path.iterdir())
             )
 
     index: dict[str, list[dict[str, Any]]] = {}
@@ -324,12 +775,20 @@ def review_output_index(config: dict[str, Any]) -> dict[str, list[dict[str, Any]
         server_dir = server_root / package_id
         local_video = local_dir / "video.mp4"
         server_video = server_dir / "video.mp4"
+        local_first_video = next((path for path in sorted(local_dir.glob("*.mp4")) if path.is_file()), None)
+        server_first_video = next((path for path in sorted(server_dir.glob("*.mp4")) if path.is_file()), None)
         if local_video.is_file():
             media_dir = local_dir
             media_relative = f"{package_id}/video.mp4"
         elif server_video.is_file():
             media_dir = server_dir
             media_relative = f"review/{package_id}/video.mp4"
+        elif local_first_video is not None:
+            media_dir = local_dir
+            media_relative = f"{package_id}/{local_first_video.name}"
+        elif server_first_video is not None:
+            media_dir = server_dir
+            media_relative = f"review/{package_id}/{server_first_video.name}"
         else:
             continue
 
@@ -373,6 +832,7 @@ def review_output_index(config: dict[str, Any]) -> dict[str, list[dict[str, Any]
                 "server_url": server_url,
                 "cover_url": cover_url,
                 "filename": f"{package_id}.mp4" if video.name == "video.mp4" else video.name,
+                "_path": str(video),
                 "_metadata_path": str(metadata_path) if metadata_path.is_file() else "",
             }
             index.setdefault(package_id, []).append(asset)
@@ -556,8 +1016,6 @@ def delete_candidates(config: dict[str, Any], payload: dict[str, Any]) -> dict[s
     candidate_ids = list(dict.fromkeys(candidate_ids))
     if not candidate_ids:
         raise ValueError("select at least one candidate")
-    if len(candidate_ids) > 100:
-        raise ValueError("a batch can contain at most 100 candidates")
 
     workspace = workspace_dir(config)
     storage = storage_root(config)
@@ -1381,6 +1839,9 @@ class DashboardApplication(ThreadingHTTPServer):
         self.tasks: dict[str, dict[str, Any]] = {}
         self.tasks_lock = threading.Lock()
         self.production_lock = threading.Lock()
+        recovered = recover_interrupted_productions(config)
+        if recovered:
+            print(f"dashboard recovered {recovered} interrupted production candidate(s)")
 
     def start_action(self, payload: dict[str, Any]) -> str:
         candidate_ids = payload.get("candidate_ids") or []
@@ -1391,8 +1852,6 @@ class DashboardApplication(ThreadingHTTPServer):
         if single and single not in candidate_ids:
             candidate_ids.append(single)
         candidate_ids = list(dict.fromkeys(candidate_ids))
-        if len(candidate_ids) > 100:
-            raise ValueError("a batch can contain at most 100 candidates")
         task_id = uuid.uuid4().hex[:12]
         task = {
             "id": task_id, "action": payload.get("action"), "status": "RUNNING",
@@ -1437,7 +1896,7 @@ class DashboardApplication(ThreadingHTTPServer):
                 ).fetchone()
                 work = workspace_dir(self.config) / "jobs" / candidate
                 source_missing = not any(
-                    path.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov"}
+                    path.suffix.lower() in SOURCE_MEDIA_SUFFIXES
                     for path in work.glob("source.*")
                 )
                 if row and (row["status"] in {"DISCOVERED", "DOWNLOAD_FAILED"} or (row["status"] == "PRODUCTION_FAILED" and source_missing)):
@@ -1460,6 +1919,14 @@ class DashboardApplication(ThreadingHTTPServer):
 
                 self.update_task(task_id, message=f"等待制作资源 · {index + 1}/{total}")
                 with self.production_lock:
+                    started = now_iso()
+                    connection = connect_db(self.config)
+                    connection.execute(
+                        "UPDATE candidates SET status=?,updated_at=? WHERE id=?",
+                        (PRODUCTION_RUNNING_STATUS, started, candidate),
+                    )
+                    append_event(connection, candidate, "PRODUCTION_STARTED", {"task_id": task_id})
+                    connection.commit()
                     result = produce_top(
                         self.config, 1, candidate, progress_callback=production_progress, options=options
                     )
@@ -1493,13 +1960,50 @@ class DashboardApplication(ThreadingHTTPServer):
                 if not url:
                     raise ValueError("url is required")
                 self.update_task(task_id, progress=15, message="正在读取视频信息")
+                candidate_id = inspect_url(
+                    self.config,
+                    url,
+                    requested_platform=str(payload.get("platform") or ""),
+                    allow_stub=True,
+                )
+                self.update_task(
+                    task_id,
+                    progress=45,
+                    current_candidate=candidate_id,
+                    candidate_ids=[candidate_id],
+                    message="正在下载到服务器",
+                )
+                row = connect_db(self.config).execute(
+                    "SELECT status FROM candidates WHERE id=?", (candidate_id,)
+                ).fetchone()
+                if row and row["status"] == "DOWNLOADED":
+                    download_result = {"selected": 1, "downloaded": 1, "failed": 0, "already_downloaded": True}
+                elif row and row["status"] == "TOO_LONG":
+                    raise RuntimeError("URL 已导入，但视频超过 30 分钟，只能删除，不能进入待制作")
+                else:
+                    download_result = download_top(self.config, 1, candidate_id)
+                if int(download_result.get("failed", 0)) or int(download_result.get("downloaded", 0) == 0):
+                    failure = connect_db(self.config).execute(
+                        """
+                        SELECT payload_json FROM events
+                        WHERE candidate_id=? AND event_type='DOWNLOAD_FAILED'
+                        ORDER BY id DESC LIMIT 1
+                        """,
+                        (candidate_id,),
+                    ).fetchone()
+                    detail = ""
+                    if failure:
+                        try:
+                            payload_json = json.loads(failure["payload_json"] or "{}")
+                            detail = str(payload_json.get("stderr") or payload_json.get("error") or "").strip()
+                        except json.JSONDecodeError:
+                            detail = str(failure["payload_json"] or "").strip()
+                    suffix = f"：{detail[-500:]}" if detail else ""
+                    raise RuntimeError(f"URL 已导入，但服务器下载失败，请在下载失败列表重试或检查登录态{suffix}")
                 result = {
-                    "candidate_id": inspect_url(
-                        self.config,
-                        url,
-                        requested_platform=str(payload.get("platform") or ""),
-                        allow_stub=True,
-                    )
+                    "candidate_id": candidate_id,
+                    "download": download_result,
+                    "status": "DOWNLOADED",
                 }
             elif action in {"download", "produce", "skip"}:
                 result = self.run_candidate_batch(
@@ -1556,6 +2060,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if date_value == "today":
                     date_value = ""
                 return self.send_json(list_hot_keywords(self.server.config, date_value or None))
+            if parsed.path == "/api/trends/status":
+                return self.send_json(trends_status(self.server.config))
+            if parsed.path == "/api/trends/run":
+                return self.send_json({"error": "use POST /api/trends/run"}, HTTPStatus.METHOD_NOT_ALLOWED)
             if parsed.path == "/api/settings":
                 return self.send_json(system_settings(self.server.config))
             if parsed.path == "/api/sessions":
@@ -1578,6 +2086,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return self.send_json({"download_url": signed_upload_url(upload_id)})
             if parsed.path.startswith("/api/uploads/") and parsed.path.endswith("/download"):
                 return self.send_private_upload(parsed, head_only=False)
+            if parsed.path.startswith("/api/candidates/") and parsed.path.endswith("/design"):
+                parts = parsed.path.strip("/").split("/")
+                if len(parts) != 4:
+                    return self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+                return self.send_json(candidate_design_info(self.server.config, unquote(parts[2])))
+            if parsed.path.startswith("/api/candidates/") and parsed.path.endswith("/source"):
+                return self.send_candidate_source(parsed, head_only=False)
             if parsed.path == "/api/attribution":
                 candidate = (query.get("candidate_id") or [""])[0].strip()
                 if not candidate:
@@ -1599,6 +2114,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
         if parsed.path.startswith("/api/uploads/") and parsed.path.endswith("/download"):
             return self.send_private_upload(parsed, head_only=True)
+        if parsed.path.startswith("/api/candidates/") and parsed.path.endswith("/source"):
+            return self.send_candidate_source(parsed, head_only=True)
         if parsed.path.startswith("/media/"):
             download = str((query.get("download") or [""])[0]).lower() in {"1", "true", "yes"}
             return self.send_media(parsed.path.removeprefix("/media/"), download=download)
@@ -1608,36 +2125,38 @@ class DashboardHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         try:
             if parsed.path == "/api/uploads/init":
-                if not self.authorized_for_uploads():
+                payload = self.read_json()
+                kind = str(payload.get("kind") or "").lower()
+                if not self.authorized_for_upload_kind(kind):
                     return self.send_json(
                         {"error": "missing or invalid upload token"}, HTTPStatus.UNAUTHORIZED
                     )
-                payload = self.read_json()
                 result = init_chunked_upload(
                     self.server.config,
                     filename=str(payload.get("filename") or ""),
-                    kind=str(payload.get("kind") or "").lower(),
+                    kind=kind,
                     content_length=int(payload.get("size") or 0),
                 )
                 return self.send_json(result, HTTPStatus.CREATED)
             if parsed.path == "/api/uploads/chunk":
-                if not self.authorized_for_uploads():
+                query = parse_qs(parsed.query)
+                upload_id = str((query.get("upload_id") or [""])[0])
+                if not self.authorized_for_upload_kind(self.pending_upload_kind(upload_id)):
                     return self.send_json(
                         {"error": "missing or invalid upload token"}, HTTPStatus.UNAUTHORIZED
                     )
-                query = parse_qs(parsed.query)
-                upload_id = str((query.get("upload_id") or [""])[0])
                 index = int((query.get("index") or ["-1"])[0])
                 length = int(self.headers.get("Content-Length") or 0)
                 result = save_upload_chunk(self.server.config, upload_id, index, self.rfile, length)
                 return self.send_json(result, HTTPStatus.CREATED)
             if parsed.path == "/api/uploads/complete":
-                if not self.authorized_for_uploads():
+                payload = self.read_json()
+                upload_id = str(payload.get("upload_id") or "")
+                if not self.authorized_for_upload_kind(self.pending_upload_kind(upload_id)):
                     return self.send_json(
                         {"error": "missing or invalid upload token"}, HTTPStatus.UNAUTHORIZED
                     )
-                payload = self.read_json()
-                result = complete_chunked_upload(self.server.config, str(payload.get("upload_id") or ""))
+                result = complete_chunked_upload(self.server.config, upload_id)
                 if result["kind"] == "source":
                     result["candidate_id"] = ingest_uploaded_media(self.server.config, result)
                 result["download_url"] = signed_upload_url(result["id"])
@@ -1666,6 +2185,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/actions":
                 task_id = self.server.start_action(payload)
                 return self.send_json({"task_id": task_id, "status": "RUNNING"}, HTTPStatus.ACCEPTED)
+            if parsed.path == "/api/copywriter/generate":
+                try:
+                    return self.send_json(
+                        {"result": generate_copywriter_with_gemini(payload)},
+                        HTTPStatus.OK,
+                    )
+                except RuntimeError as error:
+                    return self.send_json({"error": str(error)}, HTTPStatus.SERVICE_UNAVAILABLE)
             if parsed.path == "/api/candidates/delete":
                 return self.send_json(delete_candidates(self.server.config, payload), HTTPStatus.OK)
             if parsed.path == "/api/publications":
@@ -1750,6 +2277,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
         provided = self.headers.get("X-Upload-Token", "").strip()
         return secrets.compare_digest(provided, token)
 
+    def authorized_for_upload_kind(self, kind: str) -> bool:
+        if not upload_kind_requires_token(kind):
+            return True
+        return self.authorized_for_uploads()
+
+    def pending_upload_kind(self, upload_id: str) -> str:
+        if not re.fullmatch(r"[a-f0-9]{32}", str(upload_id or "")):
+            return ""
+        try:
+            base = storage_root(self.server.config) / "uploads" / ".pending" / upload_id
+            manifest = json.loads((base / "manifest.json").read_text(encoding="utf-8"))
+            return str(manifest.get("kind") or "").lower()
+        except (OSError, ValueError, json.JSONDecodeError):
+            return ""
+
     def valid_upload_signature(self, upload_id: str, query: dict[str, list[str]]) -> bool:
         token = os.environ.get("JAGUARTV_UPLOAD_TOKEN", "").strip()
         if not token:
@@ -1785,6 +2327,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             disposition=f"attachment; filename=media{Path(original).suffix}; filename*=UTF-8''{quote(original)}",
             head_only=head_only,
         )
+
+    def send_candidate_source(self, parsed: Any, *, head_only: bool) -> None:
+        parts = parsed.path.strip("/").split("/")
+        if len(parts) != 4:
+            return self.send_error(HTTPStatus.NOT_FOUND)
+        source = candidate_source_media(self.server.config, parts[2])
+        if source is None:
+            return self.send_error(HTTPStatus.NOT_FOUND)
+        self.send_file(source, cache="private, no-store", head_only=head_only)
 
     def read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length") or 0)
