@@ -1,0 +1,3 @@
+owner_id,source_profile_id,platform,url,content_pillar,content_type,rights_basis,rights_evidence_path
+allen,allen_football_cn,bilibili,https://example.com/video-1,sports,shareable,written_license,/secure/rights/video-1.pdf
+editor_01,editor_install_guides,youtube,https://example.com/video-2,product_trust,searchable,owned,/secure/rights/video-2.txt

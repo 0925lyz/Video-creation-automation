@@ -1,0 +1,32 @@
+ M config/keywords.brazil.yaml
+ M config/pipeline.yaml
+ M src/jaguartv_factory/core.py
+ M src/jaguartv_factory/dashboard.py
+ M src/jaguartv_factory/remotion_template/src/index.tsx
+ M src/jaguartv_factory/server_store.py
+ M src/jaguartv_factory/web/app.js
+ M src/jaguartv_factory/web/index.html
+ M src/jaguartv_factory/web/styles.css
+ M tests/test_core.py
+ M tests/test_dashboard.py
+ M tests/test_platform_and_brand.py
+?? config/._pipeline.yaml
+?? scripts/server_produce_missing.py
+?? src/jaguartv_factory/._core.py
+?? src/jaguartv_factory/._dashboard.py
+?? src/jaguartv_factory/._server_store.py
+?? src/jaguartv_factory/pyvideotrans_adapter.py
+?? src/jaguartv_factory/remotion_template/src/._index.tsx
+?? src/jaguartv_factory/source_outro.py
+?? src/jaguartv_factory/web/._app.js
+?? src/jaguartv_factory/web/._copywriter.css
+?? src/jaguartv_factory/web/._copywriter.html
+?? src/jaguartv_factory/web/._copywriter.js
+?? src/jaguartv_factory/web/._index.html
+?? src/jaguartv_factory/web/._styles.css
+?? src/jaguartv_factory/web/copywriter.css
+?? src/jaguartv_factory/web/copywriter.html
+?? src/jaguartv_factory/web/copywriter.js
+?? tests/._test_core.py
+?? tests/._test_dashboard.py
+?? tests/._test_platform_and_brand.py
