@@ -1,8 +1,0 @@
-[Unit]
-Description=JaguarTV Google Trends keyword sync
-
-[Service]
-Type=oneshot
-WorkingDirectory=/opt/jaguartv-content-factory-vnext
-Environment=JAGUARTV_PYTRENDS_PATH=/opt/pytrends
-ExecStart=/opt/jaguartv-content-factory-vnext/.venv/bin/jaguartv --config /opt/jaguartv-content-factory-vnext/config/pipeline.yaml trends --daily
