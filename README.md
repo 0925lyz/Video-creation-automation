@@ -136,8 +136,6 @@ Content-Type: application/json
 
 代码、数据库结构/迁移、配置、示例记录和品牌资产进入仓库；运行数据库、视频、Cookie、登录会话、令牌以及第三方源码检出保留在 `workspace/` 或 `.env`，不会上传到 GitHub。
 
-仓库另含一份不含媒体和身份信息的生产数据快照，用于离线验证：`data/production-snapshot/`。快照已删除热词/趋势表，详情见 [脱敏生产数据说明](data/README.md)。
-
 ## 文档
 
 - [产品需求文档](docs/JaguarTV_vNEXT_产品需求文档.md)

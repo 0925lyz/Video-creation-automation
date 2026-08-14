@@ -8,7 +8,7 @@ cd "$ROOT"
 mkdir -p dist
 zip -r -FS "$OUTPUT" \
   pyproject.toml package.json manifest.json README.md AGENTS.md .gitignore \
-  src config scripts assets data tests docs prompts .agents \
+  src config scripts assets tests docs prompts .agents \
   -x '*.DS_Store' '*/__pycache__/*' '*.pyc' 'src/*.egg-info/*' \
      '*/node_modules/*' '*.db-shm' '*.db-wal'
 
