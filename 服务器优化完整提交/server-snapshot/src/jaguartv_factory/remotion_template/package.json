@@ -1,0 +1,21 @@
+{
+  "name": "jaguartv-remotion-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc src/index.tsx --noEmit --jsx react-jsx --module esnext --moduleResolution node --target es2022 --skipLibCheck",
+    "render": "node scripts/render.mjs"
+  },
+  "dependencies": {
+    "@remotion/bundler": "4.0.508",
+    "@remotion/captions": "4.0.508",
+    "@remotion/cli": "4.0.508",
+    "@remotion/renderer": "4.0.508",
+    "remotion": "4.0.508",
+    "react": "19.2.3",
+    "react-dom": "19.2.3"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}

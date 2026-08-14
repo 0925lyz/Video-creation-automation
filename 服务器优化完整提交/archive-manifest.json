@@ -1,0 +1,35 @@
+{
+  "archive_name": "服务器优化完整提交",
+  "generated_at": "2026-08-14T03:09:24Z",
+  "source": {
+    "host": "43.134.128.197",
+    "project_path": "/opt/jaguartv-content-factory-vnext",
+    "git_head": "402e69b",
+    "git_worktree": "dirty-production-snapshot"
+  },
+  "contents": {
+    "code": "server-snapshot",
+    "sanitized_data": "data",
+    "deployment": "deployment",
+    "integrations": "integrations",
+    "external_repositories": "third_party",
+    "tools": "tools",
+    "validation": "VALIDATION.md",
+    "checksums": "checksums.sha256"
+  },
+  "production_inventory": {
+    "database_bytes": 2752512,
+    "candidates": 643,
+    "workspace_files": 15886,
+    "workspace_bytes": 21978023323,
+    "media_files": 1363
+  },
+  "security": {
+    "production_database_included": false,
+    "sanitized_database_included": true,
+    "media_binaries_included": false,
+    "cookies_included": false,
+    "tokens_included": false,
+    "private_keys_included": false
+  }
+}

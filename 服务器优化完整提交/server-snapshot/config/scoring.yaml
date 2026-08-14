@@ -1,0 +1,62 @@
+# Candidate scoring algorithm v2 — weights and baselines.
+# Each dimension is normalized to 0-1, total = 100 * weighted sum.
+# Tune weights here; recalibrate against first_watch attribution data later.
+
+version: v2
+
+weights:
+  velocity: 0.15      # daily views (log scale)
+  engagement: 0.20    # like/comment/share rates vs baselines
+  relevance: 0.20     # keyword coverage in title/description/tags
+  editability: 0.15   # duration window, resolution, subtitles
+  brazil_fit: 0.15    # Brazil-affinity vocabulary
+  freshness: 0.15     # publish recency decay
+
+baselines:
+  # Rates at which each engagement sub-score reaches 1.0
+  like_rate: 0.04
+  comment_rate: 0.004
+  share_rate: 0.002
+  # daily views where velocity saturates (log10 scale => 10^6/day)
+  velocity_log10_cap: 6
+
+editability:
+  ideal_duration: [15, 180]     # seconds, full score inside
+  max_duration: 600
+  min_duration: 8
+  min_height_bonus: 720
+
+freshness:
+  # [max_age_days, score] tiers, evaluated in order
+  tiers:
+    - [3, 1.0]
+    - [14, 0.8]
+    - [60, 0.5]
+    - [99999, 0.25]
+
+brazil_vocabulary:
+  strong:   # Brazil-specific signals -> 1.0
+    - brasil
+    - brazil
+    - seleção
+    - selecao
+    - neymar
+    - vinicius
+    - flamengo
+    - palmeiras
+    - corinthians
+    - copa do mundo
+    - brasileirão
+    - brasileirao
+    - 巴西
+  medium:   # topic signals -> 0.6
+    - futebol
+    - football
+    - soccer
+    - futbol
+    - gol
+    - goal
+    - 足球
+    - 进球
+    - copa
+    - world cup

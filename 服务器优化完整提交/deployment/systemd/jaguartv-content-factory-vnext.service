@@ -1,0 +1,17 @@
+[Unit]
+Description=JaguarTV Content Factory vNEXT
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/jaguartv-content-factory-vnext
+EnvironmentFile=-/opt/jaguartv-content-factory-vnext/.env
+ExecStart=/opt/jaguartv-content-factory-vnext/.venv/bin/jaguartv ui --host 127.0.0.1 --port 8788
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,17 @@
+[Unit]
+Description=JaguarTV Content Factory
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/jaguartv-content-factory
+EnvironmentFile=-/opt/jaguartv-content-factory/.env
+ExecStart=/opt/jaguartv-content-factory/.venv/bin/jaguartv ui --host 0.0.0.0 --port 8787
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+
+[Install]
+WantedBy=multi-user.target
