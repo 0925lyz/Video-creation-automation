@@ -53,6 +53,21 @@ selection:
     enabled: true
     target: brazil_trends
 
+source_outro_trim:
+  enabled: true
+  scan_tail_sec: 15
+  min_trim_sec: 2
+  max_trim_sec: 12
+  min_confidence: 0.72
+  preserve_if_unsure: true
+  ocr_enabled: true
+  audio_guard_enabled: true
+  save_evidence_frames: true
+  promo_terms:
+    zh: [关注, 私信, 微信, 公众号, 下载, 扫码, 二维码, 加群]
+    pt: [siga, seguir, inscreva-se, baixe, link na bio, compartilhe, whatsapp, promoção]
+    en: [follow, subscribe, download, link in bio, scan, whatsapp, instagram, tiktok, facebook]
+
 edit:
   render_engine: remotion           # dual-variant overlays/endcards require Remotion
   output_duration_sec: [12, 60]
@@ -148,9 +163,10 @@ remotion:
     text_color: "#ffffff"
     background_color: "#050505"
     accent_color: "#f2d14b"
-  top_badge: "VÍDEO DO DIA 🔥"
-  bottom_headline: "Assista esportes ao vivo"
-  bottom_subline: "Canais, jogos e entretenimento em um só app"
+  top_badge: ""
+  bottom_headline: ""
+  bottom_subline: ""
+  endcard_cta: ""
 
 hyperframes:
   enabled: false
@@ -214,17 +230,6 @@ storage:
   max_upload_bytes: 2147483648
   upload_chunk_bytes: 8388608
   inventory_dir: inventory
-
-trends:
-  enabled: true
-  pytrends_path: /opt/pytrends
-  cron: "0 8 * * *"
-  schedule_timezone: America/Sao_Paulo
-  geo: BR
-  keywords: ["futebol Brasil"]
-  top_n: 10
-  source: google_trends
-  sync_keywords_group: google_trends_br_daily
 
 compliance:
   require_verified_rights: false

@@ -20,7 +20,7 @@ def download_candidate(config: dict[str, Any], row: sqlite3.Row) -> Path | str:
     url = row['url']
 
     connection = connect_db(config)
-    
+
     # We SSH into the server and use yt-dlp to download it directly.
     # The server has yt-dlp inside its virtual environment.
     ssh_cmd = [
@@ -30,7 +30,7 @@ def download_candidate(config: dict[str, Any], row: sqlite3.Row) -> Path | str:
     ]
     print(f"Triggering remote download on server {host} for candidate {row['id']}...")
     result = subprocess.run(ssh_cmd, capture_output=True, text=True)
-    
+
     if result.returncode != 0:
         connection.execute("UPDATE candidates SET status='DOWNLOAD_FAILED',updated_at=? WHERE id=?", (now_iso(), row["id"]))
         connection.commit()
@@ -53,7 +53,7 @@ def download_top(config: dict[str, Any], limit: int, candidate: str | None = Non
             "SELECT * FROM candidates WHERE status='DISCOVERED' AND score>=? ORDER BY score DESC LIMIT ?",
             (minimum, limit),
         ).fetchall()
-    
+
     stats = {"selected": len(rows), "downloaded": 0, "failed": 0}
     for row in rows:
         try:

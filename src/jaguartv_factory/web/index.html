@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>JaguarTV Content OS</title>
-  <link rel="stylesheet" href="/styles.css?v=20260730-download-claims">
+  <link rel="stylesheet" href="/styles.css?v=20260814-consolidated">
 </head>
 <body>
   <aside class="sidebar">
@@ -71,6 +71,7 @@
         </div>
         <span class="muted" id="inventoryCount"></span>
       </div>
+      <div class="category-filter-bar" id="categoryFilters" aria-label="初步分类筛选"></div>
       <div class="batch-toolbar">
         <label class="selection-control"><input id="selectVisible" type="checkbox"> 选择当前列表</label>
         <span id="selectionCount">已选 0 条</span>
@@ -96,8 +97,6 @@
 
     <section class="view" id="view-analytics">
       <div class="analytics-summary" id="analyticsSummary"></div>
-      <div class="section-heading"><div><p class="eyebrow">GOOGLE TRENDS</p><h2>巴西今日热词</h2></div><button class="secondary-button" id="runTrendsNow" type="button">立即同步</button></div>
-      <div class="hot-keyword-strip" id="hotKeywordStrip"></div>
       <div class="two-column analytics-columns">
         <section class="data-section">
           <div class="section-heading compact"><div><p class="eyebrow">CONTENT SIGNAL</p><h2>关键词投资回报</h2></div></div>
@@ -210,10 +209,10 @@
         <section class="settings-panel">
           <div><p class="eyebrow">REMOTION TEMPLATE</p><h2>动态品牌包装</h2></div>
           <div class="settings-grid">
-            <label>顶部标签<input id="settingRemotionTopBadge" placeholder="VÍDEO DO DIA 🔥"></label>
-            <label>底部主标题<input id="settingRemotionHeadline" placeholder="Assista esportes ao vivo"></label>
-            <label>底部副标题<input id="settingRemotionSubline" placeholder="Canais, jogos e entretenimento em um só app"></label>
-            <label>尾图 CTA<input id="settingRemotionEndcardCta" placeholder="BAIXE EM Jarg.top"></label>
+            <label>顶部标签<input id="settingRemotionTopBadge" placeholder="留空则不添加"></label>
+            <label>底部主标题<input id="settingRemotionHeadline" placeholder="留空则不添加"></label>
+            <label>底部副标题<input id="settingRemotionSubline" placeholder="留空则不添加"></label>
+            <label>尾图 CTA<input id="settingRemotionEndcardCta" placeholder="留空则不添加"></label>
             <label>源音乐下 Funk 音量<input id="settingRemotionContentBgm" type="number" min="0" max="1" step="0.01"></label>
             <label>尾图 Funk 音量<input id="settingRemotionEndcardBgm" type="number" min="0" max="1" step="0.01"></label>
             <label class="checkbox-label"><input id="settingRemotionAddBgm" type="checkbox"> 保留源音乐时叠加轻量 Funk BGM</label>
@@ -264,6 +263,56 @@
     </form>
   </dialog>
 
+  <dialog id="designDialog">
+    <form method="dialog" id="designForm" class="design-form">
+      <div class="dialog-heading design-heading"><div><p class="eyebrow">DESIGN RENDER</p><h2>文案设计版视频</h2><p id="designCandidateLabel">未选择</p></div><button class="icon-button" id="closeDesignDialog" type="button" title="关闭" aria-label="关闭">×</button></div>
+      <div class="design-workspace">
+        <section class="design-stage-column" aria-label="视频设计画布">
+          <div class="design-canvas-shell">
+            <div class="design-canvas" id="designCanvas">
+              <video id="designSourceVideo" muted loop playsinline></video>
+              <img id="designSourceImage" alt="">
+              <div class="design-canvas-empty" id="designCanvasEmpty">等待源视频</div>
+              <div class="design-layer-stage" id="designLayerStage"></div>
+            </div>
+          </div>
+          <div class="design-coordinate-bar">
+            <span id="designCanvasSize">1080 × 1920</span>
+            <span id="designSelectionLabel">文案</span>
+          </div>
+        </section>
+        <section class="design-controls" aria-label="文案和图片设置">
+          <div class="design-control-section">
+            <div class="design-control-title"><strong>文案</strong><span>TEXT</span></div>
+            <label>文案撰写<textarea id="designText" rows="5" placeholder=""></textarea></label>
+            <div class="design-control-grid">
+              <label>大小 <output id="designTextSizeValue">64 px</output><input id="designTextSize" type="range" min="16" max="180" value="64"></label>
+              <label>颜色<input id="designTextColor" type="color" value="#ffffff"></label>
+              <label class="design-wide-control">文案宽度 <output id="designTextWidthValue">84%</output><input id="designTextWidth" type="range" min="10" max="100" value="84"></label>
+            </div>
+          </div>
+          <div class="design-control-section">
+            <div class="design-control-title"><strong>Logo / 图片</strong><label class="design-file-button">添加文件<input id="designImageFiles" type="file" accept="image/png,image/jpeg,image/webp" multiple></label></div>
+            <div class="design-image-list" id="designImageList"><div class="design-empty-list">尚未添加图片</div></div>
+            <div id="designImageControls" hidden>
+              <div class="design-control-grid">
+                <label>大小 <output id="designImageSizeValue">20%</output><input id="designImageSize" type="range" min="3" max="100" value="20"></label>
+              </div>
+            </div>
+          </div>
+          <details class="design-production-options">
+            <summary>制作选项</summary>
+            <div class="design-control-grid">
+              <label>视频版本<select id="designVariant"><option value="both" selected>通用版 + FB版</option><option value="generic">通用版</option><option value="fb">FB版</option></select></label>
+            </div>
+          </details>
+          <div class="upload-progress compact-progress" id="designUploadProgress" hidden><div><span id="designUploadMessage">准备上传</span><strong id="designUploadPercent">0%</strong></div><div class="progress-track"><span id="designUploadBar" style="width:0%"></span></div></div>
+        </section>
+      </div>
+      <div class="dialog-actions design-dialog-actions"><button class="secondary-button" id="cancelDesignDialog" type="button">取消</button><button class="primary-button" id="submitDesign" type="submit">上传图片并生成</button></div>
+    </form>
+  </dialog>
+
   <dialog id="discoverDialog">
     <form method="dialog" id="discoverForm">
       <div class="dialog-heading"><div><p class="eyebrow">SOURCE IMPORT</p><h2>导入素材</h2></div><button class="icon-button" id="closeDiscoverDialog" type="button" title="关闭" aria-label="关闭">×</button></div>
@@ -309,6 +358,6 @@
   </dialog>
 
   <div class="toast" id="toast" role="status"></div>
-  <script src="/app.js?v=20260803-retry-actions"></script>
+  <script src="/app.js?v=20260814-consolidated"></script>
 </body>
 </html>
