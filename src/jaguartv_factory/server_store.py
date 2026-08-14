@@ -12,6 +12,8 @@ from typing import Any, BinaryIO
 
 
 ALLOWED_MEDIA_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".m4v"}
+ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+UPLOAD_KINDS = {"source", "reaction", "design_image"}
 DEFAULT_UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024
 UPLOAD_ID_PATTERN = re.compile(r"^[a-f0-9]{32}$")
 
@@ -146,12 +148,15 @@ def save_upload(
     kind: str,
     content_length: int,
 ) -> dict[str, Any]:
-    if kind not in {"source", "reaction"}:
-        raise ValueError("upload kind must be source or reaction")
+    if kind not in UPLOAD_KINDS:
+        raise ValueError("upload kind must be source, reaction, or design_image")
     extension = Path(filename).suffix.lower()
-    if extension not in ALLOWED_MEDIA_EXTENSIONS:
-        raise ValueError(f"unsupported media extension: {extension or 'missing'}")
+    allowed_extensions = ALLOWED_IMAGE_EXTENSIONS if kind == "design_image" else ALLOWED_MEDIA_EXTENSIONS
+    if extension not in allowed_extensions:
+        raise ValueError(f"unsupported {kind} extension: {extension or 'missing'}")
     max_bytes = int((config.get("storage", {}) or {}).get("max_upload_bytes", 2 * 1024 * 1024 * 1024))
+    if kind == "design_image":
+        max_bytes = min(max_bytes, 25 * 1024 * 1024)
     if content_length <= 0:
         raise ValueError("empty upload")
     if content_length > max_bytes:
@@ -182,12 +187,15 @@ def save_upload(
 
 
 def validate_upload(config: dict[str, Any], *, filename: str, kind: str, content_length: int) -> str:
-    if kind not in {"source", "reaction"}:
-        raise ValueError("upload kind must be source or reaction")
+    if kind not in UPLOAD_KINDS:
+        raise ValueError("upload kind must be source, reaction, or design_image")
     extension = Path(filename).suffix.lower()
-    if extension not in ALLOWED_MEDIA_EXTENSIONS:
-        raise ValueError(f"unsupported media extension: {extension or 'missing'}")
+    allowed_extensions = ALLOWED_IMAGE_EXTENSIONS if kind == "design_image" else ALLOWED_MEDIA_EXTENSIONS
+    if extension not in allowed_extensions:
+        raise ValueError(f"unsupported {kind} extension: {extension or 'missing'}")
     max_bytes = int((config.get("storage", {}) or {}).get("max_upload_bytes", 2 * 1024 * 1024 * 1024))
+    if kind == "design_image":
+        max_bytes = min(max_bytes, 25 * 1024 * 1024)
     if content_length <= 0:
         raise ValueError("empty upload")
     if content_length > max_bytes:
@@ -336,7 +344,7 @@ def complete_chunked_upload(config: dict[str, Any], upload_id: str) -> dict[str,
 def list_uploads(config: dict[str, Any]) -> list[dict[str, Any]]:
     root = storage_root(config) / "uploads"
     items: list[dict[str, Any]] = []
-    for kind in ("source", "reaction"):
+    for kind in ("source", "reaction", "design_image"):
         directory = root / kind
         if not directory.exists():
             continue

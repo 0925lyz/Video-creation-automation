@@ -6,7 +6,6 @@ const state = {
   feedback: [],
   downloadClaims: [],
   keywordGroups: [],
-  hotKeywords: [],
   settings: null,
   sessions: [],
   uploads: [],
@@ -14,9 +13,13 @@ const state = {
   tasks: [],
   selectedCandidates: new Set(),
   status: "",
+  categoryFilter: "",
   search: "",
   pendingProductionIds: [],
   pendingDownloadAsset: null,
+  designCandidate: null,
+  designLayers: [],
+  selectedDesignLayerId: "design-text",
 };
 
 const views = {
@@ -31,6 +34,7 @@ const views = {
 const statusLabels = {
   DISCOVERED: "待筛选",
   DOWNLOADED: "待制作",
+  PRODUCTION_RUNNING: "制作中",
   READY_FOR_REVIEW: "待审核",
   APPROVED: "审核通过",
   REVISION_REQUIRED: "需返工",
@@ -49,6 +53,8 @@ const scoreDimensionLabels = {
   velocity: "热度速度", engagement: "互动质量", relevance: "相关度",
   editability: "可剪辑性", brazil_fit: "巴西适配", freshness: "新鲜度",
 };
+
+const initialCategoryLabels = ["足球类", "新闻类", "音乐类", "肥皂剧", "少儿剧", "成人频道", "纪录片", "综艺", "社交挑战", "舞蹈", "未分类"];
 
 function scoreTooltip(breakdown) {
   if (!breakdown || !Object.keys(breakdown).length) return "";
@@ -94,11 +100,11 @@ async function refreshAll(showToast = false) {
   button.disabled = true;
   try {
     const token = storedUploadToken();
-    const [overview, candidates, publications, workers, feedback, downloadClaims, keywordGroups, hotKeywords, tasks, settings, sessions, health, uploads] = await Promise.all([
-      api("/api/overview"), api("/api/candidates?limit=200"), api("/api/publications"), api("/api/workers"), api("/api/feedback"), api("/api/download-claims"), api("/api/keywords"), api("/api/hot-keywords?date=today"), api("/api/tasks"), api("/api/settings"), api("/api/sessions"), api("/api/health"),
+    const [overview, candidates, publications, workers, feedback, downloadClaims, keywordGroups, tasks, settings, sessions, health, uploads] = await Promise.all([
+      api("/api/overview"), api("/api/candidates?limit=200"), api("/api/publications"), api("/api/workers"), api("/api/feedback"), api("/api/download-claims"), api("/api/keywords"), api("/api/tasks"), api("/api/settings"), api("/api/sessions"), api("/api/health"),
       token ? api("/api/uploads", { headers: { "X-Upload-Token": token } }).catch(() => []) : Promise.resolve([]),
     ]);
-    Object.assign(state, { overview, candidates, publications, workers, feedback, downloadClaims, keywordGroups, hotKeywords, tasks, settings, sessions, health, uploads });
+    Object.assign(state, { overview, candidates, publications, workers, feedback, downloadClaims, keywordGroups, tasks, settings, sessions, health, uploads });
     renderAll();
     document.querySelector("#serviceTime").textContent = `更新于 ${dateText(overview.generated_at)}`;
     if (showToast) toast("数据已刷新");
@@ -119,7 +125,6 @@ function renderAll() {
   renderPublications();
   renderAnalytics();
   renderDownloadClaims();
-  renderHotKeywords();
   renderKeywordGroups();
   renderWorkers();
   renderSettings();
@@ -183,8 +188,10 @@ function filteredCandidates() {
   const query = state.search.toLowerCase();
   return inventoryRows()
     .filter((item) => {
-      const haystack = `${item.display_title || ""} ${item.title || ""} ${item.id || ""} ${(item.output_assets || []).map((asset) => asset.filename || "").join(" ")}`.toLowerCase();
-      return (!state.status || item.status === state.status) && (!query || haystack.includes(query));
+      const haystack = `${item.display_title || ""} ${item.title || ""} ${item.id || ""} ${item.initial_category || ""} ${item.initial_keyword || ""} ${item.keyword || ""} ${(item.output_assets || []).map((asset) => asset.filename || "").join(" ")}`.toLowerCase();
+      const statusMatch = !state.status || item.status === state.status || (state.status === "DOWNLOADED" && item.status === "PRODUCTION_RUNNING");
+      const categoryMatch = !state.categoryFilter || (item.initial_category || "未分类") === state.categoryFilter;
+      return statusMatch && categoryMatch && (!query || haystack.includes(query));
     })
     .sort((a, b) => {
       const aPart = Number(a.part_number || (a.output_assets || [])[0]?.part_number || 0);
@@ -224,58 +231,32 @@ function inventoryRows() {
   });
 
   return parents.flatMap((item) => {
-    const assets = outputAssetsFor(item);
     const children = childrenMap[item.id] || [];
-    
+
     item.is_parent = true;
     item.children = children.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
-    
-    const baseItems = [];
-    if (!["READY_FOR_REVIEW", "APPROVED"].includes(item.status) || assets.length <= 1) {
-      baseItems.push(item);
-    } else {
-      assets.forEach((asset) => {
-        baseItems.push({
-          ...item,
-          row_key: `${item.id}:${asset.id || asset.filename || asset.variant || "asset"}`,
-          display_title: String(asset.filename || item.display_title || item.title || "").replace(/\.mp4$/i, ""),
-          variant_group: asset.variant || "",
-          output_assets: [asset],
-          output_count: 1,
-          video_url: asset.video_url || "",
-          download_url: asset.download_url || "",
-          server_url: asset.server_url || "",
-          cover_url: asset.cover_url || item.cover_url || "",
-        });
-      });
-    }
-    
-    // Append children visually under the parent
-    children.forEach(child => {
-      child.is_child = true;
-      baseItems.push(child);
-    });
-    
-    return baseItems;
+    return [item];
   });
 }
 
 function renderInventory() {
   const rows = filteredCandidates();
+  renderCategoryFilters();
   document.querySelector("#inventoryCount").textContent = `${rows.length} 条内容`;
   document.querySelector("#inventoryTable").innerHTML = rows.length ? rows.map((item) => {
     const thumb = item.cover_url || item.thumbnail_url;
     const task = activeTaskFor(item.id);
     const status = task ? `${task.action === "download" ? "下载" : task.action === "produce" ? "制作" : "处理"}中` : (statusLabels[item.status] || item.status);
     const failure = item.failure_detail ? `<small class="failure-reason" title="${escapeHtml(item.failure_detail)}">${escapeHtml(failureReason(item.failure_detail))}</small>` : "";
+    const outro = sourceOutroText(item.source_outro_trim);
     const isChild = !!item.is_child;
     const isParent = !!item.is_parent;
     return `
     <tr class="${isChild ? 'child-slice-row' : ''}" style="${isChild ? 'background-color: var(--surface-hover);' : ''}">
       <td class="check-column"><input class="candidate-checkbox" type="checkbox" data-candidate-select="${item.id}" ${state.selectedCandidates.has(item.id) ? "checked" : ""} aria-label="选择 ${escapeHtml(item.display_title || item.title || item.id)}"></td>
-      <td style="${isChild ? 'padding-left: 2rem;' : ''}"><div class="content-cell">${thumb ? `<img class="mini-cover" src="${thumb}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<div class="mini-cover"></div>`}<div><strong title="${escapeHtml(item.display_title || item.title)}">${escapeHtml(item.display_title || item.title || "未命名内容")}${item.published_flag ? `<span class="badge-published">Published</span>` : ""}</strong><small>${escapeHtml(item.platform)} · ${item.id}${item.keyword ? ` · ${escapeHtml(item.keyword)}` : ""}</small></div></div></td>
+      <td style="${isChild ? 'padding-left: 2rem;' : ''}"><div class="content-cell">${thumb ? `<img class="mini-cover" src="${thumb}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<div class="mini-cover"></div>`}<div><strong title="${escapeHtml(item.display_title || item.title)}">${escapeHtml(item.display_title || item.title || "未命名内容")}${item.published_flag ? `<span class="badge-published">Published</span>` : ""}<span class="category-pill">${escapeHtml(item.initial_category || "未分类")}</span></strong><small>${escapeHtml(item.platform)} · ${item.id}${item.initial_keyword ? ` · ${escapeHtml(item.initial_keyword)}` : item.keyword ? ` · ${escapeHtml(item.keyword)}` : ""}</small></div></div></td>
       <td>${escapeHtml(item.platform)}</td>
-      <td><strong>${escapeHtml(item.content_type || "unknown")}</strong><small>${escapeHtml(item.segment_strategy || "未分析")} · ${escapeHtml(item.audio_policy || "自动")}</small></td>
+      <td><strong>${escapeHtml(item.content_type || "unknown")}</strong><small>${escapeHtml(item.segment_strategy || "未分析")} · ${escapeHtml(item.audio_policy || "自动")}</small>${outro}</td>
       <td>${Number(item.highlight_score || 0).toFixed(1)}</td>
       <td><span title="${escapeHtml(scoreTooltip(item.score_breakdown))}">${Number(item.score || 0).toFixed(1)}</span></td>
       <td><span class="status-pill ${task ? "running" : statusClass(item.status)}">${status}</span>${failure}</td><td>${dateText(item.updated_at)}</td>
@@ -291,7 +272,39 @@ function renderInventory() {
   document.querySelectorAll("[data-delete-id]").forEach((button) => button.addEventListener("click", () => deleteCandidates([button.dataset.deleteId])));
   document.querySelectorAll("[data-review-decision]").forEach((button) => button.addEventListener("click", () => submitReview(button.dataset.reviewDecision, button.dataset.candidateId)));
   document.querySelectorAll("[data-download-asset]").forEach((button) => button.addEventListener("click", () => openDownloadClaimDialog(button.dataset.downloadAsset)));
+  document.querySelectorAll("[data-design-id]").forEach((button) => button.addEventListener("click", () => openDesignDialog(button.dataset.designId, button.dataset.designAssets || "")));
   updateBatchToolbar();
+}
+
+function renderCategoryFilters() {
+  const container = document.querySelector("#categoryFilters");
+  if (!container) return;
+  const counts = {};
+  inventoryRows().forEach((item) => {
+    if (state.status && item.status !== state.status && !(state.status === "DOWNLOADED" && item.status === "PRODUCTION_RUNNING")) return;
+    const label = item.initial_category || "未分类";
+    counts[label] = (counts[label] || 0) + 1;
+  });
+  container.innerHTML = [
+    `<button class="${state.categoryFilter ? "" : "active"}" data-category-filter="" type="button">全部分类<span>${Object.values(counts).reduce((sum, value) => sum + value, 0)}</span></button>`,
+    ...initialCategoryLabels.map((label) => `<button class="${state.categoryFilter === label ? "active" : ""}" data-category-filter="${escapeHtml(label)}" type="button">${escapeHtml(label)}<span>${counts[label] || 0}</span></button>`),
+  ].join("");
+  container.querySelectorAll("[data-category-filter]").forEach((button) => button.addEventListener("click", () => {
+    state.categoryFilter = button.dataset.categoryFilter || "";
+    state.selectedCandidates.clear();
+    renderInventory();
+  }));
+}
+
+function sourceOutroText(payload) {
+  if (!payload) return `<small class="source-outro muted">原素材尾卡：未检测</small>`;
+  const stateLabel = payload.state || (payload.applied ? "已自动裁剪" : "跳过");
+  const trim = Number(payload.trim_end_sec || 0);
+  const confidence = Number(payload.confidence || 0);
+  const reason = payload.reason || "";
+  const frames = [payload.before_frame, payload.after_frame].filter(Boolean).join(" / ");
+  const detail = [reason, frames ? `证据：${frames}` : ""].filter(Boolean).join(" · ");
+  return `<small class="source-outro" title="${escapeHtml(detail)}">原素材尾卡：${escapeHtml(stateLabel)}${trim ? ` · ${trim.toFixed(1)}s` : ""}${confidence ? ` · ${(confidence * 100).toFixed(0)}%` : ""}</small>`;
 }
 
 function failureReason(detail) {
@@ -341,6 +354,7 @@ function renderTasks() {
 }
 
 function statusClass(status) {
+  if (status === "PRODUCTION_RUNNING") return "running";
   if (status === "READY_FOR_REVIEW" || status === "PUBLISHED" || status === "APPROVED") return "ready";
   if (status.includes("FAILED") || status === "REVISION_REQUIRED" || status === "BLOCKED_RIGHTS") return "failed";
   return "";
@@ -367,7 +381,7 @@ function outputActionLinks(asset) {
   const serverUrl = String(asset.server_url || videoUrl);
   const filename = String(asset.filename || `${asset.id || "jaguartv-video"}.mp4`).replace(/[^0-9A-Za-z_.-]+/g, "_");
   const payload = escapeHtml(JSON.stringify({ ...asset, download_url: downloadUrl, server_url: serverUrl, filename }));
-  return `<a class="table-action" href="${escapeHtml(videoUrl)}" target="_blank" rel="noopener">预览</a><button class="table-action" data-download-asset='${payload}' type="button">登记下载</button><a class="table-action" href="${escapeHtml(serverUrl)}" target="_blank" rel="noopener">服务器成片</a>`;
+  return `<button class="table-action" data-download-asset='${payload}' type="button">登记下载</button><a class="table-action" href="${escapeHtml(serverUrl)}" target="_blank" rel="noopener">服务器成片</a>`;
 }
 
 function approvedOutputActions(item) {
@@ -375,22 +389,32 @@ function approvedOutputActions(item) {
   if (!assets.length) {
     return `<button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">生成成片</button>`;
   }
-  const allOutputs = assets.length > 1 ? `<details class="output-menu"><summary class="table-action">全部 ${assets.length} 条</summary><div class="output-menu-panel">${assets.map((asset) => `<div class="output-menu-row"><strong>${escapeHtml(asset.label || asset.id || "成片")}</strong><div class="row-actions">${outputActionLinks(asset)}</div></div>`).join("")}</div></details>` : "";
+  if (assets.length > 1) {
+    return `<div class="row-actions"><details class="output-menu"><summary class="table-action">查看全部 ${assets.length} 条</summary><div class="output-menu-panel">${assets.map((asset) => `<div class="output-menu-row"><strong title="${escapeHtml(asset.label || asset.id || "成片")}">${escapeHtml(asset.label || asset.id || "成片")}</strong><div class="row-actions output-menu-actions">${outputActionLinks(asset)}</div></div>`).join("")}</div></details></div>`;
+  }
+  const allOutputs = "";
   return `<div class="row-actions">${outputActionLinks(assets[0])}${allOutputs}</div>`;
 }
 
 function candidateAction(item) {
   const sourceLink = item.url ? `<button class="table-action" onclick="window.open('${escapeHtml(item.url)}','_blank')">源页</button>` : "";
+  const designAssets = escapeHtml(JSON.stringify(outputAssetsFor(item).map((asset) => ({
+    id: asset.id,
+    variant: asset.variant || "",
+    video_url: asset.video_url || "",
+    filename: asset.filename || "",
+  }))));
+  const designButton = `<button class="table-action" data-design-id="${item.id}" data-design-assets='${designAssets}'>文案设计</button>`;
   const deleteButton = `<button class="table-action danger-action" data-delete-id="${item.id}">删除</button>`;
-  if (item.status === "DISCOVERED") return `${sourceLink}<button class="table-action" data-candidate-action="download" data-candidate-id="${item.id}">下载</button><button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">制作</button>${deleteButton}`;
-  if (item.status === "DOWNLOAD_FAILED") return `${sourceLink}<button class="table-action" data-candidate-action="download" data-candidate-id="${item.id}">重新下载</button><button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">下载并制作</button>${deleteButton}`;
-  if (item.status === "PRODUCTION_FAILED") return `${sourceLink}<button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">重新制作</button>${deleteButton}`;
-  if (["DOWNLOADED", "REVISION_REQUIRED", "BLOCKED_RIGHTS"].includes(item.status)) return `<button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">制作</button>${deleteButton}`;
+  if (item.status === "DISCOVERED") return `${sourceLink}<button class="table-action" data-candidate-action="download" data-candidate-id="${item.id}">下载</button><button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">制作</button>${designButton}${deleteButton}`;
+  if (item.status === "DOWNLOAD_FAILED") return `${sourceLink}<button class="table-action" data-candidate-action="download" data-candidate-id="${item.id}">重新下载</button><button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">下载并制作</button>${designButton}${deleteButton}`;
+  if (item.status === "PRODUCTION_FAILED") return `${sourceLink}<button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">重新制作</button>${designButton}${deleteButton}`;
+  if (["DOWNLOADED", "REVISION_REQUIRED", "BLOCKED_RIGHTS"].includes(item.status)) return `<button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">制作</button>${designButton}${deleteButton}`;
   if (item.status === "READY_FOR_REVIEW") {
-    return `${approvedOutputActions(item)}<button class="table-action" data-review-decision="APPROVED" data-candidate-id="${item.id}">通过</button><button class="table-action" data-review-decision="REVISION_REQUIRED" data-candidate-id="${item.id}">返工</button>${deleteButton}`;
+    return `${approvedOutputActions(item)}${designButton}<button class="table-action" data-review-decision="APPROVED" data-candidate-id="${item.id}">通过</button><button class="table-action" data-review-decision="REVISION_REQUIRED" data-candidate-id="${item.id}">返工</button>${deleteButton}`;
   }
-  if (item.status === "APPROVED") return `${approvedOutputActions(item)}${deleteButton}`;
-  return deleteButton;
+  if (item.status === "APPROVED") return `${approvedOutputActions(item)}${designButton}${deleteButton}`;
+  return `${designButton}${deleteButton}`;
 }
 
 async function submitReview(decision, candidateId) {
@@ -448,11 +472,22 @@ async function pollTask(taskId) {
     if (!task || task.status === "RUNNING") continue;
     if (task.status === "COMPLETED") {
       const failed = Number(task.result?.failed || 0);
-      toast(failed ? `任务完成，失败 ${failed} 条；请查看对应行原因` : "任务完成", failed ? "error" : "ok");
+      const successMessage = task.action === "ingest" && task.result?.status === "DOWNLOADED"
+        ? "导入下载完成，已进入待制作"
+        : "任务完成";
+      toast(failed ? `任务完成，失败 ${failed} 条；请查看对应行原因` : successMessage, failed ? "error" : "ok");
       state.selectedCandidates.clear();
       await refreshAll();
     }
-    else toast(`任务失败：${task.error}`, "error");
+    else {
+      if (task.action === "ingest") {
+        state.status = "DOWNLOAD_FAILED";
+        await refreshAll();
+        toast("导入失败，已放入下载失败列表；请查看该行失败原因", "error");
+        return;
+      }
+      toast(`任务失败：${task.error}`, "error");
+    }
     return;
   }
   toast("任务仍在后台运行，请稍后刷新");
@@ -514,43 +549,6 @@ function openClaimMetricsDialog(claimId) {
   document.querySelector("#claimMetricsDialog").showModal();
 }
 
-function renderHotKeywords() {
-  const element = document.querySelector("#hotKeywordStrip");
-  if (!element) return;
-  element.innerHTML = state.hotKeywords.length ? state.hotKeywords.map((item) => `
-    <button class="hot-keyword" data-hot-keyword="${escapeHtml(item.keyword)}" type="button">
-      <strong>${escapeHtml(item.keyword)}</strong><small>${escapeHtml(item.source || "google_trends")}</small>
-    </button>
-  `).join("") : `<div class="empty-state">今日热词还未同步；调度器会保留最近一次成功结果</div>`;
-  element.querySelectorAll("[data-hot-keyword]").forEach((button) => {
-    button.addEventListener("click", () => discoverWithHotKeyword(button.dataset.hotKeyword));
-  });
-}
-
-async function discoverWithHotKeyword(keyword) {
-  const value = String(keyword || "").trim();
-  if (!value) return;
-  try {
-    const result = await api("/api/actions", {
-      method: "POST",
-      body: JSON.stringify({ action: "discover", platform: "youtube", limit: 3, keywords: [value] }),
-    });
-    toast(`热词发现任务 ${result.task_id} 已启动`);
-    pollTask(result.task_id);
-  } catch (error) {
-    toast(`热词发现失败：${error.message}`, "error");
-  }
-}
-
-async function runTrendsNow() {
-  try {
-    const result = await api("/api/trends/run", { method: "POST", body: JSON.stringify({}) });
-    toast(`Google Trends 已同步 ${result.count || 0} 个热词`);
-    await refreshAll();
-  } catch (error) {
-    toast(`同步失败：${error.message}`, "error");
-  }
-}
 
 function renderKeywordGroups() {
   const table = document.querySelector("#keywordGroupsTable");
@@ -689,7 +687,7 @@ function renderUploads() {
   table.innerHTML = state.uploads.length ? state.uploads.map((item) => `
     <tr>
       <td><strong>${escapeHtml(item.original_filename || item.id)}</strong><small>${escapeHtml(item.id)}</small></td>
-      <td><span class="status-pill ${item.kind === "source" ? "ready" : ""}">${item.kind === "source" ? "源视频" : "Reaction"}</span></td>
+      <td><span class="status-pill ${item.kind === "source" ? "ready" : ""}">${item.kind === "source" ? "源视频" : item.kind === "design_image" ? "设计图片" : "Reaction"}</span></td>
       <td>${formatBytes(item.size)}</td>
       <td>${dateText(item.uploaded_at)}</td>
       <td><button class="table-action asset-download" data-upload-download="${escapeHtml(item.id)}" type="button">下载</button></td>
@@ -710,11 +708,13 @@ async function parseUploadResponse(response) {
 }
 
 async function uploadServerFile(file, kind, token, onProgress = () => {}) {
-  const authToken = rememberUploadToken(token);
-  if (!authToken) throw new Error("请输入服务器管理令牌");
+  const publicUpload = kind === "design_image";
+  const authToken = publicUpload ? "" : rememberUploadToken(token);
+  if (!publicUpload && !authToken) throw new Error("请输入服务器管理令牌");
+  const authHeaders = authToken ? { "X-Upload-Token": authToken } : {};
   const init = await api("/api/uploads/init", {
     method: "POST",
-    headers: { "X-Upload-Token": authToken },
+    headers: authHeaders,
     body: JSON.stringify({ filename: file.name, kind, size: file.size }),
   });
   const chunkSize = Number(init.chunk_bytes);
@@ -724,7 +724,7 @@ async function uploadServerFile(file, kind, token, onProgress = () => {}) {
     const end = Math.min(file.size, start + chunkSize);
     const response = await fetch(`/api/uploads/chunk?upload_id=${encodeURIComponent(init.id)}&index=${index}`, {
       method: "POST",
-      headers: { "Content-Type": "application/octet-stream", "X-Upload-Token": authToken },
+      headers: { "Content-Type": "application/octet-stream", ...authHeaders },
       body: file.slice(start, end),
     });
     await parseUploadResponse(response);
@@ -733,10 +733,10 @@ async function uploadServerFile(file, kind, token, onProgress = () => {}) {
   onProgress(97, "服务器正在合并文件");
   const completed = await api("/api/uploads/complete", {
     method: "POST",
-    headers: { "X-Upload-Token": authToken },
+    headers: authHeaders,
     body: JSON.stringify({ upload_id: init.id }),
   });
-  onProgress(100, kind === "source" ? "上传完成，已进入待制作库存" : "Reaction 上传完成");
+  onProgress(100, kind === "source" ? "上传完成，已进入待制作库存" : kind === "design_image" ? "图片上传完成" : "Reaction 上传完成");
   return completed;
 }
 
@@ -800,8 +800,313 @@ function openView(name) {
 }
 
 function openProductionDialog(candidateIds) {
-  state.pendingProductionIds = [...new Set(candidateIds)];
+  const ids = Array.isArray(candidateIds) ? candidateIds : [candidateIds];
+  state.pendingProductionIds = [...new Set(ids.filter(Boolean))];
   document.querySelector("#productionDialog").showModal();
+}
+
+function parseDesignAssets(raw) {
+  try {
+    const value = JSON.parse(raw || "[]");
+    return Array.isArray(value) ? value.filter((asset) => asset && asset.id) : [];
+  } catch {
+    return [];
+  }
+}
+
+function designAssetMap(assets) {
+  const generic = assets.find((asset) => asset.variant === "通用版") || assets[0] || null;
+  const fb = assets.find((asset) => asset.variant === "FB版") || generic;
+  return {
+    generic,
+    fb,
+    ids: {
+      "通用版": generic?.id || "",
+      "FB版": fb?.id || generic?.id || "",
+    },
+  };
+}
+
+async function openDesignDialog(candidateId, encodedAssets = "") {
+  const item = state.candidates.find((candidate) => candidate.id === candidateId);
+  if (!item) return toast("找不到这条内容", "error");
+  const assetMap = designAssetMap(parseDesignAssets(encodedAssets));
+  const baseAssetId = assetMap.generic?.id || assetMap.fb?.id || "";
+  if (!baseAssetId) return toast("请先生成服务器成片，再打开文案设计", "error");
+  let designInfo = {};
+  try {
+    designInfo = await api(`/api/candidates/${encodeURIComponent(`${candidateId}::asset::${baseAssetId}`)}/design`);
+  } catch (error) {
+    toast(`服务器成片画布信息读取失败：${error.message}`, "error");
+  }
+  Object.assign(item, designInfo);
+  item.design_base_asset_ids = assetMap.ids;
+  state.pendingProductionIds = [candidateId];
+  state.designCandidate = item;
+  clearDesignImages();
+  state.designLayers = [{
+    id: "design-text",
+    type: "text",
+    text: "",
+    color: "#ffffff",
+    fontSizeRatio: 64 / Math.max(1, Number(item.design_canvas_height || 1920)),
+    maxWidth: 0.84,
+    fontWeight: 800,
+    x: 0.08,
+    y: 0.10,
+  }];
+  state.selectedDesignLayerId = "design-text";
+  document.querySelector("#designCandidateLabel").textContent = item.display_title || item.title || candidateId;
+  document.querySelector("#designText").value = "";
+  document.querySelector("#designTextColor").value = "#ffffff";
+  document.querySelector("#designTextSize").value = 64;
+  document.querySelector("#designTextWidth").value = 84;
+  document.querySelector("#designVariant").value = "both";
+  document.querySelector("#designUploadProgress").hidden = true;
+  setDesignSource(item);
+  renderDesignEditor();
+  const dialog = document.querySelector("#designDialog");
+  dialog.showModal();
+  requestAnimationFrame(() => {
+    sizeDesignCanvas();
+    renderDesignLayers();
+    document.querySelector("#designText").focus();
+  });
+}
+
+const clamp = (value, minimum, maximum) => Math.max(minimum, Math.min(maximum, Number(value) || 0));
+
+function designTextLayer() {
+  return state.designLayers.find((layer) => layer.id === "design-text");
+}
+
+function selectedDesignImage() {
+  return state.designLayers.find((layer) => layer.id === state.selectedDesignLayerId && layer.type === "image");
+}
+
+function clearDesignImages() {
+  state.designLayers.filter((layer) => layer.type === "image" && layer.previewUrl).forEach((layer) => URL.revokeObjectURL(layer.previewUrl));
+}
+
+function setDesignSource(item) {
+  const video = document.querySelector("#designSourceVideo");
+  const image = document.querySelector("#designSourceImage");
+  const empty = document.querySelector("#designCanvasEmpty");
+  video.pause();
+  video.removeAttribute("src");
+  video.load();
+  video.style.display = "none";
+  image.style.display = "none";
+  empty.hidden = false;
+  const previewUrl = String(item.source_preview_url || "");
+  if (previewUrl) {
+    video.src = previewUrl;
+    video.style.objectFit = item.source_fit || "contain";
+    video.style.display = "block";
+    empty.hidden = true;
+    video.play().catch(() => {});
+    return;
+  }
+  const fallback = String(item.cover_url || item.thumbnail_url || "");
+  if (fallback) {
+    image.src = fallback;
+    image.style.objectFit = item.source_fit || "contain";
+    image.style.display = "block";
+    empty.hidden = true;
+  }
+}
+
+function sizeDesignCanvas() {
+  const item = state.designCandidate || {};
+  const width = Math.max(1, Number(item.design_canvas_width || 1080));
+  const height = Math.max(1, Number(item.design_canvas_height || 1920));
+  const shell = document.querySelector(".design-canvas-shell");
+  const canvas = document.querySelector("#designCanvas");
+  if (!shell || !canvas) return;
+  const scale = Math.min(shell.clientWidth / width, shell.clientHeight / height);
+  canvas.style.width = `${Math.max(160, Math.floor(width * scale))}px`;
+  canvas.style.height = `${Math.max(220, Math.floor(height * scale))}px`;
+  document.querySelector("#designCanvasSize").textContent = `${width} × ${height}`;
+}
+
+function renderDesignEditor() {
+  renderDesignLayers();
+  renderDesignImageList();
+  syncDesignControls();
+}
+
+function renderDesignLayers() {
+  const stage = document.querySelector("#designLayerStage");
+  const canvas = document.querySelector("#designCanvas");
+  if (!stage || !canvas) return;
+  const canvasHeight = Math.max(1, canvas.clientHeight);
+  stage.innerHTML = state.designLayers.map((layer) => {
+    const selected = layer.id === state.selectedDesignLayerId ? " selected" : "";
+    if (layer.type === "text") {
+      if (!layer.text) return "";
+      return `<div class="design-layer design-text-layer${selected}" data-design-layer-id="${escapeHtml(layer.id)}" style="left:${layer.x * 100}%;top:${layer.y * 100}%;max-width:${layer.maxWidth * 100}%;font-size:${Math.max(8, layer.fontSizeRatio * canvasHeight)}px;color:${escapeHtml(layer.color)}"><span>${escapeHtml(layer.text)}</span><i class="design-resize-handle" data-design-resize-id="${escapeHtml(layer.id)}" title="拖动调整大小"></i></div>`;
+    }
+    return `<div class="design-layer design-image-layer${selected}" data-design-layer-id="${escapeHtml(layer.id)}" style="left:${layer.x * 100}%;top:${layer.y * 100}%;width:${layer.width * 100}%"><img src="${escapeHtml(layer.previewUrl)}" alt="${escapeHtml(layer.name)}"><i class="design-resize-handle" data-design-resize-id="${escapeHtml(layer.id)}" title="拖动调整大小"></i></div>`;
+  }).join("");
+  stage.querySelectorAll("[data-design-layer-id]").forEach((element) => {
+    element.addEventListener("pointerdown", (event) => startDesignDrag(event, element));
+  });
+  stage.querySelectorAll("[data-design-resize-id]").forEach((handle) => {
+    handle.addEventListener("pointerdown", (event) => startDesignResize(event, handle));
+  });
+}
+
+function startDesignDrag(event, element) {
+  if (event.button !== undefined && event.button !== 0) return;
+  const id = element.dataset.designLayerId;
+  state.selectedDesignLayerId = id;
+  document.querySelectorAll("[data-design-layer-id]").forEach((entry) => entry.classList.toggle("selected", entry === element));
+  renderDesignImageList();
+  syncDesignControls();
+  const layer = state.designLayers.find((entry) => entry.id === id);
+  const canvas = document.querySelector("#designCanvas");
+  if (!layer || !canvas) return;
+  event.preventDefault();
+  const startX = event.clientX;
+  const startY = event.clientY;
+  const originX = layer.x;
+  const originY = layer.y;
+  const move = (moveEvent) => {
+    const bounds = canvas.getBoundingClientRect();
+    const layerBounds = element.getBoundingClientRect();
+    const maxX = Math.max(0, 1 - layerBounds.width / Math.max(1, bounds.width));
+    const maxY = Math.max(0, 1 - layerBounds.height / Math.max(1, bounds.height));
+    layer.x = clamp(originX + (moveEvent.clientX - startX) / bounds.width, 0, maxX);
+    layer.y = clamp(originY + (moveEvent.clientY - startY) / bounds.height, 0, maxY);
+    element.style.left = `${layer.x * 100}%`;
+    element.style.top = `${layer.y * 100}%`;
+    syncDesignPositionControls(layer);
+  };
+  const stop = () => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", stop);
+    window.removeEventListener("pointercancel", stop);
+  };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", stop);
+  window.addEventListener("pointercancel", stop);
+}
+
+function startDesignResize(event, handle) {
+  if (event.button !== undefined && event.button !== 0) return;
+  const id = handle.dataset.designResizeId;
+  const layer = state.designLayers.find((entry) => entry.id === id);
+  const element = handle.closest("[data-design-layer-id]");
+  const canvas = document.querySelector("#designCanvas");
+  if (!layer || !element || !canvas) return;
+  event.preventDefault();
+  event.stopPropagation();
+  state.selectedDesignLayerId = id;
+  document.querySelectorAll("[data-design-layer-id]").forEach((entry) => entry.classList.toggle("selected", entry === element));
+  renderDesignImageList();
+  syncDesignControls();
+  const startX = event.clientX;
+  const startY = event.clientY;
+  const bounds = canvas.getBoundingClientRect();
+  const originWidth = layer.type === "text" ? Number(layer.maxWidth || 0.84) : Number(layer.width || 0.2);
+  const originFont = Number(layer.fontSizeRatio || 0.033);
+  const move = (moveEvent) => {
+    const deltaRatio = (moveEvent.clientX - startX) / Math.max(1, bounds.width);
+    if (layer.type === "text") {
+      const verticalRatio = (moveEvent.clientY - startY) / Math.max(1, bounds.height);
+      layer.maxWidth = clamp(originWidth + deltaRatio, 0.1, 1);
+      layer.fontSizeRatio = clamp(originFont + verticalRatio, 0.01, 0.25);
+      element.style.maxWidth = `${layer.maxWidth * 100}%`;
+      element.style.fontSize = `${Math.max(8, layer.fontSizeRatio * canvas.clientHeight)}px`;
+    } else {
+      layer.width = clamp(originWidth + deltaRatio, 0.03, 1);
+      element.style.width = `${layer.width * 100}%`;
+    }
+    syncDesignControls();
+  };
+  const stop = () => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", stop);
+    window.removeEventListener("pointercancel", stop);
+  };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", stop);
+  window.addEventListener("pointercancel", stop);
+}
+
+function selectDesignLayer(id) {
+  state.selectedDesignLayerId = id;
+  renderDesignLayers();
+  renderDesignImageList();
+  syncDesignControls();
+}
+
+function syncDesignPositionControls(layer) {
+  void layer;
+}
+
+function syncDesignControls() {
+  const textLayer = designTextLayer();
+  const canvasHeight = Math.max(1, Number(state.designCandidate?.design_canvas_height || 1920));
+  const textPixels = Math.round(textLayer.fontSizeRatio * canvasHeight);
+  document.querySelector("#designTextSize").value = clamp(textPixels, 16, 180);
+  document.querySelector("#designTextSizeValue").textContent = `${textPixels} px`;
+  document.querySelector("#designTextWidth").value = Math.round(textLayer.maxWidth * 100);
+  document.querySelector("#designTextWidthValue").textContent = `${Math.round(textLayer.maxWidth * 100)}%`;
+  syncDesignPositionControls(textLayer);
+  const image = selectedDesignImage();
+  document.querySelector("#designImageControls").hidden = !image;
+  document.querySelector("#designSelectionLabel").textContent = image ? image.name : "文案";
+  if (!image) return;
+  document.querySelector("#designImageSize").value = Math.round(image.width * 100);
+  document.querySelector("#designImageSizeValue").textContent = `${Math.round(image.width * 100)}%`;
+  syncDesignPositionControls(image);
+}
+
+function renderDesignImageList() {
+  const list = document.querySelector("#designImageList");
+  const images = state.designLayers.filter((layer) => layer.type === "image");
+  list.innerHTML = images.length ? images.map((layer) => `<div class="design-image-item${layer.id === state.selectedDesignLayerId ? " active" : ""}" data-select-design-image="${escapeHtml(layer.id)}"><img src="${escapeHtml(layer.previewUrl)}" alt=""><span>${escapeHtml(layer.name)}</span><button class="design-image-remove" data-remove-design-image="${escapeHtml(layer.id)}" type="button" title="删除图片" aria-label="删除图片">×</button></div>`).join("") : `<div class="design-empty-list">尚未添加图片</div>`;
+  list.querySelectorAll("[data-select-design-image]").forEach((item) => item.addEventListener("click", () => selectDesignLayer(item.dataset.selectDesignImage)));
+  list.querySelectorAll("[data-remove-design-image]").forEach((button) => button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    removeDesignImage(button.dataset.removeDesignImage);
+  }));
+}
+
+function addDesignImages(files) {
+  Array.from(files || []).forEach((file, index) => {
+    const id = `design-image-${Date.now()}-${index}`;
+    state.designLayers.push({
+      id,
+      type: "image",
+      name: file.name,
+      file,
+      previewUrl: URL.createObjectURL(file),
+      serverPath: "",
+      width: 0.20,
+      x: clamp(0.05 + index * 0.03, 0, 0.75),
+      y: clamp(0.05 + index * 0.03, 0, 0.75),
+    });
+    state.selectedDesignLayerId = id;
+  });
+  renderDesignEditor();
+}
+
+function removeDesignImage(id) {
+  const layer = state.designLayers.find((entry) => entry.id === id);
+  if (layer?.previewUrl) URL.revokeObjectURL(layer.previewUrl);
+  state.designLayers = state.designLayers.filter((entry) => entry.id !== id);
+  state.selectedDesignLayerId = "design-text";
+  renderDesignEditor();
+}
+
+function setDesignUploadProgress(percent, message) {
+  const panel = document.querySelector("#designUploadProgress");
+  panel.hidden = false;
+  document.querySelector("#designUploadMessage").textContent = message;
+  document.querySelector("#designUploadPercent").textContent = `${Math.round(percent)}%`;
+  document.querySelector("#designUploadBar").style.width = `${clamp(percent, 0, 100)}%`;
 }
 
 async function uploadReactionFile(file, token) {
@@ -889,7 +1194,6 @@ document.querySelector("#batchProduce").addEventListener("click", () => {
   openProductionDialog(ids);
 });
 document.querySelector("#batchDelete").addEventListener("click", () => deleteCandidates(selectedRows().map((item) => item.id)));
-document.querySelector("#runTrendsNow").addEventListener("click", runTrendsNow);
 document.querySelectorAll("#statusFilters button").forEach((button) => button.addEventListener("click", () => {
   document.querySelectorAll("#statusFilters button").forEach((item) => item.classList.toggle("active", item === button));
   state.status = button.dataset.status;
@@ -916,7 +1220,14 @@ document.querySelector("#downloadClaimForm").addEventListener("submit", async (e
     }) });
     document.querySelector("#downloadClaimDialog").close();
     toast("已登记下载人，开始下载");
-    window.location.assign(asset.download_url);
+    const link = document.createElement("a");
+    link.href = asset.download_url;
+    link.download = asset.filename || "";
+    link.target = "_blank";
+    link.rel = "noopener";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
     await refreshAll();
   } catch (error) {
     toast(`登记失败：${error.message}`, "error");
@@ -958,7 +1269,7 @@ function updateDiscoverMode() {
     facebook: "请粘贴具体视频或 Reels URL；服务器登录态必须有权访问该视频。",
   };
   const modeNotes = {
-    url: "粘贴单条视频 URL 后会进入待筛选；超过 30 分钟的素材只允许删除，点击制作会自动下载、切片、渲染双版本并上传审核包。",
+    url: "粘贴单条视频 URL 后会在服务器解析并下载，成功后直接进入待制作；超过 30 分钟的素材只允许删除。",
     upload: "上传自有或已授权源视频后会直接进入待制作；后续制作规则与爬取视频完全一致。",
   };
   document.querySelector("#discoverPlatformNote").textContent = modeNotes[mode] || notes[platform];
@@ -971,6 +1282,47 @@ updateDiscoverMode();
 
 document.querySelector("#closeProductionDialog").addEventListener("click", () => document.querySelector("#productionDialog").close());
 document.querySelector("#cancelProductionDialog").addEventListener("click", () => document.querySelector("#productionDialog").close());
+document.querySelector("#closeDesignDialog").addEventListener("click", () => document.querySelector("#designDialog").close());
+document.querySelector("#cancelDesignDialog").addEventListener("click", () => document.querySelector("#designDialog").close());
+document.querySelector("#designDialog").addEventListener("close", () => document.querySelector("#designSourceVideo").pause());
+window.addEventListener("resize", () => {
+  if (document.querySelector("#designDialog")?.open) {
+    sizeDesignCanvas();
+    renderDesignLayers();
+  }
+});
+
+document.querySelector("#designText").addEventListener("input", (event) => {
+  designTextLayer().text = event.target.value;
+  renderDesignLayers();
+});
+document.querySelector("#designTextColor").addEventListener("input", (event) => {
+  designTextLayer().color = event.target.value;
+  renderDesignLayers();
+});
+document.querySelector("#designTextSize").addEventListener("input", (event) => {
+  const pixels = Number(event.target.value);
+  designTextLayer().fontSizeRatio = pixels / Math.max(1, Number(state.designCandidate?.design_canvas_height || 1920));
+  document.querySelector("#designTextSizeValue").textContent = `${pixels} px`;
+  renderDesignLayers();
+});
+document.querySelector("#designTextWidth").addEventListener("input", (event) => {
+  const percentValue = Number(event.target.value);
+  designTextLayer().maxWidth = percentValue / 100;
+  document.querySelector("#designTextWidthValue").textContent = `${percentValue}%`;
+  renderDesignLayers();
+});
+document.querySelector("#designImageFiles").addEventListener("change", (event) => {
+  addDesignImages(event.target.files);
+  event.target.value = "";
+});
+document.querySelector("#designImageSize").addEventListener("input", (event) => {
+  const image = selectedDesignImage();
+  if (!image) return;
+  image.width = Number(event.target.value) / 100;
+  document.querySelector("#designImageSizeValue").textContent = `${event.target.value}%`;
+  renderDesignLayers();
+});
 document.querySelector("#productionForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   const mode = document.querySelector("#productionReactionMode").value;
@@ -1000,6 +1352,59 @@ document.querySelector("#productionForm").addEventListener("submit", async (even
   } catch (error) { toast(error.message, "error"); }
 });
 
+document.querySelector("#designForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const submit = document.querySelector("#submitDesign");
+  submit.disabled = true;
+  try {
+    const imageLayers = state.designLayers.filter((layer) => layer.type === "image");
+    for (let index = 0; index < imageLayers.length; index += 1) {
+      const layer = imageLayers[index];
+      if (layer.serverPath) continue;
+      const uploaded = await uploadServerFile(layer.file, "design_image", "", (percent, message) => {
+        const overall = ((index + percent / 100) / Math.max(1, imageLayers.length)) * 100;
+        setDesignUploadProgress(overall, `上传 ${layer.name} · ${message}`);
+      });
+      layer.serverPath = uploaded.path;
+    }
+    const layers = state.designLayers.map((layer) => layer.type === "text" ? {
+      id: layer.id,
+      type: "text",
+      text: layer.text,
+      color: layer.color,
+      font_size_ratio: layer.fontSizeRatio,
+      max_width: layer.maxWidth,
+      font_weight: layer.fontWeight,
+      x: layer.x,
+      y: layer.y,
+    } : {
+      id: layer.id,
+      type: "image",
+      path: layer.serverPath,
+      width: layer.width,
+      x: layer.x,
+      y: layer.y,
+    });
+    const variantMode = document.querySelector("#designVariant").value;
+    const variants = variantMode === "generic" ? ["通用版"] : variantMode === "fb" ? ["FB版"] : ["通用版", "FB版"];
+    const baseAssetIds = state.designCandidate?.design_base_asset_ids || {};
+    const options = {
+      content_type: "auto",
+      segment_strategy: "uniform",
+      audio_policy: "auto",
+      rights_status: "MANUAL_REVIEW",
+      batch_label: "文案设计版",
+      design: { layers, variants, base_asset_ids: baseAssetIds, base_asset_id: baseAssetIds["通用版"] || baseAssetIds["FB版"] || "" },
+    };
+    document.querySelector("#designDialog").close();
+    await runBatchAction("produce", [], options, state.pendingProductionIds);
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    submit.disabled = false;
+  }
+});
+
 document.querySelector("#discoverForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   const button = document.querySelector("#submitDiscovery");
@@ -1025,7 +1430,8 @@ document.querySelector("#discoverForm").addEventListener("submit", async (event)
     const url = document.querySelector("#discoverUrl").value.trim();
     const payload = { action: "ingest", platform, url };
     const result = await api("/api/actions", { method: "POST", body: JSON.stringify(payload) });
-    toast(`URL 导入任务 ${result.task_id} 已启动`);
+    state.status = "DOWNLOADED";
+    toast(`URL 导入下载任务 ${result.task_id} 已启动，完成后进入待制作`);
     pollTask(result.task_id);
   } catch (error) { toast(error.message, "error"); }
   finally { button.disabled = false; }

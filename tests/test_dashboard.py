@@ -5,12 +5,16 @@ import pytest
 
 from jaguartv_factory.core import connect_db, now_iso
 from jaguartv_factory.dashboard import (
+    candidate_rows,
+    candidate_design_info,
     dashboard_overview,
+    initial_category_for_text,
     public_brand_asset_path,
     render_job_rows,
     save_metrics,
     save_publication,
     save_review,
+    upload_kind_requires_token,
 )
 from jaguartv_factory.sessions import check_session, list_sessions, save_session
 
@@ -38,6 +42,7 @@ def insert_candidate(config: dict, candidate_id: str = "candidate-1") -> None:
     connection.commit()
 
 
+
 def test_public_brand_asset_path_is_limited_to_brand_assets():
     asset = public_brand_asset_path("/assets/brand/endcard_landscape_blue_v2.png")
 
@@ -45,6 +50,61 @@ def test_public_brand_asset_path_is_limited_to_brand_assets():
     assert asset.name == "endcard_landscape_blue_v2.png"
     assert public_brand_asset_path("/assets/brand/../../config/pipeline.yaml") is None
     assert public_brand_asset_path("/assets/brand/missing.png") is None
+
+
+def test_design_image_uploads_do_not_require_upload_token():
+    assert upload_kind_requires_token("design_image") is False
+    assert upload_kind_requires_token("source") is True
+    assert upload_kind_requires_token("reaction") is True
+    assert upload_kind_requires_token("") is True
+
+
+def test_initial_category_uses_discovery_keyword_first():
+    assert initial_category_for_text("Palmeiras Cerro Porteño Libertadores", "random title") == "足球类"
+    assert initial_category_for_text("Notícias de hoje Brasil", "Flamengo") == "新闻类"
+    assert initial_category_for_text("Novela da Globo", "football reaction") == "肥皂剧"
+    assert initial_category_for_text("Desafio TikTok Brasil", "dance") == "社交挑战"
+    assert initial_category_for_text("Coreografia funk", "video") == "音乐类"
+    assert initial_category_for_text("unknown topic") == "未分类"
+
+
+def test_child_candidate_inherits_parent_initial_category(tmp_path: Path):
+    config = dashboard_config(tmp_path)
+    insert_candidate(config, "parent")
+    connection = connect_db(config)
+    connection.execute(
+        "UPDATE candidates SET metadata_json=? WHERE id=?",
+        (json.dumps({"keyword": "Palmeiras Libertadores"}), "parent"),
+    )
+    timestamp = now_iso()
+    connection.execute(
+        """
+        INSERT INTO candidates(
+          id,parent_id,platform,source_id,url,title,description,duration,view_count,
+          detected_language,score,status,metadata_json,created_at,updated_at
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            "parent_part01", "parent", "youtube", "source-part", "https://example.test/part",
+            "Slice 1", "", 20, 0, "", 0, "READY_FOR_REVIEW", "{}", timestamp, timestamp,
+        ),
+    )
+    connection.commit()
+
+    child = next(item for item in candidate_rows(config) if item["id"] == "parent_part01")
+
+    assert child["initial_category"] == "足球类"
+    assert child["initial_keyword"] == "Palmeiras Libertadores"
+
+
+def test_candidate_design_info_defaults_when_source_not_downloaded(tmp_path: Path):
+    config = dashboard_config(tmp_path)
+    insert_candidate(config)
+
+    info = candidate_design_info(config, "candidate-1")
+
+    assert info["source_preview_url"] == ""
+    assert (info["design_canvas_width"], info["design_canvas_height"]) == (1080, 1920)
 
 
 def test_dashboard_schema_and_overview(tmp_path: Path):

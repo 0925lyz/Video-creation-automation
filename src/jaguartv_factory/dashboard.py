@@ -23,7 +23,9 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 import yaml
 
 from .core import (
+    append_event,
     category_active_today,
+    candidate_has_review_outputs,
     connect_db,
     discover,
     download_top,
@@ -32,6 +34,7 @@ from .core import (
     ingest_uploaded_media,
     inventory_root,
     list_candidates,
+    media_dimensions,
     now_iso,
     produce_top,
     resolve_config_path,
@@ -49,7 +52,7 @@ from .server_store import (
     save_upload_chunk,
     storage_root,
 )
-from .trends import list_hot_keywords, run_trends_job, start_trends_scheduler
+from .source_outro import review_source_outro_summary
 
 
 WEB_ROOT = Path(__file__).resolve().parent / "web"
@@ -59,6 +62,53 @@ PUBLISH_TARGETS = (*PLATFORMS, "instagram", "other")
 EVENT_TYPES = ("landing_click", "download_started", "install", "registration", "first_watch")
 REVIEW_DECISIONS = ("APPROVED", "REVISION_REQUIRED")
 PART_PACKAGE_PATTERN = re.compile(r"^(?P<parent>.+)_part(?P<number>\d+)$")
+PUBLIC_UPLOAD_KINDS = {"design_image"}
+INITIAL_CATEGORY_RULES = (
+    ("足球类", (
+        "futebol", "football", "soccer", "libertadores", "brasileirão", "brasileirao",
+        "copa do brasil", "palmeiras", "flamengo", "cruzeiro", "corinthians", "botafogo",
+        "são paulo", "sao paulo", "cerro porteño", "cerro porteno", "gols", "melhores momentos",
+        "巴甲", "足球", "解放者杯", "南美杯", "巴西杯", "帕尔梅拉斯", "弗拉门戈",
+    )),
+    ("新闻类", (
+        "notícia", "noticias", "notícias", "news", "g1", "cnn brasil", "eleições",
+        "eleicoes", "presidente", "tse", "dólar", "dolar", "inflação", "inflacao",
+        "previsão do tempo", "previsao do tempo", "tarifa", "congresso", "lula",
+        "新闻", "大选", "总统", "通胀", "天气", "汇率",
+    )),
+    ("音乐类", (
+        "música", "musica", "music", "funk", "sertanejo", "anitta", "ludmilla",
+        "brega", "mpb", "spotify", "festival de música", "festival de musica", "show",
+        "viral song", "歌曲", "音乐", "放克", "乡村音乐", "演唱会", "音乐节",
+    )),
+    ("肥皂剧", (
+        "novela", "telenovela", "globoplay", "globo", "resumo da novela", "spoiler",
+        "tela quente", "电视剧", "肥皂剧", "环球台", "剧情",
+    )),
+    ("少儿剧", (
+        "infantil", "criança", "crianca", "kids", "children", "desenho", "cartoon",
+        "animação", "animacao", "nursery", "儿童", "少儿", "动画", "卡通", "亲子",
+    )),
+    ("成人频道", ("adulto", "adult", "canal adulto", "18+", "nsfw", "sensual", "成人")),
+    ("纪录片", (
+        "documentário", "documentario", "documentary", "comida", "culinária", "culinaria",
+        "gastronomia", "animal", "animais", "natureza", "desenvolvimento", "região",
+        "regiao", "história", "historia", "纪录片", "美食", "动物", "自然", "地区发展",
+    )),
+    ("综艺", (
+        "programa", "reality", "variedades", "show de tv", "entretenimento", "humor",
+        "comédia", "comedia", "综艺", "娱乐", "真人秀", "喜剧",
+    )),
+    ("社交挑战", (
+        "desafio", "challenge", "tiktok brasil", "#fyp", "para você", "para voce",
+        "paravoce", "#viral", "reels", "meme", "trend", "tendência", "tendencia",
+        "挑战", "热门挑战", "社交", "梗图", "爆款", "病毒",
+    )),
+    ("舞蹈", ("dança", "danca", "dance", "coreografia", "choreography", "passinho", "舞蹈", "跳舞")),
+)
+INITIAL_CATEGORY_LABELS = [label for label, _ in INITIAL_CATEGORY_RULES]
+SOURCE_MEDIA_SUFFIXES = {".mp4", ".mkv", ".webm", ".mov", ".m4v"}
+PRODUCTION_RUNNING_STATUS = "PRODUCTION_RUNNING"
 
 
 def public_brand_asset_path(requested: str) -> Path | None:
@@ -73,6 +123,22 @@ def public_brand_asset_path(requested: str) -> Path | None:
     return path
 
 
+def upload_kind_requires_token(kind: str) -> bool:
+    return str(kind or "").strip().lower() not in PUBLIC_UPLOAD_KINDS
+
+
+def initial_category_for_text(*values: Any) -> str:
+    chunks = [str(value or "").lower() for value in values if str(value or "").strip()]
+    for label, needles in INITIAL_CATEGORY_RULES:
+        if chunks and any(needle in chunks[0] for needle in needles):
+            return label
+    haystack = " ".join(chunks[1:] if len(chunks) > 1 else chunks)
+    for label, needles in INITIAL_CATEGORY_RULES:
+        if any(needle in haystack for needle in needles):
+            return label
+    return "未分类"
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -82,6 +148,7 @@ def int_value(value: Any, default: int = 0) -> int:
         return max(0, int(value))
     except (TypeError, ValueError):
         return default
+
 
 
 def signed_upload_url(upload_id: str, lifetime_sec: int = 24 * 3600) -> str:
@@ -103,6 +170,106 @@ def upload_rows(config: dict[str, Any]) -> list[dict[str, Any]]:
         row["download_url"] = signed_upload_url(str(item.get("id") or ""))
         rows.append(row)
     return rows
+
+
+def candidate_source_media(config: dict[str, Any], candidate_id: str) -> Path | None:
+    candidate_id = unquote(candidate_id).strip()
+    if not candidate_id:
+        return None
+    connection = connect_db(config)
+    if not connection.execute("SELECT 1 FROM candidates WHERE id=?", (candidate_id,)).fetchone():
+        return None
+    work = workspace_dir(config) / "jobs" / candidate_id
+    return next(
+        (
+            path for path in work.glob("source.*")
+            if path.is_file() and path.suffix.lower() in SOURCE_MEDIA_SUFFIXES
+        ),
+        None,
+    )
+
+
+def production_recovery_status(config: dict[str, Any], candidate_id: str) -> str:
+    if candidate_has_review_outputs(config, candidate_id):
+        return "READY_FOR_REVIEW"
+    if candidate_source_media(config, candidate_id):
+        return "DOWNLOADED"
+    return "PRODUCTION_FAILED"
+
+
+def recover_interrupted_productions(config: dict[str, Any]) -> int:
+    connection = connect_db(config)
+    rows = connection.execute(
+        "SELECT id FROM candidates WHERE status=?", (PRODUCTION_RUNNING_STATUS,)
+    ).fetchall()
+    recovered = 0
+    for row in rows:
+        candidate_id = str(row["id"])
+        status = production_recovery_status(config, candidate_id)
+        timestamp = now_iso()
+        payload = {
+            "recovered_from": PRODUCTION_RUNNING_STATUS,
+            "status": status,
+            "reason": "dashboard service restarted before production task finished",
+        }
+        connection.execute(
+            "UPDATE candidates SET status=?,updated_at=? WHERE id=?",
+            (status, timestamp, candidate_id),
+        )
+        append_event(connection, candidate_id, "PRODUCTION_RECOVERED", payload)
+        recovered += 1
+    connection.commit()
+    return recovered
+
+
+def review_output_asset_by_id(config: dict[str, Any], asset_id: str) -> dict[str, Any] | None:
+    asset_id = unquote(asset_id).strip()
+    if not asset_id:
+        return None
+    for assets in review_output_index(config).values():
+        for asset in assets:
+            if str(asset.get("id") or "") == asset_id:
+                return asset
+    return None
+
+
+def candidate_design_info(config: dict[str, Any], candidate_id: str) -> dict[str, Any]:
+    requested_asset = ""
+    if "::asset::" in candidate_id:
+        candidate_id, requested_asset = candidate_id.split("::asset::", 1)
+    output_asset = review_output_asset_by_id(config, requested_asset) if requested_asset else None
+    output_path = Path(str((output_asset or {}).get("_path") or ""))
+    if output_path.is_file():
+        output_width, output_height = media_dimensions(output_path)
+        return {
+            "candidate_id": candidate_id,
+            "source_preview_url": str((output_asset or {}).get("video_url") or ""),
+            "design_canvas_width": int(output_width),
+            "design_canvas_height": int(output_height),
+            "source_fit": "contain",
+            "design_base_asset_id": str((output_asset or {}).get("id") or ""),
+            "design_base_variant": str((output_asset or {}).get("variant") or ""),
+        }
+    source_media = candidate_source_media(config, candidate_id)
+    result = {
+        "candidate_id": candidate_id,
+        "source_preview_url": "",
+        "design_canvas_width": 1080,
+        "design_canvas_height": 1920,
+        "source_fit": "contain",
+        "design_base_asset_id": "",
+        "design_base_variant": "",
+    }
+    if source_media is None:
+        return result
+    source_width, source_height = media_dimensions(source_media)
+    result.update({
+        "source_preview_url": f"/api/candidates/{quote(candidate_id, safe='')}/source?v={int(source_media.stat().st_mtime)}",
+        "design_canvas_width": int(source_width),
+        "design_canvas_height": int(source_height),
+        "source_fit": "contain",
+    })
+    return result
 
 
 def system_health(config: dict[str, Any]) -> dict[str, Any]:
@@ -135,6 +302,7 @@ def system_health(config: dict[str, Any]) -> dict[str, Any]:
             "max_bytes": int((config.get("storage", {}) or {}).get("max_upload_bytes", 2 * 1024 * 1024 * 1024)),
         },
     }
+
 
 
 def dashboard_overview(config: dict[str, Any]) -> dict[str, Any]:
@@ -315,7 +483,7 @@ def review_output_index(config: dict[str, Any]) -> dict[str, list[dict[str, Any]
         if root.exists():
             package_ids.update(
                 path.name for path in root.iterdir()
-                if path.is_dir() and (path / "video.mp4").is_file()
+                if path.is_dir() and any(child.is_file() and child.suffix.lower() == ".mp4" for child in path.iterdir())
             )
 
     index: dict[str, list[dict[str, Any]]] = {}
@@ -324,12 +492,20 @@ def review_output_index(config: dict[str, Any]) -> dict[str, list[dict[str, Any]
         server_dir = server_root / package_id
         local_video = local_dir / "video.mp4"
         server_video = server_dir / "video.mp4"
+        local_first_video = next((path for path in sorted(local_dir.glob("*.mp4")) if path.is_file()), None)
+        server_first_video = next((path for path in sorted(server_dir.glob("*.mp4")) if path.is_file()), None)
         if local_video.is_file():
             media_dir = local_dir
             media_relative = f"{package_id}/video.mp4"
         elif server_video.is_file():
             media_dir = server_dir
             media_relative = f"review/{package_id}/video.mp4"
+        elif local_first_video is not None:
+            media_dir = local_dir
+            media_relative = f"{package_id}/{local_first_video.name}"
+        elif server_first_video is not None:
+            media_dir = server_dir
+            media_relative = f"review/{package_id}/{server_first_video.name}"
         else:
             continue
 
@@ -373,6 +549,7 @@ def review_output_index(config: dict[str, Any]) -> dict[str, list[dict[str, Any]
                 "server_url": server_url,
                 "cover_url": cover_url,
                 "filename": f"{package_id}.mp4" if video.name == "video.mp4" else video.name,
+                "_path": str(video),
                 "_metadata_path": str(metadata_path) if metadata_path.is_file() else "",
             }
             index.setdefault(package_id, []).append(asset)
@@ -556,8 +733,6 @@ def delete_candidates(config: dict[str, Any], payload: dict[str, Any]) -> dict[s
     candidate_ids = list(dict.fromkeys(candidate_ids))
     if not candidate_ids:
         raise ValueError("select at least one candidate")
-    if len(candidate_ids) > 100:
-        raise ValueError("a batch can contain at most 100 candidates")
 
     workspace = workspace_dir(config)
     storage = storage_root(config)
@@ -625,6 +800,24 @@ def delete_candidates(config: dict[str, Any], payload: dict[str, Any]) -> dict[s
     }
 
 
+def source_keyword_metadata(connection: Any, candidate_id: str) -> dict[str, str]:
+    if not candidate_id:
+        return {}
+    source_row = connection.execute(
+        "SELECT metadata_json FROM candidates WHERE id=?", (candidate_id,)
+    ).fetchone()
+    if not source_row:
+        return {}
+    try:
+        source_metadata = json.loads(source_row["metadata_json"] or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return {
+        "keyword": str(source_metadata.get("keyword") or ""),
+        "category": str(source_metadata.get("category") or ""),
+    }
+
+
 def candidate_rows(config: dict[str, Any], status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
     rows = list_candidates(config, status, limit)
     result = []
@@ -651,9 +844,19 @@ def candidate_rows(config: dict[str, Any], status: str | None = None, limit: int
             metadata = json.loads(item.get("metadata_json") or "{}")
         except json.JSONDecodeError:
             pass
+        parent_metadata = source_keyword_metadata(connection, str(item.get("parent_id") or ""))
+        source_keyword = str(metadata.get("keyword") or parent_metadata.get("keyword") or "")
+        source_category = str(metadata.get("category") or parent_metadata.get("category") or "")
         item.pop("metadata_json", None)
         item["published_flag"] = bool(item.get("published_flag"))
-        item["keyword"] = str(metadata.get("keyword") or "")
+        item["keyword"] = source_keyword
+        item["initial_category"] = initial_category_for_text(
+            source_keyword,
+            source_category,
+            item.get("title"),
+            item.get("description"),
+        )
+        item["initial_keyword"] = source_keyword or source_category
         item["score_breakdown"] = metadata.get("score_breakdown") or {}
         analysis = metadata.get("analysis") or {}
         strategy = analysis.get("strategy") or {}
@@ -693,6 +896,7 @@ def candidate_rows(config: dict[str, Any], status: str | None = None, limit: int
                 item["highlight_score"] = float(
                     review_metadata.get("segment", {}).get("highlight_score") or item["highlight_score"]
                 )
+                item["source_outro_trim"] = review_source_outro_summary(review_metadata.get("source_outro_trim"))
             except (json.JSONDecodeError, OSError):
                 pass
         failure = failures.get(item["id"])
@@ -725,6 +929,7 @@ def server_review_rows(config: dict[str, Any], exclude: set[str] | None = None) 
     review_root = storage_root(config) / "review"
     if not review_root.exists():
         return []
+    connection = connect_db(config)
     outputs_by_candidate = review_output_index(config)
     items: list[dict[str, Any]] = []
     for metadata_path in sorted(review_root.glob("*/metadata.json"), key=lambda path: path.stat().st_mtime, reverse=True):
@@ -760,6 +965,9 @@ def server_review_rows(config: dict[str, Any], exclude: set[str] | None = None) 
         outputs = outputs_by_candidate.get(package_dir.name, [])
         primary_output = outputs[0] if outputs else {}
         updated_at = datetime.fromtimestamp(metadata_path.stat().st_mtime, tz=timezone.utc).isoformat()
+        source_keywords = source_keyword_metadata(connection, str(metadata.get("source_job_id") or ""))
+        source_keyword = str(metadata.get("keyword") or source_keywords.get("keyword") or "")
+        source_category = str(metadata.get("category") or source_keywords.get("category") or "")
         items.append({
             "id": candidate,
             "platform": str(source.get("platform") or "server"),
@@ -775,7 +983,14 @@ def server_review_rows(config: dict[str, Any], exclude: set[str] | None = None) 
             "status": review_state,
             "created_at": updated_at,
             "updated_at": updated_at,
-            "keyword": "",
+            "keyword": source_keyword,
+            "initial_category": initial_category_for_text(
+                source_keyword,
+                source_category,
+                source.get("title"),
+                source.get("platform"),
+            ),
+            "initial_keyword": source_keyword or source_category,
             "score_breakdown": {},
             "batch_label": str(metadata.get("batch_label") or ""),
             "content_type": str(strategy["content_type"]),
@@ -799,6 +1014,7 @@ def server_review_rows(config: dict[str, Any], exclude: set[str] | None = None) 
             "failure_detail": "",
             "failure_at": "",
             "published_flag": False,
+            "source_outro_trim": review_source_outro_summary(metadata.get("source_outro_trim")),
         })
     return items
 
@@ -1381,6 +1597,9 @@ class DashboardApplication(ThreadingHTTPServer):
         self.tasks: dict[str, dict[str, Any]] = {}
         self.tasks_lock = threading.Lock()
         self.production_lock = threading.Lock()
+        recovered = recover_interrupted_productions(config)
+        if recovered:
+            print(f"dashboard recovered {recovered} interrupted production candidate(s)")
 
     def start_action(self, payload: dict[str, Any]) -> str:
         candidate_ids = payload.get("candidate_ids") or []
@@ -1391,8 +1610,6 @@ class DashboardApplication(ThreadingHTTPServer):
         if single and single not in candidate_ids:
             candidate_ids.append(single)
         candidate_ids = list(dict.fromkeys(candidate_ids))
-        if len(candidate_ids) > 100:
-            raise ValueError("a batch can contain at most 100 candidates")
         task_id = uuid.uuid4().hex[:12]
         task = {
             "id": task_id, "action": payload.get("action"), "status": "RUNNING",
@@ -1437,7 +1654,7 @@ class DashboardApplication(ThreadingHTTPServer):
                 ).fetchone()
                 work = workspace_dir(self.config) / "jobs" / candidate
                 source_missing = not any(
-                    path.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov"}
+                    path.suffix.lower() in SOURCE_MEDIA_SUFFIXES
                     for path in work.glob("source.*")
                 )
                 if row and (row["status"] in {"DISCOVERED", "DOWNLOAD_FAILED"} or (row["status"] == "PRODUCTION_FAILED" and source_missing)):
@@ -1460,6 +1677,14 @@ class DashboardApplication(ThreadingHTTPServer):
 
                 self.update_task(task_id, message=f"等待制作资源 · {index + 1}/{total}")
                 with self.production_lock:
+                    started = now_iso()
+                    connection = connect_db(self.config)
+                    connection.execute(
+                        "UPDATE candidates SET status=?,updated_at=? WHERE id=?",
+                        (PRODUCTION_RUNNING_STATUS, started, candidate),
+                    )
+                    append_event(connection, candidate, "PRODUCTION_STARTED", {"task_id": task_id})
+                    connection.commit()
                     result = produce_top(
                         self.config, 1, candidate, progress_callback=production_progress, options=options
                     )
@@ -1493,13 +1718,50 @@ class DashboardApplication(ThreadingHTTPServer):
                 if not url:
                     raise ValueError("url is required")
                 self.update_task(task_id, progress=15, message="正在读取视频信息")
+                candidate_id = inspect_url(
+                    self.config,
+                    url,
+                    requested_platform=str(payload.get("platform") or ""),
+                    allow_stub=True,
+                )
+                self.update_task(
+                    task_id,
+                    progress=45,
+                    current_candidate=candidate_id,
+                    candidate_ids=[candidate_id],
+                    message="正在下载到服务器",
+                )
+                row = connect_db(self.config).execute(
+                    "SELECT status FROM candidates WHERE id=?", (candidate_id,)
+                ).fetchone()
+                if row and row["status"] == "DOWNLOADED":
+                    download_result = {"selected": 1, "downloaded": 1, "failed": 0, "already_downloaded": True}
+                elif row and row["status"] == "TOO_LONG":
+                    raise RuntimeError("URL 已导入，但视频超过 30 分钟，只能删除，不能进入待制作")
+                else:
+                    download_result = download_top(self.config, 1, candidate_id)
+                if int(download_result.get("failed", 0)) or int(download_result.get("downloaded", 0) == 0):
+                    failure = connect_db(self.config).execute(
+                        """
+                        SELECT payload_json FROM events
+                        WHERE candidate_id=? AND event_type='DOWNLOAD_FAILED'
+                        ORDER BY id DESC LIMIT 1
+                        """,
+                        (candidate_id,),
+                    ).fetchone()
+                    detail = ""
+                    if failure:
+                        try:
+                            payload_json = json.loads(failure["payload_json"] or "{}")
+                            detail = str(payload_json.get("stderr") or payload_json.get("error") or "").strip()
+                        except json.JSONDecodeError:
+                            detail = str(failure["payload_json"] or "").strip()
+                    suffix = f"：{detail[-500:]}" if detail else ""
+                    raise RuntimeError(f"URL 已导入，但服务器下载失败，请在下载失败列表重试或检查登录态{suffix}")
                 result = {
-                    "candidate_id": inspect_url(
-                        self.config,
-                        url,
-                        requested_platform=str(payload.get("platform") or ""),
-                        allow_stub=True,
-                    )
+                    "candidate_id": candidate_id,
+                    "download": download_result,
+                    "status": "DOWNLOADED",
                 }
             elif action in {"download", "produce", "skip"}:
                 result = self.run_candidate_batch(
@@ -1551,11 +1813,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return self.send_json(download_claim_rows(self.server.config, limit))
             if parsed.path == "/api/keywords":
                 return self.send_json(load_keyword_groups(self.server.config))
-            if parsed.path == "/api/hot-keywords":
-                date_value = (query.get("date") or [""])[0].strip()
-                if date_value == "today":
-                    date_value = ""
-                return self.send_json(list_hot_keywords(self.server.config, date_value or None))
             if parsed.path == "/api/settings":
                 return self.send_json(system_settings(self.server.config))
             if parsed.path == "/api/sessions":
@@ -1578,6 +1835,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return self.send_json({"download_url": signed_upload_url(upload_id)})
             if parsed.path.startswith("/api/uploads/") and parsed.path.endswith("/download"):
                 return self.send_private_upload(parsed, head_only=False)
+            if parsed.path.startswith("/api/candidates/") and parsed.path.endswith("/design"):
+                parts = parsed.path.strip("/").split("/")
+                if len(parts) != 4:
+                    return self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+                return self.send_json(candidate_design_info(self.server.config, unquote(parts[2])))
+            if parsed.path.startswith("/api/candidates/") and parsed.path.endswith("/source"):
+                return self.send_candidate_source(parsed, head_only=False)
             if parsed.path == "/api/attribution":
                 candidate = (query.get("candidate_id") or [""])[0].strip()
                 if not candidate:
@@ -1599,6 +1863,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
         if parsed.path.startswith("/api/uploads/") and parsed.path.endswith("/download"):
             return self.send_private_upload(parsed, head_only=True)
+        if parsed.path.startswith("/api/candidates/") and parsed.path.endswith("/source"):
+            return self.send_candidate_source(parsed, head_only=True)
         if parsed.path.startswith("/media/"):
             download = str((query.get("download") or [""])[0]).lower() in {"1", "true", "yes"}
             return self.send_media(parsed.path.removeprefix("/media/"), download=download)
@@ -1608,36 +1874,38 @@ class DashboardHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         try:
             if parsed.path == "/api/uploads/init":
-                if not self.authorized_for_uploads():
+                payload = self.read_json()
+                kind = str(payload.get("kind") or "").lower()
+                if not self.authorized_for_upload_kind(kind):
                     return self.send_json(
                         {"error": "missing or invalid upload token"}, HTTPStatus.UNAUTHORIZED
                     )
-                payload = self.read_json()
                 result = init_chunked_upload(
                     self.server.config,
                     filename=str(payload.get("filename") or ""),
-                    kind=str(payload.get("kind") or "").lower(),
+                    kind=kind,
                     content_length=int(payload.get("size") or 0),
                 )
                 return self.send_json(result, HTTPStatus.CREATED)
             if parsed.path == "/api/uploads/chunk":
-                if not self.authorized_for_uploads():
+                query = parse_qs(parsed.query)
+                upload_id = str((query.get("upload_id") or [""])[0])
+                if not self.authorized_for_upload_kind(self.pending_upload_kind(upload_id)):
                     return self.send_json(
                         {"error": "missing or invalid upload token"}, HTTPStatus.UNAUTHORIZED
                     )
-                query = parse_qs(parsed.query)
-                upload_id = str((query.get("upload_id") or [""])[0])
                 index = int((query.get("index") or ["-1"])[0])
                 length = int(self.headers.get("Content-Length") or 0)
                 result = save_upload_chunk(self.server.config, upload_id, index, self.rfile, length)
                 return self.send_json(result, HTTPStatus.CREATED)
             if parsed.path == "/api/uploads/complete":
-                if not self.authorized_for_uploads():
+                payload = self.read_json()
+                upload_id = str(payload.get("upload_id") or "")
+                if not self.authorized_for_upload_kind(self.pending_upload_kind(upload_id)):
                     return self.send_json(
                         {"error": "missing or invalid upload token"}, HTTPStatus.UNAUTHORIZED
                     )
-                payload = self.read_json()
-                result = complete_chunked_upload(self.server.config, str(payload.get("upload_id") or ""))
+                result = complete_chunked_upload(self.server.config, upload_id)
                 if result["kind"] == "source":
                     result["candidate_id"] = ingest_uploaded_media(self.server.config, result)
                 result["download_url"] = signed_upload_url(result["id"])
@@ -1680,8 +1948,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return self.send_json(save_callback(self.server.config, payload), HTTPStatus.OK)
             if parsed.path == "/api/metrics":
                 return self.send_json({"id": save_metrics(self.server.config, payload)}, HTTPStatus.CREATED)
-            if parsed.path == "/api/trends/run":
-                return self.send_json(run_trends_job(self.server.config), HTTPStatus.OK)
             if parsed.path == "/api/move-to-review":
                 return self.send_json(
                     move_candidate_to_review(
@@ -1750,6 +2016,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
         provided = self.headers.get("X-Upload-Token", "").strip()
         return secrets.compare_digest(provided, token)
 
+    def authorized_for_upload_kind(self, kind: str) -> bool:
+        if not upload_kind_requires_token(kind):
+            return True
+        return self.authorized_for_uploads()
+
+    def pending_upload_kind(self, upload_id: str) -> str:
+        if not re.fullmatch(r"[a-f0-9]{32}", str(upload_id or "")):
+            return ""
+        try:
+            base = storage_root(self.server.config) / "uploads" / ".pending" / upload_id
+            manifest = json.loads((base / "manifest.json").read_text(encoding="utf-8"))
+            return str(manifest.get("kind") or "").lower()
+        except (OSError, ValueError, json.JSONDecodeError):
+            return ""
+
     def valid_upload_signature(self, upload_id: str, query: dict[str, list[str]]) -> bool:
         token = os.environ.get("JAGUARTV_UPLOAD_TOKEN", "").strip()
         if not token:
@@ -1785,6 +2066,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             disposition=f"attachment; filename=media{Path(original).suffix}; filename*=UTF-8''{quote(original)}",
             head_only=head_only,
         )
+
+    def send_candidate_source(self, parsed: Any, *, head_only: bool) -> None:
+        parts = parsed.path.strip("/").split("/")
+        if len(parts) != 4:
+            return self.send_error(HTTPStatus.NOT_FOUND)
+        source = candidate_source_media(self.server.config, parts[2])
+        if source is None:
+            return self.send_error(HTTPStatus.NOT_FOUND)
+        self.send_file(source, cache="private, no-store", head_only=head_only)
 
     def read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length") or 0)
@@ -1874,7 +2164,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
 def serve_dashboard(config: dict[str, Any], host: str = "127.0.0.1", port: int = 8787) -> None:
     register_coordinator(config, port)
-    start_trends_scheduler(config)
     server = DashboardApplication((host, port), config)
     print(f"JaguarTV Content OS: http://{host}:{port}")
     try:
