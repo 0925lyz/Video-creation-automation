@@ -1,0 +1,48 @@
+{
+  "captured_at": "2026-08-14",
+  "repositories": [
+    {
+      "name": "MediaCrawler",
+      "url": "https://github.com/NanmiCoder/MediaCrawler.git",
+      "commit": "17f66121e0fcc40fc23958b995bec873d422667d",
+      "role": "Chinese social platform browser discovery"
+    },
+    {
+      "name": "Scrapling",
+      "url": "https://github.com/D4Vinci/Scrapling.git",
+      "commit": "80d78cc362cfe6bb7c1dc17f11a23d28a6c0208c",
+      "role": "Browser scraping fallback; exact production editable install"
+    },
+    {
+      "name": "pytrends",
+      "url": "https://github.com/GeneralMills/pytrends.git",
+      "commit": "a9984ffdc9b31d853dde2ab614a77ecbf2bf33a1",
+      "role": "Google Trends Brazil keyword synchronization"
+    },
+    {
+      "name": "skills",
+      "url": "https://github.com/mattpocock/skills.git",
+      "commit": "2ab958093e83e0ec752e6c1c5932da465bf23e0c",
+      "role": "Development and Skill organization reference"
+    },
+    {
+      "name": "PaddleOCR",
+      "url": "https://github.com/PaddlePaddle/PaddleOCR.git",
+      "commit": "2661c7c0ef5c613e8f93c6e93b2e052399f0f854",
+      "package_version": "3.7.0",
+      "role": "OCR reference source; production uses pinned Python package"
+    },
+    {
+      "name": "pyvideotrans",
+      "url": "https://github.com/jianchang512/pyvideotrans.git",
+      "commit": "a21122786d3a1efda4c92b15cbeb28009d4a7e19",
+      "role": "Optional video localization integration reference"
+    },
+    {
+      "name": "remotion",
+      "url": "https://github.com/remotion-dev/remotion.git",
+      "commit": "4e459b8b3aeec12ac8346666773ea28892a30e31",
+      "role": "Reference source; runtime version is pinned by package-lock.json"
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "JaguarTV Content Factory"
+  short_description: "Batch discover, localize, render, and review pt-BR videos"
+  default_prompt: "Use $jaguartv-content-factory to discover non-Portuguese videos and create pt-BR review-ready packages."
