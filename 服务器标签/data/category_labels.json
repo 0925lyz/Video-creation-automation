@@ -1,0 +1,113 @@
+{
+  "version": "2026-08-15",
+  "labels": [
+    {
+      "id": 1,
+      "label": "ai短剧",
+      "keyword_required": true,
+      "needles": ["ai短剧", "ai drama", "ai short drama", "mini drama", "novela ia"]
+    },
+    {
+      "id": 2,
+      "label": "明星名人歌手",
+      "keyword_required": true,
+      "needles": ["明星", "名人", "歌手", "celebridade", "singer", "anitta", "ludmilla"]
+    },
+    {
+      "id": 3,
+      "label": "足球球星",
+      "keyword_required": true,
+      "needles": ["球星", "neymar", "vini jr", "endrick", "rodrygo", "craque"]
+    },
+    {
+      "id": 4,
+      "label": "足球类",
+      "keyword_required": true,
+      "needles": ["足球", "futebol", "brasileirao", "libertadores", "flamengo", "palmeiras"]
+    },
+    {
+      "id": 5,
+      "label": "新闻类",
+      "keyword_required": true,
+      "needles": ["新闻", "noticias", "news", "g1", "eleicoes", "dolar", "inflacao"]
+    },
+    {
+      "id": 6,
+      "label": "音乐类",
+      "keyword_required": true,
+      "needles": ["音乐", "musica", "funk", "sertanejo", "spotify", "viral song"]
+    },
+    {
+      "id": 7,
+      "label": "肥皂剧（电视剧、电影）",
+      "keyword_required": true,
+      "needles": ["肥皂剧", "电视剧", "电影", "novela", "globoplay", "filme", "serie"]
+    },
+    {
+      "id": 8,
+      "label": "少儿剧",
+      "keyword_required": true,
+      "needles": ["少儿", "儿童", "infantil", "kids", "cartoon", "desenho"]
+    },
+    {
+      "id": 9,
+      "label": "成人频道",
+      "keyword_required": true,
+      "needles": ["成人", "adulto", "adult", "18+", "canal adulto"]
+    },
+    {
+      "id": 10,
+      "label": "纪录片（美食、动物、地区发展）",
+      "keyword_required": true,
+      "needles": ["纪录片", "美食", "动物", "documentario", "documentary", "comida", "animais"]
+    },
+    {
+      "id": 11,
+      "label": "综艺",
+      "keyword_required": true,
+      "needles": ["综艺", "reality", "programa", "variedades", "entretenimento"]
+    },
+    {
+      "id": 12,
+      "label": "社交挑战",
+      "keyword_required": true,
+      "needles": ["挑战", "desafio", "challenge", "tiktok brasil", "viral", "trend"]
+    },
+    {
+      "id": 13,
+      "label": "舞蹈",
+      "keyword_required": true,
+      "needles": ["舞蹈", "danca", "danca", "dance", "coreografia", "passinho"]
+    },
+    {
+      "id": 14,
+      "label": "教程及优点展示类",
+      "keyword_required": false,
+      "needles": ["优点", "优势", "功能展示", "tutorial", "como usar", "vantagens"]
+    },
+    {
+      "id": 15,
+      "label": "官方性质类",
+      "keyword_required": false,
+      "needles": ["官方", "官网", "oficial", "comunicado oficial", "site oficial"]
+    },
+    {
+      "id": 16,
+      "label": "合作类",
+      "keyword_required": false,
+      "needles": ["合作", "联名", "商务合作", "parceria", "colaboracao", "patrocinio"]
+    },
+    {
+      "id": 17,
+      "label": "运营教学类",
+      "keyword_required": false,
+      "needles": ["运营", "运营教学", "账号运营", "operacao", "gestao", "como operar"]
+    },
+    {
+      "id": 18,
+      "label": "教程及答疑类",
+      "keyword_required": false,
+      "needles": ["答疑", "常见问题", "问题解答", "faq", "duvidas", "suporte"]
+    }
+  ]
+}
