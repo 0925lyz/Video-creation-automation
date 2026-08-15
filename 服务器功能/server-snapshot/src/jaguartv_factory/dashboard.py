@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
+import base64
 import hashlib
 import hmac
-import json
+import html
 import mimetypes
 import os
 import re
@@ -18,7 +20,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 import yaml
@@ -37,6 +39,7 @@ from .core import (
     list_candidates,
     media_dimensions,
     now_iso,
+    platform_from_url,
     produce_top,
     resolve_config_path,
     tracking_links,
@@ -53,7 +56,8 @@ from .server_store import (
     save_upload_chunk,
     storage_root,
 )
-from .trends import list_hot_keywords, run_trends_job, start_trends_scheduler
+from .source_outro import review_source_outro_summary
+from .trends import list_hot_keywords, run_trends_job, start_trends_scheduler, trends_today
 
 
 WEB_ROOT = Path(__file__).resolve().parent / "web"
@@ -67,6 +71,162 @@ COPYWRITER_MODES = {"tv", "generic"}
 COPYWRITER_PLATFORMS = {"shorts", "tiktok", "kwai", "facebook", "whatsapp", "email", "seo"}
 COPYWRITER_TONES = {"viral", "trust", "urgent", "friendly"}
 PUBLIC_UPLOAD_KINDS = {"design_image"}
+ADMIN_COOKIE_NAME = "jaguartv_admin"
+INITIAL_CATEGORY_RULES = (
+    ("ai短剧", (
+        "ai短剧", "ai 短剧", "短剧", "微短剧", "竖屏剧", "ai drama", "ai short drama",
+        "short drama", "mini drama", "micro drama", "drama ia", "série ia", "serie ia",
+        "novela ia", "história gerada por ia", "historia gerada por ia",
+    )),
+    ("明星名人歌手", (
+        "celebridade", "celebrity", "famoso", "famosa", "famosos", "famosas", "artista",
+        "cantor", "cantora", "singer", "ator", "atriz", "influencer", "anitta", "ludmilla",
+        "ivete sangalo", "pabllo vittar", "luísa sonza", "luisa sonza", "iza", "alok",
+        "isis valverde", "nathalia dill", "amora mautner",
+        "gusttavo lima", "whindersson", "neymar atriz", "明星", "名人", "歌手", "艺人",
+        "演员", "网红", "安妮塔", "卢德米拉",
+    )),
+    ("足球球星", (
+        "neymar", "vinicius", "vinícius", "vini jr", "vini junior", "rodrygo",
+        "endrick", "richarlison", "raphinha", "casemiro", "marquinhos", "alisson",
+        "ronaldinho", "ronaldo fenômeno", "ronaldo fenomeno", "pelé", "pele", "messi",
+        "cristiano ronaldo", "mbappé", "mbappe", "haaland", "craque", "artilheiro",
+        "bola de ouro", "球星", "内马尔", "维尼修斯", "罗德里戈", "恩德里克", "梅西",
+        "C罗", "姆巴佩", "哈兰德", "金球奖",
+    )),
+    ("足球类", (
+        "futebol", "football", "soccer", "libertadores", "brasileirão", "brasileirao",
+        "copa do brasil", "palmeiras", "flamengo", "cruzeiro", "corinthians", "botafogo",
+        "são paulo", "sao paulo", "cerro porteño", "cerro porteno", "gols", "melhores momentos",
+        "sccp", "fiel torcedor", "portland timbers", "cruz azul", "rosario central",
+        "club atlético", "club atletico", "los angeles fc", "lafc", "querétaro", "queretaro",
+        "seattle sounders", "guadalajara",
+        "巴甲", "足球", "解放者杯", "南美杯", "巴西杯", "帕尔梅拉斯", "弗拉门戈",
+    )),
+    ("新闻类", (
+        "notícia", "noticias", "notícias", "news", "g1", "cnn brasil", "eleições",
+        "eleicoes", "presidente", "tse", "dólar", "dolar", "inflação", "inflacao",
+        "previsão do tempo", "previsao do tempo", "tarifa", "congresso", "lula",
+        "新闻", "大选", "总统", "通胀", "天气", "汇率",
+    )),
+    ("音乐类", (
+        "música", "musica", "music", "funk", "sertanejo", "anitta", "ludmilla",
+        "brega", "mpb", "spotify", "festival de música", "festival de musica", "show",
+        "viral song", "歌曲", "音乐", "放克", "乡村音乐", "演唱会", "音乐节",
+    )),
+    ("肥皂剧（电视剧、电影）", (
+        "novela", "telenovela", "globoplay", "globo", "resumo da novela", "spoiler",
+        "tela quente", "filme", "filmes", "cinema", "movie", "movies", "série",
+        "serie", "series", "电视剧", "电影", "肥皂剧", "环球台", "剧情", "剧集",
+    )),
+    ("少儿剧", (
+        "infantil", "criança", "crianca", "kids", "children", "desenho", "cartoon",
+        "animação", "animacao", "nursery", "儿童", "少儿", "动画", "卡通", "亲子",
+    )),
+    ("成人频道", (
+        "adulto", "adult", "canal adulto", "18+", "nsfw", "sensual", "成人",
+    )),
+    ("纪录片（美食、动物、地区发展）", (
+        "documentário", "documentario", "documentary", "comida", "culinária", "culinaria",
+        "gastronomia", "animal", "animais", "natureza", "desenvolvimento", "região",
+        "regiao", "história", "historia", "纪录片", "美食", "动物", "自然", "地区发展",
+    )),
+    ("综艺", (
+        "programa", "reality", "variedades", "show de tv", "entretenimento", "humor",
+        "comédia", "comedia", "综艺", "娱乐", "真人秀", "喜剧",
+    )),
+    ("社交挑战", (
+        "desafio", "challenge", "tiktok brasil", "#fyp", "para você", "para voce",
+        "paravoce", "#viral", "reels", "meme", "trend", "tendência", "tendencia",
+        "挑战", "热门挑战", "社交", "梗图", "爆款", "病毒",
+    )),
+    ("舞蹈", (
+        "dança", "danca", "dance", "coreografia", "choreography", "passinho", "舞蹈", "跳舞",
+    )),
+    ("教程及优点展示类", (
+        "tutorial", "tutorial completo", "passo a passo", "how to", "como instalar",
+        "como usar", "guia", "instalação", "instalacao", "setup", "vantagens",
+        "benefícios", "beneficios", "recursos", "features", "demonstração",
+        "demonstracao", "review de produto", "comparação", "comparacao",
+        "安装教程", "下载教程", "使用教程", "优点", "优势", "好处",
+        "功能展示", "产品展示", "演示", "介绍", "评测", "对比", "使用方法", "怎么用",
+    )),
+    ("官方性质类", (
+        "oficial", "anúncio oficial", "anuncio oficial", "comunicado oficial",
+        "nota oficial", "site oficial", "app oficial", "perfil oficial", "lançamento",
+        "lancamento", "atualização", "atualizacao", "release", "institucional",
+        "empresa", "marca", "equipe oficial", "官方", "官方公告", "官方账号",
+        "官网", "官宣", "公告", "声明", "品牌", "公司", "正式发布",
+    )),
+    ("合作类", (
+        "parceria", "parceiro", "colaboração", "colaboracao", "collab",
+        "cooperação", "cooperacao", "afiliado", "afiliados", "patrocínio",
+        "patrocinio", "sponsor", "cupom", "promoção", "promocao", "representante",
+        "revendedor", "invite", "合作", "联名", "推广合作", "商务合作", "赞助",
+        "代理", "渠道", "分销", "合伙", "优惠码",
+    )),
+    ("运营教学类", (
+        "operação", "operacao", "gestão", "gestao", "estratégia operacional",
+        "tutorial de operação", "como operar", "tráfego", "trafego", "métricas",
+        "metricas", "campanha", "funil", "funnel", "marketing", "monetização",
+        "monetizacao", "crm", "kpi", "运营", "运营教学", "运营教程", "后台运营",
+        "账号运营", "发布运营", "数据分析", "投放", "增长", "转化", "留存",
+    )),
+    ("教程及答疑类", (
+        "perguntas frequentes", "faq", "dúvidas", "duvidas", "respostas",
+        "perguntas e respostas", "q&a", "ajuda", "problema", "como resolver",
+        "solução", "solucao", "suporte", "atendimento", "答疑", "问答",
+        "问题解答", "常见问题", "教程答疑", "问题", "怎么办", "帮助", "支持",
+        "客服", "故障", "解决方法",
+    )),
+)
+INITIAL_CATEGORY_LABELS = [label for label, _ in INITIAL_CATEGORY_RULES]
+DEFAULT_YOUTUBE_CATEGORY_ACCOUNTS = {
+    "新闻类": "consumer_main",
+    "足球球星": "consumer_football",
+    "足球类": "consumer_football",
+    "ai短剧": "consumer_entertainment",
+    "明星名人歌手": "consumer_entertainment",
+    "音乐类": "consumer_entertainment",
+    "肥皂剧（电视剧、电影）": "consumer_entertainment",
+    "少儿剧": "consumer_entertainment",
+    "纪录片（美食、动物、地区发展）": "consumer_entertainment",
+    "综艺": "consumer_entertainment",
+    "社交挑战": "consumer_entertainment",
+    "舞蹈": "consumer_entertainment",
+    "教程及优点展示类": "consumer_guide",
+    "官方性质类": "consumer_guide",
+    "合作类": "partner_main",
+    "运营教学类": "partner_academia",
+    "教程及答疑类": "consumer_guide",
+}
+YOUTUBE_SOURCE_BLOCKED_ACCOUNTS = {"consumer_main", "consumer_football", "consumer_entertainment"}
+YOUTUBE_OAUTH_SCOPES = (
+    "https://www.googleapis.com/auth/youtube.upload",
+    "https://www.googleapis.com/auth/youtube.readonly",
+)
+GOOGLE_OAUTH_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
+YOUTUBE_CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels"
+ACCOUNT_ALIASES = {
+    "consumer_main": "consumer_main",
+    "jaguartv hoje": "consumer_main",
+    "yt_hoje": "consumer_main",
+    "consumer_football": "consumer_football",
+    "jaguartv futebol": "consumer_football",
+    "consumer_guide": "consumer_guide",
+    "jaguartv guia": "consumer_guide",
+    "consumer_entertainment": "consumer_entertainment",
+    "jaguartv entretenimento": "consumer_entertainment",
+    "partner_main": "partner_main",
+    "jaguartv parceiros": "partner_main",
+    "partner_embaixador": "partner_embaixador",
+    "jaguartv embaixador": "partner_embaixador",
+    "partner_revendedor": "partner_revendedor",
+    "jaguartv revendedor": "partner_revendedor",
+    "partner_academia": "partner_academia",
+    "academia jaguartv": "partner_academia",
+}
 SOURCE_MEDIA_SUFFIXES = {".mp4", ".mkv", ".webm", ".mov", ".m4v"}
 PRODUCTION_RUNNING_STATUS = "PRODUCTION_RUNNING"
 
@@ -84,7 +244,34 @@ def public_brand_asset_path(requested: str) -> Path | None:
 
 
 def upload_kind_requires_token(kind: str) -> bool:
-    return str(kind or "").strip().lower() not in PUBLIC_UPLOAD_KINDS
+    return False
+
+
+def loopback_client(address: str) -> bool:
+    return address in {"127.0.0.1", "::1", "localhost"}
+
+
+def initial_category_for_text(*values: Any) -> str:
+    chunks = [str(value or "").lower() for value in values if str(value or "").strip()]
+    for label, needles in INITIAL_CATEGORY_RULES:
+        if chunks and any(needle in chunks[0] for needle in needles):
+            return label
+    haystack = " ".join(chunks[1:] if len(chunks) > 1 else chunks)
+    for label, needles in INITIAL_CATEGORY_RULES:
+        if any(needle in haystack for needle in needles):
+            return label
+    return "未分类"
+
+
+def normalize_keyword(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip().lower())
+
+
+def explicit_category_label(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return next((label for label in INITIAL_CATEGORY_LABELS if label == text or label in text), "")
 
 
 def utc_now() -> datetime:
@@ -401,14 +588,9 @@ def generate_copywriter_with_gemini(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def signed_upload_url(upload_id: str, lifetime_sec: int = 24 * 3600) -> str:
-    token = os.environ.get("JAGUARTV_UPLOAD_TOKEN", "").strip()
-    if not token:
+    if not re.fullmatch(r"[a-f0-9]{32}", str(upload_id or "")):
         return ""
-    expires = int(time.time()) + lifetime_sec
-    signature = hmac.new(
-        token.encode("utf-8"), f"{upload_id}:{expires}".encode("utf-8"), hashlib.sha256
-    ).hexdigest()
-    return f"/api/uploads/{upload_id}/download?exp={expires}&sig={signature}"
+    return f"/api/uploads/{upload_id}/download"
 
 
 def upload_rows(config: dict[str, Any]) -> list[dict[str, Any]]:
@@ -546,7 +728,7 @@ def system_health(config: dict[str, Any]) -> dict[str, Any]:
         "youtube_runtime": runtime,
         "ready_sessions": ready_sessions,
         "upload": {
-            "enabled": bool(os.environ.get("JAGUARTV_UPLOAD_TOKEN", "").strip()),
+            "enabled": True,
             "chunk_bytes": int((config.get("storage", {}) or {}).get("upload_chunk_bytes", 8 * 1024 * 1024)),
             "max_bytes": int((config.get("storage", {}) or {}).get("max_upload_bytes", 2 * 1024 * 1024 * 1024)),
         },
@@ -594,6 +776,17 @@ def dashboard_overview(config: dict[str, Any]) -> dict[str, Any]:
         row["status"]: row["count"]
         for row in connection.execute("SELECT status,COUNT(*) count FROM candidates GROUP BY status")
     }
+    parent_status_counts = {
+        row["status"]: row["count"]
+        for row in connection.execute(
+            """
+            SELECT status,COUNT(*) count
+            FROM candidates
+            WHERE COALESCE(parent_id,'')=''
+            GROUP BY status
+            """
+        )
+    }
     publication_counts = {
         row["status"]: row["count"]
         for row in connection.execute("SELECT status,COUNT(*) count FROM publications GROUP BY status")
@@ -617,7 +810,7 @@ def dashboard_overview(config: dict[str, Any]) -> dict[str, Any]:
         FROM ranked WHERE rank=1
         """
     ).fetchone()
-    total = sum(status_counts.values())
+    total = sum(parent_status_counts.values())
     ready = status_counts.get("READY_FOR_REVIEW", 0)
     approved = status_counts.get("APPROVED", 0)
     orphan_reviews = server_review_rows(config, exclude={
@@ -629,7 +822,7 @@ def dashboard_overview(config: dict[str, Any]) -> dict[str, Any]:
     total += len(orphan_reviews)
     ready += orphan_status_counts.get("READY_FOR_REVIEW", 0)
     approved += orphan_status_counts.get("APPROVED", 0)
-    merged_status_counts = dict(status_counts)
+    merged_status_counts = dict(parent_status_counts)
     for key, value in orphan_status_counts.items():
         merged_status_counts[key] = merged_status_counts.get(key, 0) + value
     published = connection.execute(
@@ -796,12 +989,16 @@ def review_output_index(config: dict[str, Any]) -> dict[str, list[dict[str, Any]
         if not metadata_path.is_file():
             metadata_path = server_dir / "metadata.json"
         server_files: dict[str, Any] = {}
+        review_metadata: dict[str, Any] = {}
         if metadata_path.is_file():
             try:
                 review_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
                 server_files = review_metadata.get("server_storage", {}).get("files", {}) or {}
             except (json.JSONDecodeError, OSError):
                 pass
+        batch_label = str(review_metadata.get("batch_label") or "").strip()
+        strategy = review_metadata.get("strategy") or {}
+        content_type = str(strategy.get("content_type") or review_metadata.get("content_type") or "").strip()
 
         cover = media_dir / "cover.jpg"
         cover_url = ""
@@ -821,10 +1018,15 @@ def review_output_index(config: dict[str, Any]) -> dict[str, list[dict[str, Any]
             if not server_url and server_video.is_file():
                 server_url = public_url(config, f"review/{package_id}/{video.name}")
             variant = "通用版" if "通用版" in video.name or video.name == "video.mp4" else ("FB版" if "FB版" in video.name else "")
-            base_label = f"片段 {part_number:02d}" if part_number is not None else "成片"
+            is_batch_output = bool(batch_label) and (
+                batch_label in video.name or (video.name == "video.mp4" and content_type == "design_overlay")
+            )
+            base_label = f"片段 {part_number:02d}" if part_number is not None else (batch_label if is_batch_output else "成片")
             asset = {
                 "id": package_id if video.name == "video.mp4" else f"{package_id}:{video.stem}",
                 "label": f"{base_label} · {variant}" if variant else base_label,
+                "batch_label": batch_label if is_batch_output else "",
+                "content_type": content_type,
                 "variant": variant,
                 "part_number": part_number,
                 "video_url": video_url,
@@ -1083,6 +1285,362 @@ def delete_candidates(config: dict[str, Any], payload: dict[str, Any]) -> dict[s
     }
 
 
+def source_keyword_metadata(connection: Any, candidate_id: str) -> dict[str, str]:
+    if not candidate_id:
+        return {}
+    source_row = connection.execute(
+        "SELECT metadata_json FROM candidates WHERE id=?", (candidate_id,)
+    ).fetchone()
+    if not source_row:
+        return {}
+    try:
+        source_metadata = json.loads(source_row["metadata_json"] or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return {
+        "keyword": str(source_metadata.get("keyword") or ""),
+        "category": str(source_metadata.get("category") or ""),
+    }
+
+
+def canonical_account_id(account: str) -> str:
+    normalized = re.sub(r"\s+", " ", str(account or "").strip().lower())
+    return ACCOUNT_ALIASES.get(normalized, normalized)
+
+
+def youtube_category_account_routes(config: dict[str, Any]) -> dict[str, str]:
+    configured = (config.get("publishing", {}) or {}).get("youtube_category_accounts") or {}
+    routes = dict(DEFAULT_YOUTUBE_CATEGORY_ACCOUNTS)
+    if isinstance(configured, dict):
+        for category, account in configured.items():
+            category_name = str(category or "").strip()
+            account_id = str(account or "").strip()
+            if category_name:
+                routes[category_name] = account_id
+    return routes
+
+
+def publication_source_context(connection: Any, candidate_id: str) -> dict[str, str]:
+    row = connection.execute(
+        """
+        SELECT id,parent_id,platform,url,title,description,metadata_json
+        FROM candidates WHERE id=?
+        """,
+        (candidate_id,),
+    ).fetchone()
+    if not row:
+        return {}
+    parent_row = None
+    parent_id = str(row["parent_id"] or "")
+    if parent_id:
+        parent_row = connection.execute(
+            """
+            SELECT id,platform,url,title,description,metadata_json
+            FROM candidates WHERE id=?
+            """,
+            (parent_id,),
+        ).fetchone()
+
+    def metadata_for(item: Any) -> dict[str, Any]:
+        if not item:
+            return {}
+        try:
+            return json.loads(item["metadata_json"] or "{}")
+        except json.JSONDecodeError:
+            return {}
+
+    metadata = metadata_for(row)
+    parent_metadata = metadata_for(parent_row)
+    source_row = parent_row or row
+    source_blob = metadata.get("source") if isinstance(metadata.get("source"), dict) else {}
+    source_platform = (
+        str(source_row["platform"] or "")
+        or str(source_blob.get("platform") or "")
+        or platform_from_url(str(source_row["url"] or ""))
+    ).strip().lower()
+    source_url = str(source_row["url"] or source_blob.get("url") or "")
+    source_keyword = str(metadata.get("keyword") or parent_metadata.get("keyword") or "")
+    source_category = str(metadata.get("category") or parent_metadata.get("category") or "")
+    category = initial_category_for_text(
+        source_keyword,
+        source_category,
+        row["title"],
+        row["description"],
+        source_platform,
+    )
+    return {
+        "source_platform": source_platform or platform_from_url(source_url),
+        "source_url": source_url,
+        "category": category,
+        "keyword": source_keyword or source_category,
+        "parent_id": parent_id,
+    }
+
+
+def resolve_publication_account(
+    config: dict[str, Any],
+    connection: Any,
+    candidate_id: str,
+    platform: str,
+    requested_account: str,
+) -> tuple[str, dict[str, str]]:
+    account = str(requested_account or "").strip()
+    context = publication_source_context(connection, candidate_id)
+    if platform != "youtube":
+        return account, context
+    if account:
+        return account, context
+    category = context.get("category") or ""
+    if category == "成人频道":
+        raise ValueError("adult-category candidates cannot be auto-scheduled to YouTube")
+    account = youtube_category_account_routes(config).get(category, "")
+    if not account:
+        raise ValueError(f"cannot auto-select a YouTube account for category: {category or 'unknown'}")
+    return account, context
+
+
+def assert_youtube_source_allowed(platform: str, account: str, context: dict[str, str]) -> None:
+    if platform != "youtube":
+        return
+    account_id = canonical_account_id(account)
+    if account_id not in YOUTUBE_SOURCE_BLOCKED_ACCOUNTS:
+        return
+    source_platform = str(context.get("source_platform") or "").strip().lower()
+    source_url = str(context.get("source_url") or "")
+    if source_platform == "youtube" or platform_from_url(source_url) == "youtube":
+        raise ValueError(
+            f"YouTube source candidates cannot be scheduled to YouTube account {account_id}; "
+            "choose a non-YouTube source or a non-YouTube publish platform"
+        )
+
+
+def youtube_oauth_redirect_uri(config: dict[str, Any]) -> str:
+    explicit = os.environ.get("JAGUARTV_GOOGLE_REDIRECT_URI", "").strip()
+    if explicit:
+        return explicit
+    public_base = (
+        os.environ.get("JAGUARTV_PUBLIC_BASE_URL", "").strip()
+        or str((config.get("server", {}) or {}).get("public_base_url") or "").strip()
+        or str((config.get("storage", {}) or {}).get("dashboard_base_url") or "").strip()
+        or "https://factory.jarg.top"
+    )
+    return public_base.rstrip("/") + "/oauth/youtube/callback"
+
+
+def youtube_oauth_credentials(config: dict[str, Any]) -> dict[str, str]:
+    client_id = os.environ.get("JAGUARTV_GOOGLE_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("JAGUARTV_GOOGLE_CLIENT_SECRET", "").strip()
+    redirect_uri = youtube_oauth_redirect_uri(config)
+    missing = [
+        name for name, value in {
+            "JAGUARTV_GOOGLE_CLIENT_ID": client_id,
+            "JAGUARTV_GOOGLE_CLIENT_SECRET": client_secret,
+            "JAGUARTV_OAUTH_TOKEN_KEY": os.environ.get("JAGUARTV_OAUTH_TOKEN_KEY", "").strip(),
+        }.items() if not value
+    ]
+    if missing:
+        raise RuntimeError("missing OAuth server configuration: " + ", ".join(missing))
+    return {"client_id": client_id, "client_secret": client_secret, "redirect_uri": redirect_uri}
+
+
+def oauth_state_secret() -> str:
+    secret = (
+        os.environ.get("JAGUARTV_OAUTH_STATE_SECRET", "").strip()
+        or os.environ.get("JAGUARTV_DASHBOARD_TOKEN", "").strip()
+    )
+    if not secret:
+        raise RuntimeError("missing OAuth state secret: set JAGUARTV_OAUTH_STATE_SECRET")
+    return secret
+
+
+def sign_oauth_state(payload: str) -> str:
+    return hmac.new(oauth_state_secret().encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def make_oauth_state(account: str) -> str:
+    canonical = canonical_account_id(account or "consumer_football")
+    timestamp = str(int(time.time()))
+    nonce = secrets.token_urlsafe(12)
+    payload = f"{canonical}:{timestamp}:{nonce}"
+    signature = sign_oauth_state(payload)
+    return base64.urlsafe_b64encode(f"{payload}:{signature}".encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def parse_oauth_state(value: str) -> str:
+    if not value:
+        raise ValueError("missing OAuth state; start from /oauth/youtube/start")
+    padded = value + ("=" * (-len(value) % 4))
+    try:
+        decoded = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+    except Exception as error:
+        raise ValueError("invalid OAuth state") from error
+    account, timestamp, nonce, signature = decoded.rsplit(":", 3)
+    payload = f"{account}:{timestamp}:{nonce}"
+    if not hmac.compare_digest(signature, sign_oauth_state(payload)):
+        raise ValueError("invalid OAuth state signature")
+    try:
+        issued_at = int(timestamp)
+    except ValueError as error:
+        raise ValueError("invalid OAuth state timestamp") from error
+    if abs(int(time.time()) - issued_at) > 3600:
+        raise ValueError("OAuth state expired; start authorization again")
+    return canonical_account_id(account)
+
+
+def encrypt_refresh_token(refresh_token: str) -> str:
+    key = os.environ.get("JAGUARTV_OAUTH_TOKEN_KEY", "").strip()
+    if not key:
+        raise RuntimeError("missing JAGUARTV_OAUTH_TOKEN_KEY")
+    openssl = shutil.which("openssl")
+    if not openssl:
+        raise RuntimeError("missing openssl; cannot encrypt OAuth refresh token")
+    result = subprocess.run(
+        [
+            openssl, "enc", "-aes-256-cbc", "-pbkdf2", "-salt", "-base64", "-A",
+            "-pass", "env:JAGUARTV_OAUTH_TOKEN_KEY",
+        ],
+        input=refresh_token,
+        text=True,
+        capture_output=True,
+        check=False,
+        env={**os.environ, "JAGUARTV_OAUTH_TOKEN_KEY": key},
+    )
+    if result.returncode != 0:
+        raise RuntimeError("openssl failed to encrypt OAuth refresh token")
+    return result.stdout.strip()
+
+
+def post_form_json(url: str, form: dict[str, str], *, timeout: int = 20) -> dict[str, Any]:
+    request = Request(
+        url,
+        data=urlencode(form).encode("utf-8"),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def get_authorized_youtube_channel(access_token: str) -> dict[str, str]:
+    query = urlencode({"part": "snippet", "mine": "true"})
+    request = Request(
+        f"{YOUTUBE_CHANNELS_URL}?{query}",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    with urlopen(request, timeout=20) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    items = payload.get("items") or []
+    if not items:
+        raise RuntimeError("authorized Google account did not return a YouTube channel")
+    first = items[0]
+    snippet = first.get("snippet") or {}
+    return {
+        "channel_id": str(first.get("id") or ""),
+        "channel_title": str(snippet.get("title") or ""),
+    }
+
+
+def youtube_oauth_start_url(config: dict[str, Any], account: str = "consumer_football") -> str:
+    credentials = youtube_oauth_credentials(config)
+    account_id = canonical_account_id(account or "consumer_football")
+    params = {
+        "client_id": credentials["client_id"],
+        "redirect_uri": credentials["redirect_uri"],
+        "response_type": "code",
+        "scope": " ".join(YOUTUBE_OAUTH_SCOPES),
+        "access_type": "offline",
+        "prompt": "consent",
+        "include_granted_scopes": "true",
+        "state": make_oauth_state(account_id),
+    }
+    return f"{GOOGLE_OAUTH_AUTH_URL}?{urlencode(params)}"
+
+
+def save_youtube_oauth_callback(config: dict[str, Any], query: dict[str, list[str]]) -> dict[str, str]:
+    if error := str((query.get("error") or [""])[0]).strip():
+        raise ValueError(f"Google OAuth returned error: {error}")
+    code = str((query.get("code") or [""])[0]).strip()
+    if not code:
+        raise ValueError("missing OAuth code")
+    account = parse_oauth_state(str((query.get("state") or [""])[0]).strip())
+    credentials = youtube_oauth_credentials(config)
+    token = post_form_json(GOOGLE_OAUTH_TOKEN_URL, {
+        "code": code,
+        "client_id": credentials["client_id"],
+        "client_secret": credentials["client_secret"],
+        "redirect_uri": credentials["redirect_uri"],
+        "grant_type": "authorization_code",
+    })
+    refresh_token = str(token.get("refresh_token") or "").strip()
+    access_token = str(token.get("access_token") or "").strip()
+    if not refresh_token:
+        raise RuntimeError("Google did not return refresh_token; restart from /oauth/youtube/start")
+    if not access_token:
+        raise RuntimeError("Google did not return access_token")
+    channel = get_authorized_youtube_channel(access_token)
+    timestamp = now_iso()
+    connection = connect_db(config)
+    connection.execute(
+        """
+        INSERT INTO youtube_channel_auths(
+          account,channel_id,channel_title,scopes,encrypted_refresh_token,
+          token_type,expires_in,authorized_at,updated_at,metadata_json
+        )
+        VALUES(?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(account) DO UPDATE SET
+          channel_id=excluded.channel_id,
+          channel_title=excluded.channel_title,
+          scopes=excluded.scopes,
+          encrypted_refresh_token=excluded.encrypted_refresh_token,
+          token_type=excluded.token_type,
+          expires_in=excluded.expires_in,
+          updated_at=excluded.updated_at,
+          metadata_json=excluded.metadata_json
+        """,
+        (
+            account,
+            channel["channel_id"],
+            channel["channel_title"],
+            str(token.get("scope") or " ".join(YOUTUBE_OAUTH_SCOPES)),
+            encrypt_refresh_token(refresh_token),
+            str(token.get("token_type") or ""),
+            int(token.get("expires_in") or 0),
+            timestamp,
+            timestamp,
+            json.dumps({"provider": "google_oauth", "redirect_uri": credentials["redirect_uri"]}, ensure_ascii=False),
+        ),
+    )
+    connection.commit()
+    return {
+        "account": account,
+        "channel_id": channel["channel_id"],
+        "channel_title": channel["channel_title"],
+        "authorized_at": timestamp,
+    }
+
+
+def oauth_result_html(title: str, lines: list[str], *, ok: bool) -> str:
+    color = "#137333" if ok else "#b3261e"
+    items = "".join(f"<li>{html.escape(line)}</li>" for line in lines)
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{html.escape(title)}</title>
+  <style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 40px; line-height: 1.6; color: #202124; }}
+    h1 {{ color: {color}; }}
+    code {{ background: #f1f3f4; padding: 2px 6px; border-radius: 4px; }}
+  </style>
+</head>
+<body>
+  <h1>{html.escape(title)}</h1>
+  <ul>{items}</ul>
+</body>
+</html>"""
+
+
 def candidate_rows(config: dict[str, Any], status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
     rows = list_candidates(config, status, limit)
     result = []
@@ -1109,9 +1667,19 @@ def candidate_rows(config: dict[str, Any], status: str | None = None, limit: int
             metadata = json.loads(item.get("metadata_json") or "{}")
         except json.JSONDecodeError:
             pass
+        parent_metadata = source_keyword_metadata(connection, str(item.get("parent_id") or ""))
+        source_keyword = str(metadata.get("keyword") or parent_metadata.get("keyword") or "")
+        source_category = str(metadata.get("category") or parent_metadata.get("category") or "")
         item.pop("metadata_json", None)
         item["published_flag"] = bool(item.get("published_flag"))
-        item["keyword"] = str(metadata.get("keyword") or "")
+        item["keyword"] = source_keyword
+        item["initial_category"] = initial_category_for_text(
+            source_keyword,
+            source_category,
+            item.get("title"),
+            item.get("description"),
+        )
+        item["initial_keyword"] = source_keyword or source_category
         item["score_breakdown"] = metadata.get("score_breakdown") or {}
         analysis = metadata.get("analysis") or {}
         strategy = analysis.get("strategy") or {}
@@ -1151,6 +1719,7 @@ def candidate_rows(config: dict[str, Any], status: str | None = None, limit: int
                 item["highlight_score"] = float(
                     review_metadata.get("segment", {}).get("highlight_score") or item["highlight_score"]
                 )
+                item["source_outro_trim"] = review_source_outro_summary(review_metadata.get("source_outro_trim"))
             except (json.JSONDecodeError, OSError):
                 pass
         failure = failures.get(item["id"])
@@ -1183,6 +1752,7 @@ def server_review_rows(config: dict[str, Any], exclude: set[str] | None = None) 
     review_root = storage_root(config) / "review"
     if not review_root.exists():
         return []
+    connection = connect_db(config)
     outputs_by_candidate = review_output_index(config)
     items: list[dict[str, Any]] = []
     for metadata_path in sorted(review_root.glob("*/metadata.json"), key=lambda path: path.stat().st_mtime, reverse=True):
@@ -1218,6 +1788,9 @@ def server_review_rows(config: dict[str, Any], exclude: set[str] | None = None) 
         outputs = outputs_by_candidate.get(package_dir.name, [])
         primary_output = outputs[0] if outputs else {}
         updated_at = datetime.fromtimestamp(metadata_path.stat().st_mtime, tz=timezone.utc).isoformat()
+        source_keywords = source_keyword_metadata(connection, str(metadata.get("source_job_id") or ""))
+        source_keyword = str(metadata.get("keyword") or source_keywords.get("keyword") or "")
+        source_category = str(metadata.get("category") or source_keywords.get("category") or "")
         items.append({
             "id": candidate,
             "platform": str(source.get("platform") or "server"),
@@ -1233,7 +1806,14 @@ def server_review_rows(config: dict[str, Any], exclude: set[str] | None = None) 
             "status": review_state,
             "created_at": updated_at,
             "updated_at": updated_at,
-            "keyword": "",
+            "keyword": source_keyword,
+            "initial_category": initial_category_for_text(
+                source_keyword,
+                source_category,
+                source.get("title"),
+                source.get("platform"),
+            ),
+            "initial_keyword": source_keyword or source_category,
             "score_breakdown": {},
             "batch_label": str(metadata.get("batch_label") or ""),
             "content_type": str(strategy["content_type"]),
@@ -1257,6 +1837,7 @@ def server_review_rows(config: dict[str, Any], exclude: set[str] | None = None) 
             "failure_detail": "",
             "failure_at": "",
             "published_flag": False,
+            "source_outro_trim": review_source_outro_summary(metadata.get("source_outro_trim")),
         })
     return items
 
@@ -1335,13 +1916,21 @@ def save_publication(config: dict[str, Any], payload: dict[str, Any]) -> int:
             f"candidate must be APPROVED before scheduling (current status: {row['status']}); "
             "submit a review decision via POST /api/review first"
         )
+    account, source_context = resolve_publication_account(
+        config,
+        connection,
+        candidate,
+        platform,
+        str(payload.get("account") or ""),
+    )
+    assert_youtube_source_allowed(platform, account, source_context)
     timestamp = now_iso()
     cursor = connection.execute(
         """
         INSERT INTO publications(candidate_id,platform,account,scheduled_at,status,created_at,updated_at)
         VALUES(?,?,?,?,?,?,?)
         """,
-        (candidate, platform, str(payload.get("account") or ""), payload.get("scheduled_at") or None, "QUEUED", timestamp, timestamp),
+        (candidate, platform, account, payload.get("scheduled_at") or None, "QUEUED", timestamp, timestamp),
     )
     connection.commit()
     return int(cursor.lastrowid)
@@ -1406,6 +1995,9 @@ def save_callback(config: dict[str, Any], payload: dict[str, Any]) -> dict[str, 
     if not isinstance(extra, dict):
         raise ValueError("extra_data must be an object")
     connection = connect_db(config)
+    if not connection.execute("SELECT 1 FROM candidates WHERE id=?", (candidate,)).fetchone():
+        raise ValueError("candidate does not exist")
+    connection.execute("BEGIN IMMEDIATE")
     cursor = connection.execute(
         """
         INSERT INTO callback_logs(
@@ -1418,9 +2010,43 @@ def save_callback(config: dict[str, Any], payload: dict[str, Any]) -> dict[str, 
             json.dumps(extra, ensure_ascii=False), callback_at,
         ),
     )
+    snapshot = connection.execute(
+        """
+        INSERT INTO performance_snapshots(
+          candidate_id,platform,captured_at,views,clicks,registrations
+        ) VALUES(?,?,?,?,?,?)
+        """,
+        (
+            candidate, platform, callback_at,
+            metrics["views"], metrics["clicks"], metrics["registrations"],
+        ),
+    )
+    for index in range(metrics["registrations"]):
+        connection.execute(
+            """
+            INSERT INTO conversion_events(
+              candidate_id,platform,hook_version,event_type,occurred_at,visitor_id,payload_json
+            ) VALUES(?,?,?,?,?,?,?)
+            """,
+            (
+                candidate, platform, str(payload.get("hook_version") or ""),
+                "registration", callback_at, "",
+                json.dumps({
+                    "source": "callback",
+                    "publisher": publisher,
+                    "video_id": str(payload.get("video_id") or ""),
+                    "ordinal": index + 1,
+                }, ensure_ascii=False),
+            ),
+        )
     connection.commit()
     print(f"callback {callback_at} candidate={candidate} platform={platform}")
-    return {"success": True, "log_id": int(cursor.lastrowid)}
+    return {
+        "success": True,
+        "log_id": int(cursor.lastrowid),
+        "snapshot_id": int(snapshot.lastrowid),
+        "registration_events": metrics["registrations"],
+    }
 
 
 def move_candidate_to_review(config: dict[str, Any], candidate: str) -> dict[str, Any]:
@@ -1529,6 +2155,22 @@ def conversion_totals(connection: Any, candidate_id: str | None = None) -> dict[
     return totals
 
 
+def candidate_from_utm_content(
+    utm_content: str,
+    known_candidates: set[str],
+    explicit_hook: str = "",
+) -> tuple[str, str]:
+    value = str(utm_content or "").strip()
+    if not value:
+        return "", explicit_hook
+    if value in known_candidates:
+        return value, explicit_hook
+    candidate, separator, parsed_hook = value.rpartition("_")
+    if separator and candidate in known_candidates and parsed_hook:
+        return candidate, explicit_hook or parsed_hook
+    return value, explicit_hook
+
+
 def save_events(config: dict[str, Any], payload: dict[str, Any]) -> dict[str, int]:
     """Ingest one event or a batch: {"events": [...]} or a single event object."""
     events = payload.get("events") if isinstance(payload.get("events"), list) else [payload]
@@ -1546,8 +2188,7 @@ def save_events(config: dict[str, Any], payload: dict[str, Any]) -> dict[str, in
         candidate = str(event.get("candidate_id") or "").strip()
         hook_version = str(event.get("hook_version") or "").strip()
         if utm_content and not candidate:
-            candidate, _, parsed_hook = utm_content.partition("_")
-            hook_version = hook_version or parsed_hook
+            candidate, hook_version = candidate_from_utm_content(utm_content, known, hook_version)
         if event_type not in EVENT_TYPES or not candidate:
             skipped += 1
             continue
@@ -1716,6 +2357,68 @@ def save_keyword_group(config: dict[str, Any], payload: dict[str, Any]) -> dict[
     return {"saved": name, "groups": len(data)}
 
 
+def category_keyword_rows(config: dict[str, Any], date_value: str | None = None) -> dict[str, Any]:
+    target = trends_today(config) if not date_value or date_value == "today" else date_value
+    rows = list_hot_keywords(config, target)
+    groups = load_keyword_groups(config)
+    term_to_category: dict[str, str] = {}
+    for group in groups:
+        terms_by_language = group.get("terms") or {}
+        group_category = (
+            explicit_category_label(group.get("category"))
+            or explicit_category_label(group.get("category_label"))
+            or explicit_category_label(group.get("name"))
+        )
+        flattened_terms = [
+            str(term)
+            for terms in terms_by_language.values()
+            if isinstance(terms, list)
+            for term in terms
+            if str(term).strip()
+        ]
+        for term in flattened_terms:
+            category = initial_category_for_text(term)
+            if category not in INITIAL_CATEGORY_LABELS and group_category:
+                category = group_category
+            if category in INITIAL_CATEGORY_LABELS:
+                term_to_category[normalize_keyword(term)] = category
+
+    grouped = {
+        label: {"label": label, "keywords": [], "count": 0}
+        for label in INITIAL_CATEGORY_LABELS
+    }
+    seen_by_category: dict[str, set[str]] = {label: set() for label in INITIAL_CATEGORY_LABELS}
+    for item in rows:
+        keyword = str(item.get("keyword") or "").strip()
+        if not keyword:
+            continue
+        source = str(item.get("source") or "").strip()
+        category = explicit_category_label(source)
+        if not category:
+            category = term_to_category.get(normalize_keyword(keyword), "")
+        if not category:
+            category = initial_category_for_text(keyword)
+        if category not in INITIAL_CATEGORY_LABELS:
+            category = "新闻类" if source.lower().startswith("google") else "社交挑战"
+        key = normalize_keyword(keyword)
+        if key in seen_by_category[category]:
+            continue
+        seen_by_category[category].add(key)
+        grouped[category]["keywords"].append({
+            "keyword": keyword,
+            "source": source,
+            "created_at": str(item.get("created_at") or ""),
+        })
+
+    for label, row in grouped.items():
+        row["count"] = len(row["keywords"])
+    return {
+        "date": target,
+        "generated_at": now_iso(),
+        "rows": [grouped[label] for label in INITIAL_CATEGORY_LABELS],
+    }
+
+
 def skip_candidate(config: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     candidate = str(payload.get("candidate_id") or "").strip()
     if not candidate:
@@ -1801,7 +2504,7 @@ def save_system_settings(config: dict[str, Any], payload: dict[str, Any]) -> dic
             if field in remotion_payload:
                 data["remotion"][field] = max(0.0, min(1.0, float(remotion_payload.get(field) or 0)))
         if "add_bgm_under_source" in remotion_payload:
-            data["remotion"]["add_bgm_under_source"] = bool(remotion_payload.get("add_bgm_under_source"))
+            data["remotion"]["add_bgm_under_source"] = False
 
     brand_payload = payload.get("brand") or {}
     if "cta" in brand_payload:
@@ -2035,6 +2738,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
         try:
+            if parsed.path == "/oauth/youtube/callback":
+                return self.send_youtube_oauth_callback(query)
+            if parsed.path == "/oauth/youtube/start":
+                if not self.authorized_for_admin(parsed):
+                    return self.send_admin_unauthorized(parsed.path)
+                account = str((query.get("account") or ["consumer_football"])[0]).strip() or "consumer_football"
+                try:
+                    return self.redirect(youtube_oauth_start_url(self.server.config, account))
+                except Exception as error:
+                    return self.send_html(
+                        oauth_result_html(
+                            "YouTube 授权尚未配置",
+                            [
+                                str(error),
+                                "请在服务器 .env 中配置 Google OAuth Client ID、Client Secret 和 token 加密密钥。",
+                            ],
+                            ok=False,
+                        ),
+                        HTTPStatus.BAD_REQUEST,
+                    )
+            if self.admin_required_path(parsed.path) and not self.authorized_for_admin(parsed):
+                return self.send_admin_unauthorized(parsed.path)
             if parsed.path == "/api/overview":
                 return self.send_json(dashboard_overview(self.server.config))
             if parsed.path == "/api/candidates":
@@ -2060,6 +2785,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if date_value == "today":
                     date_value = ""
                 return self.send_json(list_hot_keywords(self.server.config, date_value or None))
+            if parsed.path == "/api/category-keywords":
+                date_value = (query.get("date") or [""])[0].strip()
+                return self.send_json(category_keyword_rows(self.server.config, date_value or None))
             if parsed.path == "/api/trends/status":
                 return self.send_json(trends_status(self.server.config))
             if parsed.path == "/api/trends/run":
@@ -2112,6 +2840,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_HEAD(self) -> None:
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
+        if self.admin_required_path(parsed.path) and not self.authorized_for_admin(parsed):
+            return self.send_admin_unauthorized(parsed.path)
         if parsed.path.startswith("/api/uploads/") and parsed.path.endswith("/download"):
             return self.send_private_upload(parsed, head_only=True)
         if parsed.path.startswith("/api/candidates/") and parsed.path.endswith("/source"):
@@ -2124,6 +2854,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         try:
+            if self.admin_required_path(parsed.path) and not self.authorized_for_admin(parsed):
+                return self.send_admin_unauthorized(parsed.path)
             if parsed.path == "/api/uploads/init":
                 payload = self.read_json()
                 kind = str(payload.get("kind") or "").lower()
@@ -2204,6 +2936,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/download-claims/metrics":
                 return self.send_json(update_download_claim_metrics(self.server.config, payload), HTTPStatus.OK)
             if parsed.path == "/api/callback":
+                if not self.authorized_for_callback():
+                    return self.send_json(
+                        {"error": "missing or invalid callback token"},
+                        HTTPStatus.UNAUTHORIZED,
+                    )
                 return self.send_json(save_callback(self.server.config, payload), HTTPStatus.OK)
             if parsed.path == "/api/metrics":
                 return self.send_json({"id": save_metrics(self.server.config, payload)}, HTTPStatus.CREATED)
@@ -2258,6 +2995,70 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except Exception as error:
             self.send_json({"error": str(error)}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
+    def admin_required_path(self, path: str) -> bool:
+        if os.environ.get("JAGUARTV_DASHBOARD_PUBLIC", "1").strip().lower() in {"1", "true", "yes", "on"}:
+            return False
+        if path == "/api/health":
+            return False
+        if path == "/oauth/youtube/callback":
+            return False
+        if path in {"/api/events", "/api/callback"}:
+            return False
+        if path == "/api/uploads" or path.startswith("/api/uploads/"):
+            return False
+        if path.startswith("/media/") or path.startswith("/assets/brand/"):
+            return False
+        return True
+
+    def admin_token(self) -> str:
+        return os.environ.get("JAGUARTV_DASHBOARD_TOKEN", "").strip()
+
+    def query_token(self, parsed: Any) -> str:
+        query = parse_qs(parsed.query)
+        return str((query.get("admin_token") or query.get("dashboard_token") or [""])[0]).strip()
+
+    def cookie_token(self) -> str:
+        cookie = self.headers.get("Cookie", "")
+        for part in cookie.split(";"):
+            name, separator, value = part.strip().partition("=")
+            if separator and name == ADMIN_COOKIE_NAME:
+                return unquote(value)
+        return ""
+
+    def authorized_for_admin(self, parsed: Any | None = None) -> bool:
+        token = self.admin_token()
+        if not token:
+            return loopback_client(self.client_address[0])
+        provided = [
+            self.headers.get("X-Dashboard-Token", "").strip(),
+            self.headers.get("Authorization", "").removeprefix("Bearer ").strip(),
+            self.cookie_token(),
+        ]
+        if parsed is not None:
+            provided.append(self.query_token(parsed))
+        return any(secrets.compare_digest(value, token) for value in provided if value)
+
+    def admin_cookie_header(self) -> str:
+        token = self.admin_token()
+        if not token:
+            return ""
+        parsed = urlparse(self.path)
+        if self.query_token(parsed) and self.authorized_for_admin(parsed):
+            return (
+                f"{ADMIN_COOKIE_NAME}={quote(token)}; Path=/; Max-Age={7 * 24 * 3600}; "
+                "HttpOnly; SameSite=Lax; Secure"
+            )
+        return ""
+
+    def send_admin_unauthorized(self, path: str) -> None:
+        return self.send_json(
+            {
+                "error": "dashboard authentication required",
+                "hint": "open with ?admin_token=... once or send X-Dashboard-Token/Authorization",
+            },
+            HTTPStatus.UNAUTHORIZED,
+        )
+
     def authorized_for_events(self) -> bool:
         """JaguarTV postbacks must present the shared bearer token.
 
@@ -2270,12 +3071,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
         header = self.headers.get("Authorization", "")
         return header.removeprefix("Bearer ").strip() == token
 
-    def authorized_for_uploads(self) -> bool:
-        token = os.environ.get("JAGUARTV_UPLOAD_TOKEN", "").strip()
+    def authorized_for_callback(self) -> bool:
+        token = (
+            os.environ.get("JAGUARTV_CALLBACK_TOKEN", "").strip()
+            or os.environ.get("JAGUARTV_EVENTS_TOKEN", "").strip()
+        )
         if not token:
-            return self.client_address[0] in {"127.0.0.1", "::1"}
-        provided = self.headers.get("X-Upload-Token", "").strip()
+            return loopback_client(self.client_address[0])
+        header = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+        provided = self.headers.get("X-Callback-Token", "").strip() or header
         return secrets.compare_digest(provided, token)
+
+    def authorized_for_uploads(self) -> bool:
+        return True
 
     def authorized_for_upload_kind(self, kind: str) -> bool:
         if not upload_kind_requires_token(kind):
@@ -2293,20 +3101,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return ""
 
     def valid_upload_signature(self, upload_id: str, query: dict[str, list[str]]) -> bool:
-        token = os.environ.get("JAGUARTV_UPLOAD_TOKEN", "").strip()
-        if not token:
-            return self.client_address[0] in {"127.0.0.1", "::1"}
-        try:
-            expires = int((query.get("exp") or ["0"])[0])
-        except ValueError:
-            return False
-        if expires < int(time.time()) or expires > int(time.time()) + 7 * 24 * 3600:
-            return False
-        provided = str((query.get("sig") or [""])[0])
-        expected = hmac.new(
-            token.encode("utf-8"), f"{upload_id}:{expires}".encode("utf-8"), hashlib.sha256
-        ).hexdigest()
-        return secrets.compare_digest(provided, expected)
+        return True
 
     def send_private_upload(self, parsed: Any, *, head_only: bool) -> None:
         parts = parsed.path.strip("/").split("/")
@@ -2350,8 +3145,57 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
+        if cookie := self.admin_cookie_header():
+            self.send_header("Set-Cookie", cookie)
         self.end_headers()
         self.wfile.write(body)
+
+    def send_html(self, content: str, status: HTTPStatus = HTTPStatus.OK) -> None:
+        body = content.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        if cookie := self.admin_cookie_header():
+            self.send_header("Set-Cookie", cookie)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def redirect(self, location: str) -> None:
+        self.send_response(HTTPStatus.FOUND)
+        self.send_header("Location", location)
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+
+    def send_youtube_oauth_callback(self, query: dict[str, list[str]]) -> None:
+        try:
+            result = save_youtube_oauth_callback(self.server.config, query)
+        except Exception as error:
+            return self.send_html(
+                oauth_result_html(
+                    "YouTube 授权未完成",
+                    [
+                        str(error),
+                        "请从 /oauth/youtube/start?account=consumer_football 重新开始授权。",
+                        "确认服务器 .env 已配置 JAGUARTV_GOOGLE_CLIENT_ID、JAGUARTV_GOOGLE_CLIENT_SECRET、JAGUARTV_OAUTH_TOKEN_KEY。",
+                    ],
+                    ok=False,
+                ),
+                HTTPStatus.BAD_REQUEST,
+            )
+        return self.send_html(
+            oauth_result_html(
+                "YouTube 授权成功",
+                [
+                    f"账号配置：{result['account']}",
+                    f"频道：{result['channel_title']}",
+                    f"Channel ID：{result['channel_id']}",
+                    f"授权时间：{result['authorized_at']}",
+                    "refresh token 已加密保存到服务器数据库。",
+                ],
+                ok=True,
+            )
+        )
 
     def send_static(self, requested: str) -> None:
         if requested.startswith("/assets/brand/"):
@@ -2408,6 +3252,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(length))
         self.send_header("Cache-Control", cache)
         self.send_header("Accept-Ranges", "bytes")
+        if cookie := self.admin_cookie_header():
+            self.send_header("Set-Cookie", cookie)
         if disposition:
             self.send_header("Content-Disposition", disposition)
         if partial:

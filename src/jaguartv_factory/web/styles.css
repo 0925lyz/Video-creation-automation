@@ -168,6 +168,14 @@ input:focus, select:focus { border-color: var(--green); box-shadow: 0 0 0 2px rg
 .hot-keyword strong { font-size: 13px; }
 .hot-keyword small { color: var(--muted); font-size: 10px; text-transform: uppercase; }
 .hot-keyword:hover { border-color: var(--green); box-shadow: 0 6px 18px rgba(39, 178, 125, .12); }
+.daily-category-section { margin: 8px 0 24px; }
+.category-keyword-table-wrap { max-height: 390px; }
+.category-keyword-table-wrap td:first-child { width: 190px; }
+.category-keyword-chips { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.category-keyword-chip { display: inline-grid; gap: 2px; max-width: 240px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--ink); text-align: left; cursor: pointer; }
+.category-keyword-chip strong { overflow: hidden; font-size: 12px; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
+.category-keyword-chip small { overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
+.category-keyword-chip:hover { border-color: var(--green); box-shadow: 0 6px 16px rgba(39, 178, 125, .1); }
 .empty-state { min-height: 150px; display: grid; place-items: center; color: #8c9491; text-align: center; line-height: 1.6; }
 .metrics-band { margin-top: 34px; }
 

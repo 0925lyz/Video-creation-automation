@@ -8,7 +8,6 @@
 
 - 内容分类：足球、体育集锦、舞蹈音乐、搞笑生活、动画少儿、肥皂剧、解说、未知。
 - 智能切片：音频峰值 35% + 运动 25% + 镜头变化 20% + 关键词 15% + 回放 5%。
-- 源尾段清理：只在静态尾段同时命中宣传文字或二维码等强证据时自动裁剪，并保存审核证据；平台角标本身不会触发。
 - Reaction：画中画、上下分屏、左右分屏；Reaction 不覆盖品牌尾卡。
 - 音频策略：源音 + Funk、源音乐优先、仅 Funk、保留葡语、葡语配音字幕、BGM only。
 - 人工审核交接：系统记录权利状态和风险等级，不在制作前自动阻断；内部人员在服务器审核页确认授权与发布范围。
@@ -23,17 +22,6 @@
 ```
 
 打开 `http://127.0.0.1:8787/`。
-
-## 外部能力集成
-
-第三方仓库按固定提交检出到不进入 Git 的 `workspace/external_tools/`，主仓库保留适配器、版本清单、许可证说明和统一工作流入口：
-
-```bash
-.venv/bin/jaguartv integrations
-./scripts/install-external-integrations.sh --name mediacrawler
-```
-
-MediaCrawler 结果通过 `ingest-mediacrawler` 入库；抖音和小红书服务通过配置的 HTTP 端点接入；PaddleOCR 和 pyvideotrans 作为可选后端。完整版本和许可证边界见 [外部仓库与 Skill 集成](docs/INTEGRATIONS.md)。
 
 ## CLI 工作流
 
@@ -122,6 +110,12 @@ Content-Type: application/json
 }
 ```
 
+今日巴西热词接口：
+
+```text
+GET /api/hot-keywords?date=today
+```
+
 ## 腾讯云部署
 
 - 首次安装：`scripts/server-install.sh`
@@ -134,13 +128,10 @@ Content-Type: application/json
 
 首次安装会生成 `JAGUARTV_EVENTS_TOKEN` 和 `JAGUARTV_UPLOAD_TOKEN`，只写入服务器 `.env`，不进入 Git。
 
-代码、数据库结构/迁移、配置、示例记录和品牌资产进入仓库；运行数据库、视频、Cookie、登录会话、令牌以及第三方源码检出保留在 `workspace/` 或 `.env`，不会上传到 GitHub。
-
 ## 文档
 
 - [产品需求文档](docs/JaguarTV_vNEXT_产品需求文档.md)
 - [双工具评估与融合实施报告](docs/双工具评估与融合实施报告.md)
-- [外部仓库与 Skill 集成](docs/INTEGRATIONS.md)
 - [WorkBuddy 执行总指令](prompts/WORKBUDDY_VNEXT_SYSTEM_PROMPT.md)
 
 ## 合规边界

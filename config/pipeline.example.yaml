@@ -17,17 +17,6 @@ selection:
   min_height: 720
   duplicate_threshold: 0.90
 
-source_outro_trim:
-  enabled: true
-  scan_tail_sec: 15
-  min_trim_sec: 2
-  max_trim_sec: 12
-  min_confidence: 0.72
-  preserve_if_unsure: true
-  ocr_enabled: true
-  audio_guard_enabled: true
-  save_evidence_frames: true
-
 edit:
   render_engine: ffmpeg
   output_duration_sec: [20, 60]
@@ -43,7 +32,7 @@ localization:
   target: pt-BR
   asr_enabled: false
   whisper_model: tiny
-  voice_enabled: false
+  voice_enabled: true
   tts_provider: auto
   edge_tts_voice: pt-BR-AntonioNeural
   preserve_backing_track: false

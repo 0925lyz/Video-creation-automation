@@ -6,6 +6,7 @@ import shutil
 import sys
 from pathlib import Path
 
+from .pyvideotrans_adapter import pyvideotrans_available
 from .core import (
     analyze_candidate,
     discover,
@@ -17,9 +18,7 @@ from .core import (
     produce_top,
     require_binary,
 )
-from .integrations import integration_status, load_integration_manifest, sync_integrations
 from .mediacrawler import ingest_mediacrawler_jsonl
-from .pyvideotrans_adapter import pyvideotrans_available
 from .reaction import REACTION_MODES
 from .server_store import save_upload
 from .strategy import AUDIO_POLICIES, CONTENT_TYPES, SEGMENT_STRATEGIES
@@ -29,9 +28,7 @@ def print_json(value: object) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2, default=str))
 
 
-def doctor(config_path: Path = Path("config/pipeline.yaml")) -> int:
-    config_path = config_path.expanduser().resolve()
-    project_root = config_path.parent.parent
+def doctor() -> int:
     environment_bin = Path(sys.executable).parent
     checks = {"python3": shutil.which("python3") or str(sys.executable)}
     for name in ("yt-dlp", "ffmpeg", "ffprobe"):
@@ -46,7 +43,7 @@ def doctor(config_path: Path = Path("config/pipeline.yaml")) -> int:
     except ImportError:
         checks["paddleocr"] = False
     try:
-        checks["pyvideotrans"] = pyvideotrans_available(load_config(config_path))[1]
+        checks["pyvideotrans"] = pyvideotrans_available(load_config(Path("config/pipeline.yaml")))[1]
     except Exception as error:
         checks["pyvideotrans"] = f"unavailable:{error}"
     try:
@@ -63,16 +60,23 @@ def doctor(config_path: Path = Path("config/pipeline.yaml")) -> int:
         "bilibili-video-crawler", "bilibili-downloader-plus", "yt-dlp-downloader",
         "eye-yt-dlp", "bilibili-video-parser", "all-translate", "nologo-open-api",
         "tencentcloud-tts", "apify-ultimate-scraper", "openclaw-video-editor",
-        "wavespeed-watermark-remover", "tencent-mps", "speech-recognition",
+        "wavespeed-watermark-remover", "tencent-mps", "google-trends", "speech-recognition",
     )
     checks["skillhub_skills"] = {
         name: (codex_home / "skills" / name / "SKILL.md").exists() for name in skill_names
     }
-    try:
-        integration_manifest = load_integration_manifest(project_root / "config" / "integrations.yaml")
-        checks["external_integrations"] = integration_status(project_root, integration_manifest)
-    except Exception as error:
-        checks["external_integrations"] = f"unavailable:{error}"
+    checks["mediacrawler_repo"] = next(
+        (
+            str(path) for path in (
+                Path.cwd().parent / "MediaCrawler",
+                Path.cwd() / "MediaCrawler",
+                Path.home() / "MediaCrawler",
+                Path("/opt/MediaCrawler"),
+            )
+            if (path / ".git").exists()
+        ),
+        "",
+    )
     checks["ready"] = all(checks[name] for name in ("python3", "yt-dlp", "ffmpeg", "ffprobe")) and (
         bool(checks["edge_tts"]) or bool(tts)
     )
@@ -113,11 +117,6 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("doctor")
-
-    integrations_parser = subparsers.add_parser("integrations")
-    integrations_parser.add_argument("--manifest", default="config/integrations.yaml")
-    integrations_parser.add_argument("--sync", action="store_true")
-    integrations_parser.add_argument("--name", action="append", help="Limit the operation to one integration name.")
 
     discover_parser = subparsers.add_parser("discover")
     discover_parser.add_argument("--platform", action="append", choices=["youtube", "bilibili", "douyin", "xiaohongshu", "tiktok", "facebook"])
@@ -170,19 +169,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "doctor":
-        return doctor(Path(args.config))
-    if args.command == "integrations":
-        config_path = Path(args.config).expanduser().resolve()
-        project_root = config_path.parent.parent
-        manifest_path = Path(args.manifest).expanduser()
-        if not manifest_path.is_absolute():
-            manifest_path = project_root / manifest_path
-        manifest = load_integration_manifest(manifest_path)
-        if args.sync:
-            print_json(sync_integrations(project_root, manifest, args.name))
-        else:
-            print_json(integration_status(project_root, manifest, args.name))
-        return 0
+        return doctor()
     config = load_config(Path(args.config))
     if args.command == "discover":
         print_json(discover(config, platforms=args.platform, limit=args.limit, keyword_overrides=args.keyword))

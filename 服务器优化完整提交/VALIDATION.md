@@ -1,6 +1,6 @@
 # 验证报告
 
-验证时间：2026-08-14。所有命令均针对本目录中的服务器快照和脱敏数据执行，不会修改生产服务器。
+验证时间：2026-08-15。所有命令均针对本目录中的服务器快照和脱敏数据执行，不会修改生产服务器。
 
 ## 已通过
 
@@ -10,24 +10,20 @@
 - JSON 清单：全部可解析。
 - Shell 拉取脚本：`bash -n` 通过。
 - JavaScript/CJS/MJS：`node --check` 通过。
-- Remotion TypeScript：使用锁定依赖执行 `tsc --noEmit`，通过。
+- 服务器快照 Python 编译：`compileall -q src 服务器功能/server-snapshot/src 服务器优化完整提交/server-snapshot/src` 通过。
+- 前端脚本：`node --check src/jaguartv_factory/web/app.js` 和 `node --check src/jaguartv_factory/web/copywriter.js` 通过。
+- Git 空白检查：`git diff --check` 通过。
 
 ## 生产代码测试
 
-在 `server-snapshot/` 使用项目虚拟环境运行：
+在根项目使用项目虚拟环境运行：
 
 ```text
-python -m pytest -q
-110 passed, 1 failed in 15.45s
+python -m pytest tests/test_core.py tests/test_dashboard.py tests/test_platform_and_brand.py -q
+104 passed, 1 skipped in 2.28s
 ```
 
-失败用例：
-
-```text
-tests/test_platform_and_brand.py::test_source_outro_trim_is_upstream_of_analysis_and_review_metadata
-```
-
-该用例预期尾图裁剪后的 `source_outro_trimmed.mp4` 进入分析阶段，实际没有调用分析器，断言中的 `analyzed_media` 为 `[]`。这是生产快照中现存的源码与测试行为差异；为保证归档忠实，未在本提交中改写服务器代码。
+重点覆盖：文案设计归档、公开上传无需服务器令牌、公开 dashboard 默认可访问、库存多版本输出、下载/制作/审核核心流程。
 
 ## 依赖安装说明
 

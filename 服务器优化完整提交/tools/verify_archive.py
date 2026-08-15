@@ -21,6 +21,7 @@ SECRET_PATTERNS = [
     re.compile(r"(?:api[_-]?key|secret|password|authorization)\s*[:=]\s*[\"']?[A-Za-z0-9_./+=-]{20,}", re.IGNORECASE),
     re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
 ]
+SECRET_REFERENCE_PATTERN = re.compile(r"credential_ref\s*:\s*secret://", re.IGNORECASE)
 IGNORED_DIRECTORY_NAMES = {
     ".git",
     ".pytest_cache",
@@ -52,7 +53,11 @@ def main() -> None:
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
         for pattern in SECRET_PATTERNS:
-            if pattern.search(text):
+            filtered_text = "\n".join(
+                line for line in text.splitlines()
+                if not SECRET_REFERENCE_PATTERN.search(line)
+            )
+            if pattern.search(filtered_text):
                 problems.append(f"possible secret in {relative}: {pattern.pattern}")
 
     database = archive / "data" / "factory.sanitized.db"

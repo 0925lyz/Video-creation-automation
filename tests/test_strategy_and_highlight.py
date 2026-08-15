@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from jaguartv_factory.compliance import assert_render_allowed
-from jaguartv_factory.highlight import SignalPoint, TranscriptCue, parse_srt, rank_highlight_windows
+from jaguartv_factory.highlight import SignalPoint, TranscriptCue, analyze_video, parse_srt, rank_highlight_windows
 from jaguartv_factory.strategy import classify_content, render_audio_mode, resolve_production_strategy
 
 
@@ -55,6 +55,28 @@ def test_highlight_ranking_uses_audio_motion_scene_keyword_and_replay():
         right_start, right_end = segments[1]["source_start"], segments[1]["source_end"]
         overlap = max(0, min(left_end, right_end) - max(left_start, right_start))
         assert overlap <= 7.5
+
+
+def test_long_video_analysis_uses_uniform_guard(monkeypatch, tmp_path: Path):
+    media = tmp_path / "long.mp4"
+    media.write_bytes(b"placeholder")
+
+    def fail_signal_sampling(*args, **kwargs):
+        raise AssertionError("long sources should not load full signal streams")
+
+    monkeypatch.setattr("jaguartv_factory.highlight.sample_audio_envelope", fail_signal_sampling)
+    monkeypatch.setattr("jaguartv_factory.highlight.sample_motion_intensity", fail_signal_sampling)
+    segments = analyze_video(
+        media,
+        source_duration=1800,
+        max_segments=3,
+        max_duration=30,
+        strategy="sports_highlight",
+    )
+
+    assert len(segments) == 3
+    assert all(segment["fallback"] for segment in segments)
+    assert all(segment["strategy"] == "sports_highlight_long_source_guard" for segment in segments)
 
 
 def test_parse_srt_accepts_youtube_vtt_timing_settings(tmp_path: Path):

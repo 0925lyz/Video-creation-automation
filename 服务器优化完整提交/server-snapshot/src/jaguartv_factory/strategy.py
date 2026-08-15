@@ -209,5 +209,5 @@ def render_audio_mode(audio_policy: str) -> str:
     if audio_policy == "localize_ptbr":
         return "localized"
     if audio_policy in {"funk_only", "bgm_only"}:
-        return "bgm_only"
+        return "silent"
     return "preserve_source"

@@ -6,6 +6,7 @@ import shutil
 import sys
 from pathlib import Path
 
+from .pyvideotrans_adapter import pyvideotrans_available
 from .core import (
     analyze_candidate,
     discover,
@@ -36,6 +37,15 @@ def doctor() -> int:
         except Exception:
             checks[name] = shutil.which(name) or (str(environment_bin / name) if (environment_bin / name).is_file() else None)
     checks["tesseract"] = shutil.which("tesseract")
+    try:
+        from paddleocr import PaddleOCR  # noqa: F401
+        checks["paddleocr"] = True
+    except ImportError:
+        checks["paddleocr"] = False
+    try:
+        checks["pyvideotrans"] = pyvideotrans_available(load_config(Path("config/pipeline.yaml")))[1]
+    except Exception as error:
+        checks["pyvideotrans"] = f"unavailable:{error}"
     try:
         import edge_tts  # noqa: F401
         checks["edge_tts"] = True

@@ -144,8 +144,65 @@ def _subtitle_band_regions(regions: Sequence[Sequence[float]]) -> list[list[floa
     return sorted(bands, key=lambda item: (item[1], item[0]))[:3]
 
 
-def detect_chinese_text_regions(
-    media: Path, *, confidence: float = 40.0, sample_count: int | None = None, sample_fps: float = 2.0
+def _paddleocr_frame_regions(
+    frame: Path, *, confidence: float
+) -> list[tuple[float, float, float, float]]:
+    try:
+        from paddleocr import PaddleOCR
+    except ImportError as error:
+        raise RuntimeError("paddleocr is not installed") from error
+
+    ocr = PaddleOCR(use_angle_cls=True, lang="ch")
+    with Image.open(frame) as image:
+        width, height = image.size
+    try:
+        result = ocr.predict(str(frame))
+    except AttributeError:
+        result = ocr.ocr(str(frame), cls=True)
+    except TypeError:
+        result = ocr.ocr(str(frame), cls=True)
+
+    regions: list[tuple[float, float, float, float]] = []
+    payloads = result if isinstance(result, list) else [result]
+    for payload in payloads:
+        if isinstance(payload, dict):
+            boxes = payload.get("rec_boxes") or payload.get("dt_polys") or []
+            texts = payload.get("rec_texts") or []
+            scores = payload.get("rec_scores") or []
+            for index, box in enumerate(boxes):
+                text = str(texts[index] if index < len(texts) else "").strip()
+                score = float(scores[index] if index < len(scores) else 1.0)
+                if score < confidence or not re.search(r"[\u4e00-\u9fff]", text):
+                    continue
+                if len(box) == 4 and all(isinstance(value, (int, float)) for value in box):
+                    left, top, right, bottom = [float(value) for value in box]
+                    x, y, w, h = left / width, top / height, (right - left) / width, (bottom - top) / height
+                else:
+                    xs = [float(point[0]) for point in box]
+                    ys = [float(point[1]) for point in box]
+                    x, y = min(xs) / width, min(ys) / height
+                    w, h = (max(xs) - min(xs)) / width, (max(ys) - min(ys)) / height
+                if not _is_protected_corner(x, y, w, h):
+                    regions.append((x, y, x + w, y + h))
+            continue
+        for line in payload or []:
+            try:
+                box, (text, score) = line
+            except (TypeError, ValueError):
+                continue
+            if float(score) < confidence or not re.search(r"[\u4e00-\u9fff]", str(text)):
+                continue
+            xs = [float(point[0]) for point in box]
+            ys = [float(point[1]) for point in box]
+            x, y = min(xs) / width, min(ys) / height
+            w, h = (max(xs) - min(xs)) / width, (max(ys) - min(ys)) / height
+            if not _is_protected_corner(x, y, w, h):
+                regions.append((x, y, x + w, y + h))
+    return regions
+
+
+def _detect_chinese_text_regions_tesseract(
+    media: Path, *, confidence: float, sample_count: int | None, sample_fps: float
 ) -> list[list[float]]:
     if not shutil.which("tesseract"):
         raise RuntimeError("tesseract is not installed")
@@ -183,6 +240,46 @@ def detect_chinese_text_regions(
                 x, y, w, h = normalized
                 regions.append((x, y, x + w, y + h))
     return _subtitle_band_regions(_merge_regions(regions))
+
+
+def _detect_chinese_text_regions_paddleocr(
+    media: Path, *, confidence: float, sample_count: int | None, sample_fps: float
+) -> list[list[float]]:
+    if sample_count is None:
+        duration = _probe_duration(media)
+        sample_count = max(8, min(120, int(max(duration, 4.0) * sample_fps)))
+    regions: list[tuple[float, float, float, float]] = []
+    with tempfile.TemporaryDirectory(prefix="jaguartv-paddleocr-") as temporary:
+        for frame in _sample_frames(media, Path(temporary), sample_count, fps=sample_fps):
+            regions.extend(_paddleocr_frame_regions(frame, confidence=confidence / 100.0))
+    return _subtitle_band_regions(_merge_regions(regions))
+
+
+def detect_chinese_text_regions(
+    media: Path,
+    *,
+    confidence: float = 40.0,
+    sample_count: int | None = None,
+    sample_fps: float = 2.0,
+    backend: str = "tesseract",
+) -> list[list[float]]:
+    backend = backend.strip().lower()
+    if backend in {"paddleocr", "paddle"}:
+        return _detect_chinese_text_regions_paddleocr(
+            media, confidence=confidence, sample_count=sample_count, sample_fps=sample_fps
+        )
+    if backend in {"tesseract", "auto"}:
+        try:
+            return _detect_chinese_text_regions_tesseract(
+                media, confidence=confidence, sample_count=sample_count, sample_fps=sample_fps
+            )
+        except RuntimeError:
+            if backend == "auto":
+                return _detect_chinese_text_regions_paddleocr(
+                    media, confidence=confidence, sample_count=sample_count, sample_fps=sample_fps
+                )
+            raise
+    raise RuntimeError("edit.ocr_backend must be tesseract, paddleocr, or auto")
 
 
 def blur_static_regions(
@@ -224,6 +321,7 @@ def prepare_ocr_blurred_segment(
     duration: float,
     sigma: int = 28,
     fallback_regions: Sequence[Sequence[float]] | None = None,
+    backend: str = "tesseract",
 ) -> dict[str, Any]:
     output.parent.mkdir(parents=True, exist_ok=True)
     extracted = output.with_name(f"{output.stem}_source.mp4")
@@ -235,7 +333,7 @@ def prepare_ocr_blurred_segment(
     if result.returncode != 0:
         raise RuntimeError("segment extraction failed:\n" + result.stderr[-4000:])
     try:
-        regions = detect_chinese_text_regions(extracted)
+        regions = detect_chinese_text_regions(extracted, backend=backend)
     except RuntimeError as error:
         regions = [list(region) for region in (fallback_regions or [])]
         if regions:

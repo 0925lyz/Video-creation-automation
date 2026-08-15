@@ -10,17 +10,15 @@ Operate the shared project through `scripts/factory.sh`. Keep source discovery, 
 ## Workflow
 
 1. Run `scripts/factory.sh doctor` before a new environment or after dependency changes.
-2. Run `scripts/factory.sh integrations` to inspect pinned external tools. Use `scripts/factory.sh integrations --sync --name <name>` only when that adapter is needed.
-3. Run `scripts/factory.sh discover --platform youtube --limit 3` to collect candidates. Add other implemented adapters only after `doctor` confirms availability.
-4. Route results from optional discovery/download Skills through `ingest`, `ingest-mediacrawler`, or `upload`; do not create a second task database.
-5. Inspect candidates with `scripts/factory.sh list --status DISCOVERED --limit 20`.
-6. Download a selected candidate with `scripts/factory.sh download --candidate <id>`.
-7. Produce a review package with `scripts/factory.sh produce --candidate <id>`.
-8. Generate the review index with `scripts/factory.sh review`.
-9. Treat `workspace/ready_for_review/<id>/` as the handoff boundary for human review.
-10. Run `scripts/factory.sh ui --host 127.0.0.1 --port 8787` for the standalone inventory, publishing, analytics, and worker dashboard. This UI does not depend on WorkBuddy.
+2. Run `scripts/factory.sh discover --platform youtube --limit 3` to collect candidates. Add other implemented adapters only after `doctor` confirms availability.
+3. Inspect candidates with `scripts/factory.sh list --status DISCOVERED --limit 20`.
+4. Download a selected candidate with `scripts/factory.sh download --candidate <id>`.
+5. Produce a review package with `scripts/factory.sh produce --candidate <id>`.
+6. Generate the review index with `scripts/factory.sh review`.
+7. Treat `workspace/ready_for_review/<id>/` as the handoff boundary for human review.
+8. Run `scripts/factory.sh ui --host 127.0.0.1 --port 8787` for the standalone inventory, publishing, analytics, and worker dashboard. This UI does not depend on WorkBuddy.
 
-The default `audio.source_mode: auto` uses source subtitles or enabled ASR as speech evidence. Speech clips remove the source track and receive pt-BR narration, pt-BR subtitles, and an audible ducked Funk BGM. Clips without speech evidence preserve their original music and receive no generated narration or subtitles. Use `audio.source_mode: localize` or `preserve` only for an explicit operator override. The default foreground crop removes the lower burned-in source-caption band; inspect a frame and adjust the crop ratio when captions remain.
+The default `audio.source_mode: auto` preserves original audio for non-localized clips and never adds fixed BGM. Only Bilibili/Douyin clips with Chinese narration evidence should remove the source track and receive Brazilian Portuguese narration/subtitles. Clips without that platform-specific Chinese speech evidence preserve their original music/audio and receive no generated narration or subtitles. Use `audio.source_mode: localize` or `preserve` only for an explicit operator override. The default foreground crop removes the lower burned-in source-caption band; inspect a frame and adjust the crop ratio when captions remain.
 
 ## Coordination
 

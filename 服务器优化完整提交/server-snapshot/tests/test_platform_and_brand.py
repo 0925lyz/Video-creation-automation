@@ -698,6 +698,35 @@ def test_delete_server_only_review_package(tmp_path: Path):
     assert candidate_rows(config) == []
 
 
+def test_candidate_rows_exposes_source_outro_trim_summary(tmp_path: Path):
+    config = make_config(tmp_path)
+    config["storage"] = {"root": "workspace/server_media"}
+    insert_candidate(config, "outro-row", "READY_FOR_REVIEW")
+    package = tmp_path / "workspace" / "ready_for_review" / "outro-row"
+    package.mkdir(parents=True)
+    (package / "video.mp4").write_bytes(b"video")
+    (package / "metadata.json").write_text(json.dumps({
+        "job_id": "outro-row",
+        "source": {"platform": "youtube", "url": "https://example.test/v", "title": "Demo"},
+        "segment": {"duration_sec": 12, "highlight_score": 70},
+        "source_outro_trim": {
+            "enabled": True,
+            "applied": True,
+            "trim_end_sec": 3.5,
+            "confidence": 0.88,
+            "reason": "auto_trim:promo_terms:follow",
+            "before_frame": "workspace/jobs/outro-row/outro_before_frame.jpg",
+            "after_frame": "workspace/jobs/outro-row/outro_after_frame.jpg",
+        },
+    }), encoding="utf-8")
+
+    row = candidate_rows(config, "READY_FOR_REVIEW")[0]
+
+    assert row["source_outro_trim"]["state"] == "已自动裁剪"
+    assert row["source_outro_trim"]["trim_end_sec"] == 3.5
+    assert row["source_outro_trim"]["confidence"] == 0.88
+
+
 def test_inventory_exposes_latest_failure_reason(tmp_path: Path):
     config = make_config(tmp_path)
     insert_candidate(config, status="DOWNLOAD_FAILED")
@@ -852,7 +881,9 @@ def test_source_outro_trim_is_upstream_of_analysis_and_review_metadata(tmp_path:
     monkeypatch.setattr("jaguartv_factory.core.media_dimensions", lambda path: (1080, 1920))
     monkeypatch.setattr("jaguartv_factory.core.localization_profile_for_candidate", lambda *args, **kwargs: {"audio_mode": "preserve_source", "class": "music_or_no_speech", "reason": "test"})
     monkeypatch.setattr("jaguartv_factory.core.media_has_audio", lambda path: True)
+    monkeypatch.setattr("jaguartv_factory.core.require_binary", lambda name: name)
     monkeypatch.setattr("jaguartv_factory.core.enforce_dual_variant_remotion", lambda config_arg: None)
+    monkeypatch.setattr("jaguartv_factory.core.short_video_threshold", lambda config_arg: 10.0)
     monkeypatch.setattr("jaguartv_factory.core.analyze_video", fake_analyze)
     monkeypatch.setattr("jaguartv_factory.core.render_clean_segment", fake_clean)
     monkeypatch.setattr("jaguartv_factory.core.remotion_output_variants", lambda config_arg: ["通用版", "FB版"])
@@ -878,6 +909,12 @@ def test_source_outro_trim_is_upstream_of_analysis_and_review_metadata(tmp_path:
     manifest = json.loads((work / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["assets"]["source"].endswith("source_outro_trimmed.mp4")
     assert manifest["assets"]["original_source"].endswith("source.mp4")
+    stored = connect_db(config).execute(
+        "SELECT parent_id,title,status FROM candidates WHERE id=?", (row["id"],)
+    ).fetchone()
+    assert stored["parent_id"] is None
+    assert stored["status"] == "READY_FOR_REVIEW"
+    assert not stored["title"].endswith("(Slice 1)")
 
 
 def test_url_ingest_downloads_to_waiting_for_production(tmp_path: Path, monkeypatch):

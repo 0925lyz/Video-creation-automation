@@ -5,7 +5,12 @@ import pytest
 
 from jaguartv_factory.core import connect_db
 from jaguartv_factory.mediacrawler import ingest_mediacrawler_jsonl, parse_metric
-from jaguartv_factory.workbuddy_adapter import _merge_regions, _subtitle_band_regions, prepare_ocr_blurred_segment
+from jaguartv_factory.workbuddy_adapter import (
+    _merge_regions,
+    _subtitle_band_regions,
+    detect_chinese_text_regions,
+    prepare_ocr_blurred_segment,
+)
 
 
 def make_config(tmp_path: Path) -> dict:
@@ -101,7 +106,7 @@ def test_ocr_blur_uses_fallback_regions_when_detection_misses(tmp_path: Path, mo
         return destination
 
     monkeypatch.setattr("jaguartv_factory.workbuddy_adapter._run", fake_run)
-    monkeypatch.setattr("jaguartv_factory.workbuddy_adapter.detect_chinese_text_regions", lambda _path: [])
+    monkeypatch.setattr("jaguartv_factory.workbuddy_adapter.detect_chinese_text_regions", lambda _path, **_kwargs: [])
     monkeypatch.setattr("jaguartv_factory.workbuddy_adapter.blur_static_regions", fake_blur_static_regions)
 
     info = prepare_ocr_blurred_segment(
@@ -114,3 +119,19 @@ def test_ocr_blur_uses_fallback_regions_when_detection_misses(tmp_path: Path, mo
     assert info["used"] is True
     assert info["regions"] == fallback
     assert info["reason"] == "fallback_regions_blurred_no_chinese_regions_detected"
+
+
+def test_ocr_auto_backend_falls_back_to_paddleocr(tmp_path: Path, monkeypatch):
+    media = tmp_path / "source.mp4"
+    media.write_bytes(b"video")
+
+    def fake_tesseract(*args, **kwargs):
+        raise RuntimeError("tesseract is not installed")
+
+    monkeypatch.setattr("jaguartv_factory.workbuddy_adapter._detect_chinese_text_regions_tesseract", fake_tesseract)
+    monkeypatch.setattr(
+        "jaguartv_factory.workbuddy_adapter._detect_chinese_text_regions_paddleocr",
+        lambda *args, **kwargs: [[0.2, 0.7, 0.8, 0.8]],
+    )
+
+    assert detect_chinese_text_regions(media, backend="auto") == [[0.2, 0.7, 0.8, 0.8]]

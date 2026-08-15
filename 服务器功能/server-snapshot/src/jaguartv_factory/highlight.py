@@ -290,9 +290,17 @@ def analyze_video(
     max_duration: float = 30.0,
     strategy: str = "sports_highlight",
     transcript_path: Path | None = None,
+    max_signal_duration: float = 900.0,
 ) -> list[dict[str, Any]]:
     if strategy not in {"sports_highlight", "visual_peak", "rhythm_cut"}:
         return uniform_segments(source_duration, max_segments=max_segments, max_duration=max_duration, strategy=strategy)
+    if source_duration > max_signal_duration:
+        return uniform_segments(
+            source_duration,
+            max_segments=max_segments,
+            max_duration=max_duration,
+            strategy=f"{strategy}_long_source_guard",
+        )
     audio = sample_audio_envelope(media)
     motion = sample_motion_intensity(media)
     scenes = detect_scene_changes(media)

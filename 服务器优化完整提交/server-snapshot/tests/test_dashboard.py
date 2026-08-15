@@ -1,4 +1,8 @@
 import json
+import threading
+import urllib.error
+import urllib.request
+from urllib.parse import parse_qs, urlparse
 from pathlib import Path
 
 import pytest
@@ -9,7 +13,9 @@ from jaguartv_factory.dashboard import (
     copywriter_request,
     candidate_design_info,
     candidate_rows,
+    category_keyword_rows,
     dashboard_overview,
+    DashboardApplication,
     extract_json_object,
     gemini_model_candidates,
     gemini_model_name,
@@ -20,7 +26,9 @@ from jaguartv_factory.dashboard import (
     save_metrics,
     save_publication,
     save_review,
+    save_youtube_oauth_callback,
     upload_kind_requires_token,
+    youtube_oauth_start_url,
 )
 from jaguartv_factory.sessions import check_session, list_sessions, save_session
 
@@ -43,6 +51,45 @@ def insert_candidate(config: dict, candidate_id: str = "candidate-1") -> None:
             candidate_id, "youtube", "source-1", "https://example.test/video", "Demo",
             "", 20, 100, "en", 80, "READY_FOR_REVIEW",
             json.dumps({"keyword": "football skills"}), timestamp, timestamp,
+        ),
+    )
+    connection.commit()
+
+
+def insert_publish_candidate(
+    config: dict,
+    *,
+    candidate_id: str,
+    platform: str,
+    keyword: str,
+    status: str = "APPROVED",
+    parent_id: str = "",
+) -> None:
+    connection = connect_db(config)
+    timestamp = now_iso()
+    connection.execute(
+        """
+        INSERT INTO candidates(
+          id,parent_id,platform,source_id,url,title,description,duration,view_count,
+          detected_language,score,status,metadata_json,created_at,updated_at
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            candidate_id,
+            parent_id or None,
+            platform,
+            f"{candidate_id}-source",
+            f"https://{platform}.example.test/video/{candidate_id}",
+            keyword,
+            "",
+            20,
+            100,
+            "pt",
+            80,
+            status,
+            json.dumps({"keyword": keyword}),
+            timestamp,
+            timestamp,
         ),
     )
     connection.commit()
@@ -181,20 +228,124 @@ def test_public_brand_asset_path_is_limited_to_brand_assets():
     assert public_brand_asset_path("/assets/brand/missing.png") is None
 
 
-def test_design_image_uploads_do_not_require_upload_token():
+def test_uploads_do_not_require_upload_token():
     assert upload_kind_requires_token("design_image") is False
-    assert upload_kind_requires_token("source") is True
-    assert upload_kind_requires_token("reaction") is True
-    assert upload_kind_requires_token("") is True
+    assert upload_kind_requires_token("source") is False
+    assert upload_kind_requires_token("reaction") is False
+    assert upload_kind_requires_token("") is False
+
+
+def test_dashboard_is_public_by_default_even_with_admin_token(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("JAGUARTV_DASHBOARD_TOKEN", "secret-token")
+    app = DashboardApplication(("127.0.0.1", 0), dashboard_config(tmp_path))
+    thread = threading.Thread(target=app.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{app.server_address[1]}"
+    try:
+        with urllib.request.urlopen(f"{base}/api/tasks", timeout=5) as response:
+            assert response.status == 200
+    finally:
+        app.shutdown()
+        thread.join(timeout=5)
+        app.server_close()
+
+
+def test_dashboard_admin_token_can_be_required_when_public_flag_is_off(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("JAGUARTV_DASHBOARD_TOKEN", "secret-token")
+    monkeypatch.setenv("JAGUARTV_DASHBOARD_PUBLIC", "0")
+    app = DashboardApplication(("127.0.0.1", 0), dashboard_config(tmp_path))
+    thread = threading.Thread(target=app.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{app.server_address[1]}"
+    try:
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(f"{base}/api/tasks", timeout=5)
+        assert error.value.code == 401
+
+        request = urllib.request.Request(
+            f"{base}/api/tasks",
+            headers={"X-Dashboard-Token": "secret-token"},
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            assert response.status == 200
+
+        with urllib.request.urlopen(f"{base}/api/health", timeout=5) as response:
+            assert response.status == 200
+    finally:
+        app.shutdown()
+        thread.join(timeout=5)
+        app.server_close()
 
 
 def test_initial_category_uses_discovery_keyword_first():
+    assert initial_category_for_text("AI short drama Brasil", "random title") == "ai短剧"
+    assert initial_category_for_text("Anitta show viral", "football reaction") == "明星名人歌手"
+    assert initial_category_for_text("Neymar melhores momentos", "football reaction") == "足球球星"
     assert initial_category_for_text("Palmeiras Cerro Porteño Libertadores", "random title") == "足球类"
+    assert initial_category_for_text("sccp fiel torcedor", "google_trends") == "足球类"
+    assert initial_category_for_text("isis valverde", "google_trends") == "明星名人歌手"
     assert initial_category_for_text("Notícias de hoje Brasil", "Flamengo") == "新闻类"
-    assert initial_category_for_text("Novela da Globo", "football reaction") == "肥皂剧"
+    assert initial_category_for_text("Novela da Globo", "football reaction") == "肥皂剧（电视剧、电影）"
     assert initial_category_for_text("Desafio TikTok Brasil", "dance") == "社交挑战"
     assert initial_category_for_text("Coreografia funk", "video") == "音乐类"
+    assert initial_category_for_text("Documentário comida Brasil", "video") == "纪录片（美食、动物、地区发展）"
+    assert initial_category_for_text("Tutorial completo como usar", "video") == "教程及优点展示类"
+    assert initial_category_for_text("Comunicado oficial", "video") == "官方性质类"
+    assert initial_category_for_text("Parceria com cupom", "video") == "合作类"
+    assert initial_category_for_text("账号运营 教程", "video") == "运营教学类"
+    assert initial_category_for_text("FAQ dúvidas suporte", "video") == "教程及答疑类"
     assert initial_category_for_text("unknown topic") == "未分类"
+
+
+def test_category_keyword_rows_group_today_hot_keywords(tmp_path: Path):
+    keyword_file = tmp_path / "config" / "keywords.demo.yaml"
+    keyword_file.parent.mkdir()
+    keyword_file.write_text(
+        """
+football_stars:
+  terms:
+    pt: [neymar]
+ai_drama:
+  terms:
+    pt: [AI short drama]
+""",
+        encoding="utf-8",
+    )
+    config = {
+        "_root": str(tmp_path),
+        "run": {"workspace": "workspace"},
+        "sources": {"keywords_file": "config/keywords.demo.yaml"},
+        "trends": {"schedule_timezone": "America/Sao_Paulo"},
+    }
+    connection = connect_db(config)
+    for keyword, source in [
+        ("neymar", "agent-reach"),
+        ("AI short drama", "last30days-skill"),
+        ("flamengo hoje", "google_trends"),
+        ("isis valverde", "google_trends"),
+        ("novo hit", "agent-reach:音乐类"),
+        ("sem termos agora", "daily_keywords:教程及优点展示类"),
+    ]:
+        connection.execute(
+            "INSERT INTO hot_keywords(keyword,date,source,created_at) VALUES(?,?,?,?)",
+            (keyword, "2026-08-14", source, now_iso()),
+        )
+    connection.commit()
+
+    rows = category_keyword_rows(config, "2026-08-14")["rows"]
+    by_label = {row["label"]: row for row in rows}
+
+    assert len(rows) == 18
+    assert by_label["足球球星"]["keywords"][0]["keyword"] == "neymar"
+    assert by_label["ai短剧"]["keywords"][0]["keyword"] == "AI short drama"
+    assert by_label["足球类"]["keywords"][0]["keyword"] == "flamengo hoje"
+    assert by_label["明星名人歌手"]["keywords"][0]["keyword"] == "isis valverde"
+    assert by_label["音乐类"]["keywords"][0]["keyword"] == "novo hit"
+    assert by_label["教程及优点展示类"]["keywords"][0]["keyword"] == "sem termos agora"
+    assert by_label["官方性质类"]["count"] == 0
+    assert by_label["合作类"]["count"] == 0
+    assert by_label["运营教学类"]["count"] == 0
+    assert by_label["教程及答疑类"]["count"] == 0
 
 
 def test_candidate_design_info_defaults_when_source_not_downloaded(tmp_path: Path):
@@ -231,6 +382,7 @@ def test_child_candidate_inherits_parent_initial_category(tmp_path: Path):
 
     assert child["initial_category"] == "足球类"
     assert child["initial_keyword"] == "football skills"
+    assert dashboard_overview(config)["kpis"]["inventory"] == 1
 
 
 def test_dashboard_schema_and_overview(tmp_path: Path):
@@ -264,6 +416,130 @@ def test_dashboard_schema_and_overview(tmp_path: Path):
     connection = connect_db(config)
     feedback = connection.execute("SELECT * FROM feedback_actions").fetchone()
     assert feedback["action_type"] == "BOOST_KEYWORD"
+
+
+def test_youtube_publication_auto_routes_category_to_account(tmp_path: Path):
+    config = dashboard_config(tmp_path)
+    insert_publish_candidate(
+        config,
+        candidate_id="tk-football",
+        platform="tiktok",
+        keyword="Neymar melhores momentos",
+    )
+
+    publication_id = save_publication(config, {"candidate_id": "tk-football", "platform": "youtube"})
+
+    connection = connect_db(config)
+    row = connection.execute("SELECT account FROM publications WHERE id=?", (publication_id,)).fetchone()
+    assert row["account"] == "consumer_football"
+
+
+def test_youtube_publication_blocks_youtube_source_for_consumer_routes(tmp_path: Path):
+    config = dashboard_config(tmp_path)
+    insert_publish_candidate(
+        config,
+        candidate_id="yt-football",
+        platform="youtube",
+        keyword="Neymar melhores momentos",
+    )
+
+    with pytest.raises(ValueError, match="YouTube source candidates cannot be scheduled"):
+        save_publication(config, {"candidate_id": "yt-football", "platform": "youtube"})
+
+
+def test_youtube_publication_inherits_parent_source_for_slices(tmp_path: Path):
+    config = dashboard_config(tmp_path)
+    insert_publish_candidate(
+        config,
+        candidate_id="source-youtube",
+        platform="youtube",
+        keyword="Novela da Globo",
+    )
+    insert_publish_candidate(
+        config,
+        candidate_id="source-youtube_part01",
+        platform="youtube",
+        keyword="",
+        parent_id="source-youtube",
+    )
+
+    with pytest.raises(ValueError, match="YouTube source candidates cannot be scheduled"):
+        save_publication(config, {"candidate_id": "source-youtube_part01", "platform": "youtube"})
+
+
+def test_non_youtube_source_can_route_to_entertainment_account(tmp_path: Path):
+    config = dashboard_config(tmp_path)
+    insert_publish_candidate(
+        config,
+        candidate_id="tk-novela",
+        platform="tiktok",
+        keyword="Novela da Globo",
+    )
+
+    publication_id = save_publication(config, {"candidate_id": "tk-novela", "platform": "youtube"})
+
+    connection = connect_db(config)
+    row = connection.execute("SELECT account FROM publications WHERE id=?", (publication_id,)).fetchone()
+    assert row["account"] == "consumer_entertainment"
+
+
+def test_youtube_oauth_start_url_includes_offline_state(tmp_path: Path, monkeypatch):
+    config = dashboard_config(tmp_path)
+    monkeypatch.setenv("JAGUARTV_GOOGLE_CLIENT_ID", "client-id")
+    monkeypatch.setenv("JAGUARTV_GOOGLE_CLIENT_SECRET", "client-secret")
+    monkeypatch.setenv("JAGUARTV_GOOGLE_REDIRECT_URI", "https://factory.jarg.top/oauth/youtube/callback")
+    monkeypatch.setenv("JAGUARTV_OAUTH_TOKEN_KEY", "token-encryption-key")
+    monkeypatch.setenv("JAGUARTV_OAUTH_STATE_SECRET", "state-secret")
+
+    url = youtube_oauth_start_url(config, "consumer_football")
+    query = parse_qs(urlparse(url).query)
+
+    assert query["client_id"] == ["client-id"]
+    assert query["redirect_uri"] == ["https://factory.jarg.top/oauth/youtube/callback"]
+    assert query["access_type"] == ["offline"]
+    assert query["prompt"] == ["consent"]
+    assert "https://www.googleapis.com/auth/youtube.upload" in query["scope"][0]
+    assert query["state"][0]
+
+
+def test_youtube_oauth_callback_encrypts_refresh_token(tmp_path: Path, monkeypatch):
+    from jaguartv_factory.dashboard import make_oauth_state
+
+    config = dashboard_config(tmp_path)
+    monkeypatch.setenv("JAGUARTV_GOOGLE_CLIENT_ID", "client-id")
+    monkeypatch.setenv("JAGUARTV_GOOGLE_CLIENT_SECRET", "client-secret")
+    monkeypatch.setenv("JAGUARTV_GOOGLE_REDIRECT_URI", "https://factory.jarg.top/oauth/youtube/callback")
+    monkeypatch.setenv("JAGUARTV_OAUTH_TOKEN_KEY", "token-encryption-key")
+    monkeypatch.setenv("JAGUARTV_OAUTH_STATE_SECRET", "state-secret")
+
+    def fake_post_form_json(url, form, *, timeout=20):
+        assert form["code"] == "auth-code"
+        assert form["grant_type"] == "authorization_code"
+        return {
+            "access_token": "access-token",
+            "refresh_token": "refresh-token-secret",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "scope": "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly",
+        }
+
+    monkeypatch.setattr("jaguartv_factory.dashboard.post_form_json", fake_post_form_json)
+    monkeypatch.setattr(
+        "jaguartv_factory.dashboard.get_authorized_youtube_channel",
+        lambda access_token: {"channel_id": "UC123", "channel_title": "jaguartv vivo"},
+    )
+
+    result = save_youtube_oauth_callback(config, {
+        "code": ["auth-code"],
+        "state": [make_oauth_state("consumer_football")],
+    })
+
+    assert result["account"] == "consumer_football"
+    assert result["channel_id"] == "UC123"
+    connection = connect_db(config)
+    row = connection.execute("SELECT * FROM youtube_channel_auths WHERE account='consumer_football'").fetchone()
+    assert row["channel_title"] == "jaguartv vivo"
+    assert "refresh-token-secret" not in row["encrypted_refresh_token"]
 
 
 def test_render_job_rows_include_candidate_title_and_metadata(tmp_path: Path):

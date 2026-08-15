@@ -6,6 +6,8 @@ const state = {
   feedback: [],
   downloadClaims: [],
   keywordGroups: [],
+  hotKeywords: [],
+  categoryKeywords: { rows: [] },
   settings: null,
   sessions: [],
   uploads: [],
@@ -54,7 +56,12 @@ const scoreDimensionLabels = {
   editability: "可剪辑性", brazil_fit: "巴西适配", freshness: "新鲜度",
 };
 
-const initialCategoryLabels = ["足球类", "新闻类", "音乐类", "肥皂剧", "少儿剧", "成人频道", "纪录片", "综艺", "社交挑战", "舞蹈", "未分类"];
+const initialCategoryLabels = [
+  "ai短剧", "明星名人歌手", "足球球星", "足球类", "新闻类", "音乐类",
+  "肥皂剧（电视剧、电影）", "少儿剧", "成人频道", "纪录片（美食、动物、地区发展）",
+  "综艺", "社交挑战", "舞蹈", "教程及优点展示类", "官方性质类",
+  "合作类", "运营教学类", "教程及答疑类", "未分类",
+];
 
 function scoreTooltip(breakdown) {
   if (!breakdown || !Object.keys(breakdown).length) return "";
@@ -92,11 +99,11 @@ async function refreshAll(showToast = false) {
   const button = document.querySelector("#refreshButton");
   button.disabled = true;
   try {
-    const [overview, candidates, publications, workers, feedback, downloadClaims, keywordGroups, tasks, settings, sessions, health, uploads] = await Promise.all([
-      api("/api/overview"), api("/api/candidates?limit=200"), api("/api/publications"), api("/api/workers"), api("/api/feedback"), api("/api/download-claims"), api("/api/keywords"), api("/api/tasks"), api("/api/settings"), api("/api/sessions"), api("/api/health"),
+    const [overview, candidates, publications, workers, feedback, downloadClaims, keywordGroups, hotKeywords, categoryKeywords, tasks, settings, sessions, health, uploads] = await Promise.all([
+      api("/api/overview"), api("/api/candidates?limit=200"), api("/api/publications"), api("/api/workers"), api("/api/feedback"), api("/api/download-claims"), api("/api/keywords"), api("/api/hot-keywords?date=today"), api("/api/category-keywords?date=today"), api("/api/tasks"), api("/api/settings"), api("/api/sessions"), api("/api/health"),
       api("/api/uploads").catch(() => []),
     ]);
-    Object.assign(state, { overview, candidates, publications, workers, feedback, downloadClaims, keywordGroups, tasks, settings, sessions, health, uploads });
+    Object.assign(state, { overview, candidates, publications, workers, feedback, downloadClaims, keywordGroups, hotKeywords, categoryKeywords, tasks, settings, sessions, health, uploads });
     renderAll();
     document.querySelector("#serviceTime").textContent = `更新于 ${dateText(overview.generated_at)}`;
     if (showToast) toast("数据已刷新");
@@ -117,6 +124,8 @@ function renderAll() {
   renderPublications();
   renderAnalytics();
   renderDownloadClaims();
+  renderHotKeywords();
+  renderCategoryKeywords();
   renderKeywordGroups();
   renderWorkers();
   renderSettings();
@@ -133,7 +142,7 @@ function renderAll() {
 function renderKpis() {
   const k = state.overview.kpis;
   const cards = [
-    ["内容库存", k.inventory, "全部候选"], ["待审核成片", k.ready, `审核通过 ${number(k.approved || 0)}`],
+    ["内容库存", k.inventory, "真实视频"], ["待审核成片", k.ready, `审核通过 ${number(k.approved || 0)}`],
     ["计划发布", k.scheduled, "等待发布节点"], ["落地页点击", k.clicks, "JaguarTV CTA"],
     ["注册用户", k.registrations, `点击转注册 ${percent(k.conversion_rate)}`],
     ["首次观看", k.first_watch || 0, `注册转观看 ${percent(k.activation_rate)} · 北极星`],
@@ -541,6 +550,68 @@ function openClaimMetricsDialog(claimId) {
   document.querySelector("#claimMetricsDialog").showModal();
 }
 
+function renderHotKeywords() {
+  const element = document.querySelector("#hotKeywordStrip");
+  if (!element) return;
+  element.innerHTML = state.hotKeywords.length ? state.hotKeywords.map((item) => `
+    <button class="hot-keyword" data-hot-keyword="${escapeHtml(item.keyword)}" type="button">
+      <strong>${escapeHtml(item.keyword)}</strong><small>${escapeHtml(item.source || "google_trends")}</small>
+    </button>
+  `).join("") : `<div class="empty-state">今日热词还未同步；调度器会保留最近一次成功结果</div>`;
+  element.querySelectorAll("[data-hot-keyword]").forEach((button) => {
+    button.addEventListener("click", () => discoverWithHotKeyword(button.dataset.hotKeyword));
+  });
+}
+
+function renderCategoryKeywords() {
+  const table = document.querySelector("#categoryKeywordTable");
+  if (!table) return;
+  const payload = state.categoryKeywords || {};
+  const dateElement = document.querySelector("#categoryKeywordDate");
+  if (dateElement) dateElement.textContent = payload.date ? `日期 ${payload.date}` : "";
+  const rows = payload.rows || [];
+  table.innerHTML = rows.length ? rows.map((row) => {
+    const keywords = row.keywords || [];
+    const keywordCells = keywords.length ? keywords.map((item) => `
+      <button class="category-keyword-chip" data-hot-keyword="${escapeHtml(item.keyword)}" title="${escapeHtml(item.source || "")}" type="button">
+        <strong>${escapeHtml(item.keyword)}</strong><small>${escapeHtml(item.source || "")}</small>
+      </button>
+    `).join("") : `<span class="muted">今日暂无</span>`;
+    return `<tr>
+      <td><strong>${escapeHtml(row.label)}</strong></td>
+      <td><div class="category-keyword-chips">${keywordCells}</div></td>
+      <td>${number(row.count || 0)}</td>
+    </tr>`;
+  }).join("") : `<tr><td colspan="3"><div class="empty-state">今日分类关键词还未同步</div></td></tr>`;
+  table.querySelectorAll("[data-hot-keyword]").forEach((button) => {
+    button.addEventListener("click", () => discoverWithHotKeyword(button.dataset.hotKeyword));
+  });
+}
+
+async function discoverWithHotKeyword(keyword) {
+  const value = String(keyword || "").trim();
+  if (!value) return;
+  try {
+    const result = await api("/api/actions", {
+      method: "POST",
+      body: JSON.stringify({ action: "discover", platform: "youtube", limit: 3, keywords: [value] }),
+    });
+    toast(`热词发现任务 ${result.task_id} 已启动`);
+    pollTask(result.task_id);
+  } catch (error) {
+    toast(`热词发现失败：${error.message}`, "error");
+  }
+}
+
+async function runTrendsNow() {
+  try {
+    const result = await api("/api/trends/run", { method: "POST", body: JSON.stringify({}) });
+    toast(`Google Trends 已同步 ${result.count || 0} 个热词`);
+    await refreshAll();
+  } catch (error) {
+    toast(`同步失败：${error.message}`, "error");
+  }
+}
 
 function renderKeywordGroups() {
   const table = document.querySelector("#keywordGroupsTable");
@@ -613,9 +684,9 @@ function renderSettings() {
   document.querySelector("#settingRemotionHeadline").value = remotion.bottom_headline || "";
   document.querySelector("#settingRemotionSubline").value = remotion.bottom_subline || "";
   document.querySelector("#settingRemotionEndcardCta").value = remotion.endcard_cta || "";
-  document.querySelector("#settingRemotionContentBgm").value = remotion.content_bgm_volume ?? 0.16;
-  document.querySelector("#settingRemotionEndcardBgm").value = remotion.endcard_bgm_volume ?? 0.24;
-  document.querySelector("#settingRemotionAddBgm").checked = remotion.add_bgm_under_source !== false;
+  document.querySelector("#settingRemotionContentBgm").value = remotion.content_bgm_volume ?? 0;
+  document.querySelector("#settingRemotionEndcardBgm").value = remotion.endcard_bgm_volume ?? 0;
+  document.querySelector("#settingRemotionAddBgm").checked = remotion.add_bgm_under_source === true;
   document.querySelector("#settingsConfigPath").textContent = `配置文件：${state.settings.config_path || "未加载"}`;
 }
 
@@ -1154,6 +1225,7 @@ document.querySelector("#batchProduce").addEventListener("click", () => {
   openProductionDialog(ids);
 });
 document.querySelector("#batchDelete").addEventListener("click", () => deleteCandidates(selectedRows().map((item) => item.id)));
+document.querySelector("#runTrendsNow").addEventListener("click", runTrendsNow);
 document.querySelectorAll("#statusFilters button").forEach((button) => button.addEventListener("click", () => {
   document.querySelectorAll("#statusFilters button").forEach((item) => item.classList.toggle("active", item === button));
   state.status = button.dataset.status;

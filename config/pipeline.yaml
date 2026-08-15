@@ -64,9 +64,34 @@ source_outro_trim:
   audio_guard_enabled: true
   save_evidence_frames: true
   promo_terms:
-    zh: [关注, 私信, 微信, 公众号, 下载, 扫码, 二维码, 加群]
-    pt: [siga, seguir, inscreva-se, baixe, link na bio, compartilhe, whatsapp, promoção]
-    en: [follow, subscribe, download, link in bio, scan, whatsapp, instagram, tiktok, facebook]
+    zh:
+      - 关注
+      - 私信
+      - 微信
+      - 公众号
+      - 下载
+      - 扫码
+      - 二维码
+      - 加群
+    pt:
+      - siga
+      - seguir
+      - inscreva-se
+      - baixe
+      - link na bio
+      - compartilhe
+      - whatsapp
+      - promoção
+    en:
+      - follow
+      - subscribe
+      - download
+      - link in bio
+      - scan
+      - whatsapp
+      - instagram
+      - tiktok
+      - facebook
 
 edit:
   render_engine: remotion           # dual-variant overlays/endcards require Remotion
@@ -92,7 +117,7 @@ localization:
   target: pt-BR
   asr_enabled: false
   whisper_model: tiny
-  voice_enabled: false                 # keep current no-fixed-voice policy unless explicitly enabled
+  voice_enabled: true                  # only Bilibili/Douyin Chinese narration is replaced with pt-BR voice
   tts_provider: auto                 # edge -> local system voice fallback
   edge_tts_voice: pt-BR-AntonioNeural # energetic Brazilian Portuguese male voice
   speech_style: excited_sports_male
@@ -125,11 +150,11 @@ localization:
     voice_autorate: true
 
 audio:
-  # auto: localize only when subtitles/ASR prove speech; otherwise preserve source music.
+  # auto: only Bilibili/Douyin Chinese narration is localized; all other source audio is preserved.
   source_mode: auto                 # auto | localize | preserve
   source_music_volume: 1.0
   voice_volume: 1.0
-  bgm_volume: 0.62                 # louder Funk under localized narration
+  bgm_volume: 0.0                  # fixed BGM is disabled; pt-BR localization uses generated voice only
   bgm_dir: assets/bgm
   bgm_path: ""
 
@@ -149,9 +174,9 @@ remotion:
     tu_er: assets/brand/overlay_tu_er.png
     lv_tu: assets/brand/endcard_portrait_green_v2.png
     lan_tu: assets/brand/endcard_landscape_blue_v2.png
-  add_bgm_under_source: true
-  content_bgm_volume: 0.16
-  endcard_bgm_volume: 0.24
+  add_bgm_under_source: false
+  content_bgm_volume: 0.0
+  endcard_bgm_volume: 0.0
   captions:
     enabled: true
     variants: [通用版]
@@ -230,6 +255,17 @@ storage:
   max_upload_bytes: 2147483648
   upload_chunk_bytes: 8388608
   inventory_dir: inventory
+
+trends:
+  enabled: true
+  pytrends_path: /opt/pytrends
+  cron: "0 8 * * *"
+  schedule_timezone: America/Sao_Paulo
+  geo: BR
+  keywords: ["futebol Brasil"]
+  top_n: 10
+  source: google_trends
+  sync_keywords_group: google_trends_br_daily
 
 compliance:
   require_verified_rights: false
