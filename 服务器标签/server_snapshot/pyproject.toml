@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jaguartv-content-factory-vnext"
+version = "0.2.0"
+description = "Smart long-video slicing, Reaction rendering and server review pipeline for JaguarTV"
+requires-python = ">=3.12"
+dependencies = [
+  "edge-tts>=7.2.0",
+  "Pillow>=11.0",
+  "pandas>=2.2",
+  "playwright>=1.45",
+  "PyYAML>=6.0.2",
+  "requests>=2.32",
+  "yt-dlp[default]>=2026.7.4",
+]
+
+[project.optional-dependencies]
+asr = ["faster-whisper>=1.1.1"]
+design = ["opencv-python-headless>=4.10"]
+workbuddy = ["demucs>=4.0.1", "faster-whisper>=1.1.1"]
+test = ["pytest>=8.3"]
+
+[project.scripts]
+workbuddy = "jaguartv_factory.cli:main"
+jaguartv = "jaguartv_factory.cli:main"
+
+[tool.setuptools.package-data]
+jaguartv_factory = [
+  "web/*.html",
+  "web/*.css",
+  "web/*.js",
+  "remotion_template/package.json",
+  "remotion_template/scripts/*.mjs",
+  "remotion_template/src/*.tsx",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

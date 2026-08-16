@@ -125,6 +125,9 @@ tbody tr:hover { background: #fafcfb; }
 .content-cell small { margin-top: 5px; color: var(--muted); font-size: 10px; }
 .source-outro { display: block; margin-top: 5px; max-width: 260px; overflow: hidden; color: var(--muted); font-size: 10px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
 .badge-published { display: inline-flex; margin-left: 8px; padding: 2px 8px; border-radius: 4px; background: #22c55e; color: #fff; font-size: 10px; font-weight: 800; vertical-align: 1px; }
+.publication-note { display: block; margin-top: 4px; font-size: 11px; line-height: 1.35; color: var(--muted); }
+.publication-note.ready { color: #137333; }
+.publication-note.blocked { color: #b3261e; }
 .status-pill { display: inline-block; padding: 4px 7px; border-radius: 4px; background: #e9edeb; color: #4e5955; font-size: 9px; font-weight: 800; }
 .status-pill.ready { background: var(--green-soft); color: #096344; }
 .status-pill.failed { background: #fbe7e1; color: #a13b21; }

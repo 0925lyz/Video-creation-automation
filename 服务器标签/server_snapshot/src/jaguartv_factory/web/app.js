@@ -250,12 +250,13 @@ function renderInventory() {
     const status = task ? `${task.action === "download" ? "下载" : task.action === "produce" ? "制作" : "处理"}中` : (statusLabels[item.status] || item.status);
     const failure = item.failure_detail ? `<small class="failure-reason" title="${escapeHtml(item.failure_detail)}">${escapeHtml(failureReason(item.failure_detail))}</small>` : "";
     const outro = sourceOutroText(item.source_outro_trim);
+    const publicationNote = publicationStateText(item.publication_state);
     const isChild = !!item.is_child;
     const isParent = !!item.is_parent;
     return `
     <tr class="${isChild ? 'child-slice-row' : ''}" style="${isChild ? 'background-color: var(--surface-hover);' : ''}">
       <td class="check-column"><input class="candidate-checkbox" type="checkbox" data-candidate-select="${item.id}" ${state.selectedCandidates.has(item.id) ? "checked" : ""} aria-label="选择 ${escapeHtml(item.display_title || item.title || item.id)}"></td>
-      <td style="${isChild ? 'padding-left: 2rem;' : ''}"><div class="content-cell">${thumb ? `<img class="mini-cover" src="${thumb}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<div class="mini-cover"></div>`}<div><strong title="${escapeHtml(item.display_title || item.title)}">${escapeHtml(item.display_title || item.title || "未命名内容")}${item.published_flag ? `<span class="badge-published">Published</span>` : ""}<span class="category-pill">${escapeHtml(item.initial_category || "未分类")}</span></strong><small>${escapeHtml(item.platform)} · ${item.id}${item.initial_keyword ? ` · ${escapeHtml(item.initial_keyword)}` : item.keyword ? ` · ${escapeHtml(item.keyword)}` : ""}</small></div></div></td>
+      <td style="${isChild ? 'padding-left: 2rem;' : ''}"><div class="content-cell">${thumb ? `<img class="mini-cover" src="${thumb}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<div class="mini-cover"></div>`}<div><strong title="${escapeHtml(item.display_title || item.title)}">${escapeHtml(item.display_title || item.title || "未命名内容")}${item.published_flag ? `<span class="badge-published">Published</span>` : ""}<span class="category-pill">${escapeHtml(item.initial_category || "未分类")}</span></strong><small>${escapeHtml(item.platform)} · ${item.id}${item.initial_keyword ? ` · ${escapeHtml(item.initial_keyword)}` : item.keyword ? ` · ${escapeHtml(item.keyword)}` : ""}</small>${publicationNote}</div></div></td>
       <td>${escapeHtml(item.platform)}</td>
       <td><strong>${escapeHtml(item.content_type || "unknown")}</strong><small>${escapeHtml(item.segment_strategy || "未分析")} · ${escapeHtml(item.audio_policy || "自动")}</small>${outro}</td>
       <td>${Number(item.highlight_score || 0).toFixed(1)}</td>
@@ -275,6 +276,29 @@ function renderInventory() {
   document.querySelectorAll("[data-download-asset]").forEach((button) => button.addEventListener("click", () => openDownloadClaimDialog(button.dataset.downloadAsset)));
   document.querySelectorAll("[data-design-id]").forEach((button) => button.addEventListener("click", () => openDesignDialog(button.dataset.designId, button.dataset.designAssets || "")));
   updateBatchToolbar();
+}
+
+function publicationStateText(state) {
+  if (!state || !Object.keys(state).length) return "";
+  const account = escapeHtml(state.account_label || state.account || "jaguartv vivo");
+  if (state.status === "PUBLISHED") {
+    const link = state.youtube_url ? ` · <a href="${escapeHtml(state.youtube_url)}" target="_blank" rel="noopener">YouTube 链接</a>` : "";
+    const videoId = state.youtube_video_id ? ` · ${escapeHtml(state.youtube_video_id)}` : "";
+    return `<small class="publication-note ready">已发布至 YouTube 账号：${account}${link}${videoId}</small>`;
+  }
+  if (["QUEUED", "SCHEDULED", "PUBLISHING"].includes(state.status)) {
+    return `<small class="publication-note ready">已排队发布至 YouTube 账号：${account} · 计划发布时间：${dateText(state.scheduled_at)} ${escapeHtml(state.timezone || "")}</small>`;
+  }
+  if (state.event_type === "PUBLISH_BLOCKED_SOURCE_PLATFORM") {
+    return `<small class="publication-note blocked">审核通过，但 YouTube 发布被来源门禁拦截：源素材来自 ${escapeHtml(state.source_platform || "YouTube")}</small>`;
+  }
+  if (state.event_type === "PUBLISH_BLOCKED_NO_ROUTE") {
+    return `<small class="publication-note blocked">审核通过，但未匹配发布账号</small>`;
+  }
+  if (state.event_type === "PUBLISH_BLOCKED_NO_ASSET") {
+    return `<small class="publication-note blocked">审核通过，但没有可发布的通用版成片</small>`;
+  }
+  return "";
 }
 
 function renderCategoryFilters() {

@@ -45,6 +45,7 @@ from .core import (
     tracking_links,
     workspace_dir,
 )
+from .publisher import auto_enqueue_approved_publication, publication_state_for_candidates
 from .sessions import check_session, delete_session, list_sessions, save_session
 from .server_store import (
     complete_chunked_upload,
@@ -209,6 +210,8 @@ GOOGLE_OAUTH_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 YOUTUBE_CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels"
 ACCOUNT_ALIASES = {
+    "jaguartv_vivo": "jaguartv_vivo",
+    "jaguartv vivo": "jaguartv_vivo",
     "consumer_main": "consumer_main",
     "jaguartv hoje": "consumer_main",
     "yt_hoje": "consumer_main",
@@ -227,6 +230,7 @@ ACCOUNT_ALIASES = {
     "partner_academia": "partner_academia",
     "academia jaguartv": "partner_academia",
 }
+YOUTUBE_SOURCE_BLOCKED_ACCOUNTS = {*YOUTUBE_SOURCE_BLOCKED_ACCOUNTS, "jaguartv_vivo"}
 SOURCE_MEDIA_SUFFIXES = {".mp4", ".mkv", ".webm", ".mov", ".m4v"}
 PRODUCTION_RUNNING_STATUS = "PRODUCTION_RUNNING"
 
@@ -1744,6 +1748,12 @@ def candidate_rows(config: dict[str, Any], status: str | None = None, limit: int
             result.append(item)
             if len(result) >= limit:
                 break
+    publication_states = publication_state_for_candidates(
+        config,
+        [str(item.get("id") or "") for item in result if str(item.get("id") or "")],
+    )
+    for item in result:
+        item["publication_state"] = publication_states.get(str(item.get("id") or ""), {})
     return result
 
 
@@ -2297,7 +2307,15 @@ def save_review(config: dict[str, Any], payload: dict[str, Any]) -> dict[str, An
             }, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-    return {"candidate_id": candidate, "status": decision}
+    result = {"candidate_id": candidate, "status": decision}
+    if decision == "APPROVED":
+        result["publication"] = auto_enqueue_approved_publication(
+            config,
+            candidate,
+            reviewer=str(payload.get("reviewer") or ""),
+            review_decision_at=timestamp,
+        )
+    return result
 
 
 def keywords_file_path(config: dict[str, Any]) -> Path:

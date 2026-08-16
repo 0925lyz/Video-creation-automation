@@ -1,0 +1,25 @@
+football:
+  weight: 1.0
+  terms:
+    pt: [brasileirão, brasileirão série a, gols brasileirão, melhores momentos brasileirão, flamengo palmeiras, corinthians sao paulo]
+    en: [brazil serie a highlights, brasileirao goals, brazil football highlights]
+    zh-CN: [巴甲进球, 巴甲集锦, 巴西足球进球, 弗拉门戈进球, 内马尔巴甲, 桑托斯内马尔]
+
+brasil_futebol_tiktok:
+  weight: 1.0
+  enabled: true
+  terms:
+    pt:
+      - "#brasileirao"
+      - "#flamengo"
+      - "#parati"
+      - "#fypviral"
+      - "#foryoupage"
+      - "#Arrascaeta"
+      - "#Flamengo"
+      - "#Brasileirão"
+      - "#cztv07"
+      - "#TempoRealCazéTV"
+      - "#Original"
+      - "#sãopaulofc"
+      - "#anulado"
