@@ -223,15 +223,15 @@ google_trends_br_daily:
   enabled: true
   terms:
     pt:
-    - nelson wilians
-    - uss abraham lincoln (cvn-72)
-    - charles iii
-    - track and field
-    - quem
-    - governador do ceará
-    - túlio gadêlha
-    - eclipse solar total
-    - nino
-    - 13 de agosto
+    - eclipse solar de 12 de agosto de 2026
+    - fernando haddad
+    - liberdade de imprensa
+    - alistamento militar
+    - polícia
+    - avião
+    - geovanna tominaga
+    - viatura
+    - imax
+    - resultado da quina concurso 7089
   source: google_trends_br_daily
-  updated_at: '2026-08-13T11:00:40.639197+00:00'
+  updated_at: '2026-08-12T11:00:36.850242+00:00'

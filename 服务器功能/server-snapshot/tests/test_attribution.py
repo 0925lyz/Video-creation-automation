@@ -13,6 +13,7 @@ from jaguartv_factory.core import (
 from jaguartv_factory.dashboard import (
     attribution_report,
     dashboard_overview,
+    save_callback,
     save_events,
     save_publication,
     save_review,
@@ -75,7 +76,10 @@ def test_review_gate_blocks_unapproved_publication(tmp_path: Path):
         save_publication(config, {"candidate_id": "cand-1", "platform": "youtube"})
     result = save_review(config, {"candidate_id": "cand-1", "decision": "APPROVED", "reviewer": "tester"})
     assert result["status"] == "APPROVED"
-    assert save_publication(config, {"candidate_id": "cand-1", "platform": "youtube"}) > 0
+    assert save_publication(
+        config,
+        {"candidate_id": "cand-1", "platform": "youtube", "account": "manual_review_channel"},
+    ) > 0
 
 
 def test_review_rejects_invalid_decision(tmp_path: Path):
@@ -113,6 +117,43 @@ def test_events_ingest_and_attribution(tmp_path: Path):
     assert overview["kpis"]["registrations"] == 1
     keyword = overview["keywords"][0]
     assert keyword["first_watch"] == 1
+
+
+def test_events_parse_utm_content_from_last_underscore(tmp_path: Path):
+    config = make_config(tmp_path)
+    insert_candidate(config, "upload_abc123")
+    insert_candidate(config, "candidate_part01")
+    result = save_events(config, {"events": [
+        {"event_type": "landing_click", "utm_content": "upload_abc123_A", "utm_source": "facebook"},
+        {"event_type": "registration", "utm_content": "candidate_part01_B", "utm_source": "tiktok"},
+    ]})
+
+    assert result == {"saved": 2, "skipped": 0}
+    assert attribution_report(config, "upload_abc123")["funnel"]["landing_click"] == 1
+    assert attribution_report(config, "candidate_part01")["funnel"]["registration"] == 1
+
+
+def test_callback_updates_dashboard_kpis(tmp_path: Path):
+    config = make_config(tmp_path)
+    insert_candidate(config)
+
+    result = save_callback(config, {
+        "candidate_id": "cand-1",
+        "publisher": "operator",
+        "platform": "youtube",
+        "views": 1000,
+        "clicks": 30,
+        "registrations": 4,
+        "timestamp": "2026-08-14T00:00:00+00:00",
+    })
+
+    assert result["success"] is True
+    assert result["snapshot_id"] > 0
+    assert result["registration_events"] == 4
+    overview = dashboard_overview(config)
+    assert overview["kpis"]["views"] == 1000
+    assert overview["kpis"]["clicks"] == 30
+    assert overview["kpis"]["registrations"] == 4
 
 
 def test_events_reject_all_invalid(tmp_path: Path):

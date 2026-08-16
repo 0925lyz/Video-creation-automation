@@ -30,6 +30,8 @@ node_modules/
 .remotion/
 .cache/
 package-lock.json
+pnpm-lock.yaml
+pnpm-workspace.yaml
 
 # JaguarTV runtime workspace: source videos, rendered videos, DB, login sessions.
 # Keep reproducible source code/config in git, not local media or account state.

@@ -1,0 +1,17 @@
+[Unit]
+Description=JaguarTV douyin source helper
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/jaguartv-content-factory-vnext
+EnvironmentFile=-/opt/jaguartv-content-factory-vnext/.env
+ExecStart=/opt/jaguartv-content-factory-vnext/.venv/bin/python -m jaguartv_factory.source_service --config config/pipeline.yaml --host 127.0.0.1 --port 8000 --mode douyin
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+
+[Install]
+WantedBy=multi-user.target
