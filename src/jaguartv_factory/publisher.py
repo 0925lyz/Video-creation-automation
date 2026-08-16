@@ -12,9 +12,9 @@ from .core import (
     now_iso,
     platform_from_url,
     storage_root,
-    tracking_links,
     workspace_dir,
 )
+from .publishing_copywriter import generate_publishing_copy, source_material_from, youtube_description
 
 
 QUEUE_STATUSES = {"QUEUED", "SCHEDULED", "PUBLISHING"}
@@ -324,17 +324,16 @@ def publication_text(
     tags: list[str],
 ) -> dict[str, Any]:
     youtube = review.get("youtube") if isinstance(review.get("youtube"), dict) else {}
-    title = str(youtube.get("title") or candidate.get("title") or "JaguarTV").strip()
-    links = tracking_links(config, str(candidate.get("id") or ""))
-    cta = links.get("youtube") or str(config.get("brand", {}).get("default_cta") or "")
-    description_parts = [
-        str(youtube.get("description") or candidate.get("description") or "").strip(),
-        f"Assista mais em {cta}" if cta else "",
-        f"Fonte: {candidate.get('source_platform')}" if candidate.get("source_platform") else "",
-    ]
-    description = "\n\n".join(part for part in description_parts if part)
-    clean_tags = list(dict.fromkeys([*tags, "JaguarTV"]))
-    return {"title": title[:100], "description": description[:5000], "tags": clean_tags[:30]}
+    source_material = source_material_from(candidate, candidate.get("_metadata") or {}, review, tags)
+    generated = generate_publishing_copy(config, source_material)
+    title = str(youtube.get("title") or generated.get("title") or candidate.get("title") or "Jaguar TV").strip()
+    caption = str(youtube.get("description") or generated.get("caption") or candidate.get("description") or "").strip()
+    generated_tags = generated.get("tags") if isinstance(generated.get("tags"), list) else []
+    return {
+        "title": title[:70],
+        "description": youtube_description(caption),
+        "tags": [str(item) for item in generated_tags[:5]],
+    }
 
 
 def existing_publication(connection: Any, candidate_id: str, account_key: str) -> dict[str, Any] | None:
