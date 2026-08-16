@@ -217,12 +217,14 @@ def source_material_from(
         "source_title": compact_text(
             source.get("title")
             or metadata_source.get("title")
+            or candidate.get("source_title")
             or candidate.get("title"),
             limit=500,
         ),
         "source_description": compact_text(
             source.get("description")
             or metadata_source.get("description")
+            or candidate.get("source_description")
             or candidate.get("description"),
             limit=1200,
         ),

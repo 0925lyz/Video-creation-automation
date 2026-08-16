@@ -185,6 +185,8 @@ def publication_source_context(connection: Any, candidate_id: str) -> dict[str, 
         "parent_metadata": parent_metadata,
         "source_platform": source_platform or platform_from_url(source_url),
         "source_url": source_url,
+        "source_title": str(source_row.get("title") or source_blob.get("title") or ""),
+        "source_description": str(source_row.get("description") or source_blob.get("description") or ""),
     }
 
 
@@ -326,8 +328,8 @@ def publication_text(
     youtube = review.get("youtube") if isinstance(review.get("youtube"), dict) else {}
     source_material = source_material_from(candidate, candidate.get("_metadata") or {}, review, tags)
     generated = generate_publishing_copy(config, source_material)
-    title = str(youtube.get("title") or generated.get("title") or candidate.get("title") or "Jaguar TV").strip()
-    caption = str(youtube.get("description") or generated.get("caption") or candidate.get("description") or "").strip()
+    title = str(generated.get("title") or youtube.get("title") or candidate.get("title") or "Jaguar TV").strip()
+    caption = str(generated.get("caption") or youtube.get("description") or candidate.get("description") or "").strip()
     generated_tags = generated.get("tags") if isinstance(generated.get("tags"), list) else []
     return {
         "title": title[:70],
@@ -367,6 +369,8 @@ def enqueue_approved_publication(
     candidate = {**context["candidate"], "_metadata": context["metadata"]}
     candidate["source_platform"] = context["source_platform"]
     candidate["source_url"] = context["source_url"]
+    candidate["source_title"] = context.get("source_title") or ""
+    candidate["source_description"] = context.get("source_description") or ""
     if str(candidate.get("status") or "") != "APPROVED":
         return {"candidate_id": candidate_id, "status": "SKIPPED", "reason": "candidate is not APPROVED"}
     asset = youtube_publication_asset(config, candidate_id)
