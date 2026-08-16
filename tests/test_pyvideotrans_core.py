@@ -7,7 +7,7 @@ def test_pipeline_enables_pyvideotrans_adapter_by_default():
     config = load_config(Path("config/pipeline.yaml"))
 
     assert config["edit"]["ocr_backend"] == "auto"
-    assert config["localization"]["voice_enabled"] is False
+    assert config["localization"]["voice_enabled"] is True
     assert config["localization"]["pyvideotrans"]["enabled"] is True
 
 

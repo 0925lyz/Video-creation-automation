@@ -9,6 +9,7 @@ from pathlib import Path
 from .pyvideotrans_adapter import pyvideotrans_available
 from .core import (
     analyze_candidate,
+    connect_db,
     discover,
     download_top,
     generate_review_index,
@@ -19,6 +20,8 @@ from .core import (
     require_binary,
 )
 from .mediacrawler import ingest_mediacrawler_jsonl
+from .publisher import dry_run_approved_queue, enqueue_approved_publication
+from .publish_worker import publish_due_once, run_publish_worker
 from .reaction import REACTION_MODES
 from .server_store import save_upload
 from .strategy import AUDIO_POLICIES, CONTENT_TYPES, SEGMENT_STRATEGIES
@@ -163,7 +166,50 @@ def build_parser() -> argparse.ArgumentParser:
     ui_parser = subparsers.add_parser("ui")
     ui_parser.add_argument("--host", default="127.0.0.1")
     ui_parser.add_argument("--port", type=int, default=8787)
+
+    publish_queue_parser = subparsers.add_parser("publish-queue")
+    publish_queue_parser.add_argument("--candidate")
+    publish_queue_parser.add_argument("--dry-run", action="store_true")
+
+    publish_worker_parser = subparsers.add_parser("publish-worker")
+    publish_worker_parser.add_argument("--once", action="store_true")
+    publish_worker_parser.add_argument("--dry-run", action="store_true")
+    publish_worker_parser.add_argument("--sleep", type=int, default=60)
+    publish_worker_parser.add_argument("--limit", type=int, default=3)
+
+    publish_parser = subparsers.add_parser("publish")
+    publish_parser.add_argument("--candidate")
+    publish_parser.add_argument("--dry-run", action="store_true")
+
+    subparsers.add_parser("publish-status")
     return parser
+
+
+def publication_status_rows(config: dict[str, object]) -> list[dict[str, object]]:
+    connection = connect_db(config)
+    return [
+        dict(row)
+        for row in connection.execute(
+            """
+            SELECT id,candidate_id,platform,account,account_label,scheduled_at,status,
+                   youtube_video_id,youtube_url,error,created_at,updated_at
+            FROM publications
+            ORDER BY COALESCE(scheduled_at,created_at) DESC,id DESC
+            LIMIT 200
+            """
+        )
+    ]
+
+
+def enqueue_approved_rows(config: dict[str, object], candidate_id: str = "") -> list[dict[str, object]]:
+    connection = connect_db(config)
+    if candidate_id:
+        rows = connection.execute(
+            "SELECT id FROM candidates WHERE id=? AND status='APPROVED'", (candidate_id,)
+        ).fetchall()
+    else:
+        rows = connection.execute("SELECT id FROM candidates WHERE status='APPROVED' ORDER BY updated_at DESC").fetchall()
+    return [enqueue_approved_publication(config, str(row["id"])) for row in rows]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -210,6 +256,25 @@ def main(argv: list[str] | None = None) -> int:
         from .dashboard import serve_dashboard
 
         serve_dashboard(config, args.host, args.port)
+    elif args.command == "publish-queue":
+        if args.dry_run:
+            print_json(dry_run_approved_queue(config, candidate_id=args.candidate or ""))
+        else:
+            print_json(enqueue_approved_rows(config, args.candidate or ""))
+    elif args.command == "publish-worker":
+        if args.dry_run:
+            print_json(publish_due_once(config, limit=args.limit, dry_run=True))
+        else:
+            run_publish_worker(config, once=args.once, sleep_sec=args.sleep, limit=args.limit)
+    elif args.command == "publish":
+        if not args.candidate:
+            raise ValueError("--candidate is required")
+        if args.dry_run:
+            print_json(dry_run_approved_queue(config, candidate_id=args.candidate))
+        else:
+            print_json(enqueue_approved_publication(config, args.candidate))
+    elif args.command == "publish-status":
+        print_json(publication_status_rows(config))
     return 0
 
 

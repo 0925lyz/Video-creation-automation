@@ -50,6 +50,7 @@ from .workbuddy_adapter import (
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG = ROOT / "config" / "pipeline.yaml"
+LOCALIZABLE_CHINESE_AUDIO_PLATFORMS = {"bilibili", "douyin"}
 
 
 def scoring_config_path(config: dict[str, Any]) -> str | None:
@@ -210,13 +211,29 @@ def connect_db(config: dict[str, Any]) -> sqlite3.Connection:
         CREATE TABLE IF NOT EXISTS publications (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           candidate_id TEXT NOT NULL,
+          package_id TEXT NOT NULL DEFAULT '',
+          asset_id TEXT NOT NULL DEFAULT '',
+          variant TEXT NOT NULL DEFAULT '',
+          source_platform TEXT NOT NULL DEFAULT '',
           platform TEXT NOT NULL,
           account TEXT NOT NULL DEFAULT '',
+          account_label TEXT NOT NULL DEFAULT '',
+          channel_id TEXT NOT NULL DEFAULT '',
           scheduled_at TEXT,
           published_at TEXT,
           status TEXT NOT NULL DEFAULT 'QUEUED',
+          title TEXT NOT NULL DEFAULT '',
+          description TEXT NOT NULL DEFAULT '',
+          tags_json TEXT NOT NULL DEFAULT '[]',
+          privacy_status TEXT NOT NULL DEFAULT '',
+          youtube_video_id TEXT NOT NULL DEFAULT '',
+          youtube_url TEXT NOT NULL DEFAULT '',
           post_url TEXT NOT NULL DEFAULT '',
           error TEXT NOT NULL DEFAULT '',
+          error_json TEXT NOT NULL DEFAULT '{}',
+          timezone TEXT NOT NULL DEFAULT '',
+          reviewer TEXT NOT NULL DEFAULT '',
+          review_decision_at TEXT,
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL,
           UNIQUE(candidate_id, platform, account, scheduled_at)
@@ -326,6 +343,46 @@ def connect_db(config: dict[str, Any]) -> sqlite3.Connection:
         );
         CREATE INDEX IF NOT EXISTS download_claim_candidate
           ON download_claims(candidate_id, downloaded_at DESC);
+        CREATE TABLE IF NOT EXISTS youtube_channel_auths (
+          account TEXT PRIMARY KEY,
+          channel_id TEXT NOT NULL DEFAULT '',
+          channel_title TEXT NOT NULL DEFAULT '',
+          scopes TEXT NOT NULL DEFAULT '',
+          encrypted_refresh_token TEXT NOT NULL DEFAULT '',
+          token_type TEXT NOT NULL DEFAULT '',
+          expires_in INTEGER NOT NULL DEFAULT 0,
+          authorized_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          metadata_json TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE TABLE IF NOT EXISTS x_oauth_states (
+          state TEXT PRIMARY KEY,
+          account TEXT NOT NULL,
+          code_verifier TEXT NOT NULL,
+          redirect_uri TEXT NOT NULL DEFAULT '',
+          scopes TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          expires_at TEXT NOT NULL,
+          used_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS x_account_auths (
+          account TEXT PRIMARY KEY,
+          x_user_id TEXT NOT NULL DEFAULT '',
+          username TEXT NOT NULL DEFAULT '',
+          display_name TEXT NOT NULL DEFAULT '',
+          scopes TEXT NOT NULL DEFAULT '',
+          encrypted_access_token TEXT NOT NULL DEFAULT '',
+          encrypted_refresh_token TEXT NOT NULL DEFAULT '',
+          token_type TEXT NOT NULL DEFAULT '',
+          expires_in INTEGER NOT NULL DEFAULT 0,
+          expires_at TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'PENDING_CONFIRMATION',
+          authorized_at TEXT NOT NULL,
+          confirmed_at TEXT,
+          revoked_at TEXT,
+          updated_at TEXT NOT NULL,
+          metadata_json TEXT NOT NULL DEFAULT '{}'
+        );
         """
     )
     candidate_columns = {
@@ -336,6 +393,36 @@ def connect_db(config: dict[str, Any]) -> sqlite3.Connection:
             "ALTER TABLE candidates ADD COLUMN published_flag INTEGER NOT NULL DEFAULT 0"
         )
         connection.commit()
+    publication_columns = {
+        str(row["name"]) for row in connection.execute("PRAGMA table_info(publications)")
+    }
+    publication_column_sql = {
+        "package_id": "ALTER TABLE publications ADD COLUMN package_id TEXT NOT NULL DEFAULT ''",
+        "asset_id": "ALTER TABLE publications ADD COLUMN asset_id TEXT NOT NULL DEFAULT ''",
+        "variant": "ALTER TABLE publications ADD COLUMN variant TEXT NOT NULL DEFAULT ''",
+        "source_platform": "ALTER TABLE publications ADD COLUMN source_platform TEXT NOT NULL DEFAULT ''",
+        "account_label": "ALTER TABLE publications ADD COLUMN account_label TEXT NOT NULL DEFAULT ''",
+        "channel_id": "ALTER TABLE publications ADD COLUMN channel_id TEXT NOT NULL DEFAULT ''",
+        "title": "ALTER TABLE publications ADD COLUMN title TEXT NOT NULL DEFAULT ''",
+        "description": "ALTER TABLE publications ADD COLUMN description TEXT NOT NULL DEFAULT ''",
+        "tags_json": "ALTER TABLE publications ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'",
+        "privacy_status": "ALTER TABLE publications ADD COLUMN privacy_status TEXT NOT NULL DEFAULT ''",
+        "youtube_video_id": "ALTER TABLE publications ADD COLUMN youtube_video_id TEXT NOT NULL DEFAULT ''",
+        "youtube_url": "ALTER TABLE publications ADD COLUMN youtube_url TEXT NOT NULL DEFAULT ''",
+        "error_json": "ALTER TABLE publications ADD COLUMN error_json TEXT NOT NULL DEFAULT '{}'",
+        "timezone": "ALTER TABLE publications ADD COLUMN timezone TEXT NOT NULL DEFAULT ''",
+        "reviewer": "ALTER TABLE publications ADD COLUMN reviewer TEXT NOT NULL DEFAULT ''",
+        "review_decision_at": "ALTER TABLE publications ADD COLUMN review_decision_at TEXT",
+    }
+    for column, statement in publication_column_sql.items():
+        if column not in publication_columns:
+            connection.execute(statement)
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS publications_account_status ON publications(account,status,scheduled_at)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS publications_candidate_account ON publications(candidate_id,platform,account,status)"
+    )
     connection.execute(
         """
         INSERT OR IGNORE INTO seen_sources
@@ -1187,7 +1274,7 @@ def choose_audio_strategy(
         return "localized", "", "forced_localization_without_transcript"
     if has_audio:
         return "preserve_source", "", "no_speech_evidence_source_audio_preserved"
-    return "bgm_only", "", "no_speech_evidence_source_has_no_audio"
+    return "silent", "", "no_speech_evidence_source_has_no_audio"
 
 
 def localization_profile_for_candidate(
@@ -1212,7 +1299,8 @@ def localization_profile_for_candidate(
     platform = str(row["platform"] or "").strip().lower()
     ocr_regions: list[list[float]] = []
     ocr_reason = ""
-    if not chinese_subtitles and platform in {"bilibili", "douyin", "xiaohongshu"}:
+    can_localize_chinese_audio = platform in LOCALIZABLE_CHINESE_AUDIO_PLATFORMS
+    if not chinese_subtitles and can_localize_chinese_audio:
         try:
             ocr_regions = detect_chinese_text_regions(
                 media,
@@ -1223,10 +1311,11 @@ def localization_profile_for_candidate(
         except RuntimeError as error:
             ocr_reason = f"ocr_unavailable:{error}"
     chinese_on_screen = chinese_subtitles or bool(ocr_regions)
-    chinese_audio_evidence = (
+    chinese_audio_evidence = can_localize_chinese_audio and has_audio and (
         chinese_subtitles
-        or (platform in {"douyin", "xiaohongshu"} and chinese_on_screen)
-        or (has_audio and (detected_language.startswith("zh") or title_has_chinese))
+        or chinese_on_screen
+        or detected_language.startswith("zh")
+        or title_has_chinese
     )
     if chinese_audio_evidence and chinese_on_screen:
         class_id = 1
@@ -1240,7 +1329,7 @@ def localization_profile_for_candidate(
         reason = "chinese_audio_inferred_without_screen_subtitles"
     else:
         class_id = 2
-        mode = "preserve_source" if has_audio else "bgm_only"
+        mode = "preserve_source" if has_audio else "silent"
         subtitle_mode = "none"
         reason = "no_chinese_speech_or_subtitle_evidence"
     return {
@@ -1267,7 +1356,7 @@ def should_ocr_blur_source_subtitles(
 ) -> bool:
     if str(cleanup_mode).strip().lower() != "ocr_blur":
         return False
-    chinese_platforms = {"bilibili", "douyin", "xiaohongshu"}
+    chinese_platforms = LOCALIZABLE_CHINESE_AUDIO_PLATFORMS
     normalized_platform = platform.strip().lower()
     if normalized_platform not in chinese_platforms:
         return False
@@ -2252,20 +2341,18 @@ def render_video_ffmpeg(
     image_inputs = [logo, *(path for path, _, _ in subtitle_assets), endcard]
     args = ["ffmpeg", "-y", "-ss", f"{max(0.0, start_time):.3f}", "-t", f"{duration:.3f}", "-i", str(media)]
     if audio_mode == "localized":
-        if not voice or not bgm:
-            raise RuntimeError("Localized render requires voice and BGM")
-        args.extend(["-i", str(voice), "-stream_loop", "-1", "-i", str(bgm)])
-        image_input_start = 3
-    elif audio_mode == "preserve_source":
+        if not voice:
+            raise RuntimeError("Localized render requires pt-BR voice")
+        args.extend(["-i", str(voice)])
         if bgm:
             args.extend(["-stream_loop", "-1", "-i", str(bgm)])
-            image_input_start = 2
+            image_input_start = 3
         else:
-            image_input_start = 1
-    elif audio_mode == "bgm_only":
-        if not bgm:
-            raise RuntimeError("BGM-only render requires a BGM track")
-        args.extend(["-stream_loop", "-1", "-i", str(bgm)])
+            image_input_start = 2
+    elif audio_mode == "preserve_source":
+        image_input_start = 1
+    elif audio_mode in {"bgm_only", "silent"}:
+        args.extend(["-f", "lavfi", "-t", f"{duration:.3f}", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"])
         image_input_start = 2
     else:
         raise RuntimeError(f"Unsupported audio mode: {audio_mode}")
@@ -2317,31 +2404,24 @@ def render_video_ffmpeg(
     fade_out_start = max(0.0, duration - 1.0)
     if audio_mode == "localized":
         chains.append(f"[1:a]volume={voice_volume},apad,asplit=2[voice_sc][voice_mix]")
-        chains.append(
-            f"[2:a]volume={bgm_volume},atrim=0:{duration:.3f},"
-            f"afade=t=in:st=0:d=0.35,afade=t=out:st={fade_out_start:.3f}:d=1[bgm]"
-        )
-        chains.append("[bgm][voice_sc]sidechaincompress=threshold=0.060:ratio=4:attack=12:release=220[bgm_ducked]")
-        chains.append("[bgm_ducked][voice_mix]amix=inputs=2:duration=first:dropout_transition=1:normalize=0[a]")
+        if bgm:
+            chains.append(
+                f"[2:a]volume={bgm_volume},atrim=0:{duration:.3f},"
+                f"afade=t=in:st=0:d=0.35,afade=t=out:st={fade_out_start:.3f}:d=1[backing]"
+            )
+            chains.append("[backing][voice_sc]sidechaincompress=threshold=0.060:ratio=4:attack=12:release=220[backing_ducked]")
+            chains.append("[backing_ducked][voice_mix]amix=inputs=2:duration=first:dropout_transition=1:normalize=0[a]")
+        else:
+            chains.append(f"[voice_mix]atrim=0:{duration:.3f},afade=t=out:st={fade_out_start:.3f}:d=1[a]")
     elif audio_mode == "preserve_source":
         source_volume = float(config.get("audio", {}).get("source_music_volume", 1.0))
-        if bgm:
-            light_bgm_volume = float(config.get("remotion", {}).get("content_bgm_volume", 0.16))
-            chains.append(f"[0:a]volume={source_volume},atrim=0:{duration:.3f}[source_audio]")
-            chains.append(
-                f"[1:a]volume={light_bgm_volume},atrim=0:{duration:.3f},"
-                f"afade=t=in:st=0:d=0.35,afade=t=out:st={fade_out_start:.3f}:d=1[light_bgm]"
-            )
-            chains.append("[source_audio][light_bgm]amix=inputs=2:duration=first:normalize=0[a]")
-        else:
-            chains.append(
-                f"[0:a]volume={source_volume},atrim=0:{duration:.3f},"
-                f"afade=t=out:st={fade_out_start:.3f}:d=1[a]"
-            )
+        chains.append(
+            f"[0:a]volume={source_volume},atrim=0:{duration:.3f},"
+            f"afade=t=out:st={fade_out_start:.3f}:d=1[a]"
+        )
     else:
         chains.append(
-            f"[1:a]volume={bgm_volume},atrim=0:{duration:.3f},"
-            f"afade=t=in:st=0:d=0.35,afade=t=out:st={fade_out_start:.3f}:d=1[a]"
+            f"[1:a]atrim=0:{duration:.3f}[a]"
         )
     args.extend([
         "-filter_complex", ";".join(chains), "-map", "[v]", "-map", "[a]", "-t", f"{duration:.3f}",
@@ -2741,26 +2821,26 @@ def render_clean_segment(
     source_volume = float(config.get("audio", {}).get("source_music_volume", 1.0))
     fade_out_start = max(0.0, duration - 1.0)
     if audio_mode == "localized":
-        if not voice or not bgm:
-            raise RuntimeError("Localized clean render requires voice and BGM")
-        args.extend(["-i", str(voice), "-stream_loop", "-1", "-i", str(bgm)])
-        audio_chains.extend([
-            f"[1:a]volume={voice_volume},apad,asplit=2[voice_sc][voice_mix]",
-            f"[2:a]volume={bgm_volume},atrim=0:{duration:.3f},afade=t=in:st=0:d=0.35,afade=t=out:st={fade_out_start:.3f}:d=1[bgm]",
-            "[bgm][voice_sc]sidechaincompress=threshold=0.060:ratio=4:attack=12:release=220[bgm_ducked]",
-            "[bgm_ducked][voice_mix]amix=inputs=2:duration=first:dropout_transition=1:normalize=0[a]",
-        ])
+        if not voice:
+            raise RuntimeError("Localized clean render requires pt-BR voice")
+        args.extend(["-i", str(voice)])
+        audio_chains.append(f"[1:a]volume={voice_volume},apad,asplit=2[voice_sc][voice_mix]")
+        if bgm:
+            args.extend(["-stream_loop", "-1", "-i", str(bgm)])
+            audio_chains.extend([
+                f"[2:a]volume={bgm_volume},atrim=0:{duration:.3f},afade=t=in:st=0:d=0.35,afade=t=out:st={fade_out_start:.3f}:d=1[backing]",
+                "[backing][voice_sc]sidechaincompress=threshold=0.060:ratio=4:attack=12:release=220[backing_ducked]",
+                "[backing_ducked][voice_mix]amix=inputs=2:duration=first:dropout_transition=1:normalize=0[a]",
+            ])
+        else:
+            audio_chains.append(f"[voice_mix]atrim=0:{duration:.3f},afade=t=out:st={fade_out_start:.3f}:d=1[a]")
     elif audio_mode == "preserve_source":
         audio_chains.append(
             f"[0:a]volume={source_volume},atrim=0:{duration:.3f},afade=t=out:st={fade_out_start:.3f}:d=1[a]"
         )
-    elif audio_mode == "bgm_only":
-        if not bgm:
-            raise RuntimeError("BGM-only clean render requires a BGM track")
-        args.extend(["-stream_loop", "-1", "-i", str(bgm)])
-        audio_chains.append(
-            f"[1:a]volume={bgm_volume},atrim=0:{duration:.3f},afade=t=in:st=0:d=0.35,afade=t=out:st={fade_out_start:.3f}:d=1[a]"
-        )
+    elif audio_mode in {"bgm_only", "silent"}:
+        args.extend(["-f", "lavfi", "-t", f"{duration:.3f}", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"])
+        audio_chains.append(f"[1:a]atrim=0:{duration:.3f}[a]")
     else:
         raise RuntimeError(f"Unsupported audio mode: {audio_mode}")
 
@@ -3456,8 +3536,11 @@ def produce_candidate(
             config=config,
         )
     elif audio_mode == "preserve_source" and not media_has_audio(media):
-        audio_mode = "bgm_only"
+        audio_mode = "silent"
         audio_reason += ":source_has_no_audio"
+    elif audio_mode in {"bgm_only", "silent"} and media_has_audio(media):
+        audio_mode = "preserve_source"
+        audio_reason += ":fixed_bgm_policy_disabled_source_audio_preserved"
     progress(18, f"音轨策略：{audio_mode}")
     script = ""
     voice: Path | None = None
@@ -3490,24 +3573,20 @@ def produce_candidate(
             progress(48, "pt-BR 配音已生成")
         else:
             voice = None
-            if translated_subtitles:
-                subtitles = translated_subtitles
-            audio_mode = "bgm_only"
-            audio_reason += ":voice_disabled_bgm_only"
-            progress(48, "葡语脚本检查通过，按配置不生成固定配音")
-        if bool(config.get("localization", {}).get("preserve_backing_track", False)):
+            audio_mode = "preserve_source" if media_has_audio(media) else "silent"
+            audio_reason += ":voice_disabled_source_audio_preserved"
+            progress(48, "葡语脚本检查通过，未启用配音时保留源音且不添加固定音频")
+        if audio_mode == "localized" and voice and bool(config.get("localization", {}).get("preserve_backing_track", False)):
             try:
                 bgm = demucs_backing_track(media, work)
                 bgm_source = "demucs_no_vocals"
             except RuntimeError:
-                bgm, bgm_source = select_bgm(config, row["id"])
-                bgm_source = f"{bgm_source}:demucs_fallback"
-        else:
-            bgm, bgm_source = select_bgm(config, row["id"])
-        progress(55, "Funk BGM 已准备")
-    elif audio_mode == "bgm_only":
-        bgm, bgm_source = select_bgm(config, row["id"])
-        progress(55, "静音源素材已加入 Funk BGM")
+                bgm = None
+                bgm_source = "none:demucs_unavailable"
+        progress(55, "葡语音轨已准备，未添加固定 BGM")
+    elif audio_mode in {"bgm_only", "silent"}:
+        audio_mode = "silent"
+        progress(55, "源素材无可保留音轨，输出静音且不添加固定音频")
     else:
         progress(55, "无对白证据，保留源音乐且不生成旁白字幕")
     script_payload = {
@@ -3519,7 +3598,7 @@ def produce_candidate(
         "audio_reason": audio_reason,
     }
     (work / "script_ptbr.json").write_text(json.dumps(script_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    if audio_mode == "bgm_only" and subtitles:
+    if audio_mode in {"bgm_only", "silent"} and subtitles:
         preferred_duration = min(60.0, source_duration)
     elif audio_mode == "localized" and voice and (work / "subtitles_ptbr.srt").is_file():
         voice_duration = media_duration(voice)
@@ -3542,15 +3621,6 @@ def produce_candidate(
             stale.unlink(missing_ok=True)
     render_engine = str(config.get("edit", {}).get("render_engine", "ffmpeg")).strip().lower()
     enforce_dual_variant_remotion(config)
-    if (
-        audio_mode == "preserve_source"
-        and strategy.audio_policy in {
-            "source_plus_funk", "funk_or_source_music", "preserve_ptbr_voice_light_bgm"
-        }
-        and config.get("remotion", {}).get("add_bgm_under_source", True) is not False
-    ):
-        bgm, bgm_source = select_bgm(config, row["id"])
-        progress(58, "已准备源音下的轻量 Funk BGM")
     transcript_file = next(iter(sorted([*work.glob("source*.srt"), *work.glob("source*.vtt")])), None)
     custom_design = ((config.get("remotion", {}) or {}).get("custom_design", {}) or {})
     if bool(custom_design.get("enabled")) and bool(custom_design.get("whole_source")):
@@ -3827,7 +3897,7 @@ def produce_candidate(
             "audio": {
                 "mode": audio_mode,
                 "reason": audio_reason,
-                "source_audio_removed": audio_mode != "preserve_source",
+                "source_audio_removed": audio_mode == "localized",
                 "source_audio_preserved": audio_mode == "preserve_source",
                 "voice": "pt-BR/Luciana" if voice else "",
                 "bgm": str(bgm) if bgm else "",
@@ -3886,7 +3956,7 @@ def produce_candidate(
         "audio_policy": {
             "mode": audio_mode,
             "reason": audio_reason,
-            "source_audio_removed": audio_mode != "preserve_source",
+            "source_audio_removed": audio_mode == "localized",
             "bgm_source": bgm_source,
         },
         "qa": qa_results,
@@ -4016,10 +4086,10 @@ def generate_review_index(config: dict[str, Any]) -> Path:
         cleanup = metadata.get("visual_cleanup", {})
         if audio.get("mode") == "preserve_source":
             audio_summary = "música original preservada · sem narração/legendas"
-        elif audio.get("mode") == "bgm_only":
-            audio_summary = f"Funk BGM ({audio.get('bgm_source', 'unknown')}) · sem narração/legendas"
+        elif audio.get("mode") in {"bgm_only", "silent"}:
+            audio_summary = "sem áudio fixo adicionado"
         else:
-            audio_summary = f"pt-BR + Funk BGM ({audio.get('bgm_source', 'unknown')}) · áudio original removido"
+            audio_summary = "narração pt-BR · áudio original removido"
         video_path = directory / "video.mp4"
         version = int(video_path.stat().st_mtime) if video_path.exists() else 0
         cards.append(

@@ -25,6 +25,7 @@ from jaguartv_factory.core import (
 )
 from jaguartv_factory.dashboard import (
     DashboardApplication,
+    candidate_design_info,
     candidate_rows,
     delete_candidates,
     download_claim_rows,
@@ -277,6 +278,163 @@ def test_design_image_upload_accepts_png_and_rejects_video(tmp_path: Path):
         init_chunked_upload(config, filename="logo.mp4", kind="design_image", content_length=4)
 
 
+def write_server_review_package(config: dict, package_id: str, source_candidate_id: str) -> Path:
+    package = Path(config["_root"]) / "workspace" / "server_media" / "review" / package_id
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "video.mp4").write_bytes(b"review-video")
+    (package / "metadata.json").write_text(
+        json.dumps({
+            "job_id": package_id,
+            "source_job_id": source_candidate_id,
+            "source": {
+                "platform": "tiktok",
+                "url": "https://example.test/source",
+                "title": "Part package",
+            },
+            "segment": {"duration_sec": 30, "highlight_score": 10},
+        }),
+        encoding="utf-8",
+    )
+    return package
+
+
+def test_server_review_part_rows_expose_source_candidate_id(tmp_path: Path):
+    config = make_config(tmp_path)
+    insert_candidate(config, "source-parent", "READY_FOR_REVIEW")
+    write_server_review_package(config, "source-parent_part01", "source-parent")
+
+    rows = candidate_rows(config, "READY_FOR_REVIEW", 20)
+    part = next(row for row in rows if row["id"] == "source-parent_part01")
+
+    assert part["source_candidate_id"] == "source-parent"
+
+
+def test_design_production_resolves_part_package_to_source_candidate(tmp_path: Path, monkeypatch):
+    config = make_config(tmp_path)
+    insert_candidate(config, "source-parent", "READY_FOR_REVIEW")
+    write_server_review_package(config, "source-parent_part01", "source-parent")
+    calls = []
+
+    def fake_produce(config_arg, limit, candidate, progress_callback=None, options=None):
+        calls.append((candidate, options))
+        connection = connect_db(config)
+        connection.execute(
+            "UPDATE candidates SET status='READY_FOR_REVIEW',updated_at=? WHERE id=?",
+            (now_iso(), candidate),
+        )
+        connection.commit()
+        return {"selected": 1, "produced": 1, "failed": 0}
+
+    monkeypatch.setattr("jaguartv_factory.dashboard.produce_top", fake_produce)
+    app = DashboardApplication(("127.0.0.1", 0), config)
+    try:
+        app.tasks["design-task"] = {"status": "RUNNING"}
+        result = app.run_candidate_batch(
+            "design-task",
+            "produce",
+            ["source-parent_part01"],
+            {"design": {"layers": [], "base_asset_id": "source-parent_part01"}},
+        )
+    finally:
+        app.server_close()
+
+    assert result["failed"] == 0
+    assert calls[0][0] == "source-parent"
+
+
+def test_design_production_materializes_server_review_package_without_parent(tmp_path: Path, monkeypatch):
+    config = make_config(tmp_path)
+    write_server_review_package(config, "orphan_part01", "missing-parent")
+    calls = []
+
+    def fake_produce(config_arg, limit, candidate, progress_callback=None, options=None):
+        calls.append(candidate)
+        connection = connect_db(config)
+        connection.execute(
+            "UPDATE candidates SET status='READY_FOR_REVIEW',updated_at=? WHERE id=?",
+            (now_iso(), candidate),
+        )
+        connection.commit()
+        return {"selected": 1, "produced": 1, "failed": 0}
+
+    monkeypatch.setattr("jaguartv_factory.dashboard.produce_top", fake_produce)
+    app = DashboardApplication(("127.0.0.1", 0), config)
+    try:
+        app.tasks["design-task"] = {"status": "RUNNING"}
+        result = app.run_candidate_batch(
+            "design-task",
+            "produce",
+            ["orphan_part01"],
+            {"design": {"layers": [], "base_asset_id": "orphan_part01"}},
+        )
+    finally:
+        app.server_close()
+
+    row = connect_db(config).execute("SELECT parent_id,status FROM candidates WHERE id='orphan_part01'").fetchone()
+    assert result["failed"] == 0
+    assert calls == ["orphan_part01"]
+    assert row["parent_id"] == "missing-parent"
+
+
+def test_design_production_materializes_asset_package_when_parent_was_deleted(tmp_path: Path, monkeypatch):
+    config = make_config(tmp_path)
+    package = write_server_review_package(config, "deleted-parent_part01", "deleted-parent")
+    (package / "0803-YouTube-7-通用版.mp4").write_bytes(b"named-review-video")
+    calls = []
+
+    def fake_produce(config_arg, limit, candidate, progress_callback=None, options=None):
+        calls.append((candidate, options["design"]["base_asset_id"]))
+        connection = connect_db(config)
+        connection.execute(
+            "UPDATE candidates SET status='READY_FOR_REVIEW',updated_at=? WHERE id=?",
+            (now_iso(), candidate),
+        )
+        connection.commit()
+        return {"selected": 1, "produced": 1, "failed": 0}
+
+    monkeypatch.setattr("jaguartv_factory.dashboard.produce_top", fake_produce)
+    app = DashboardApplication(("127.0.0.1", 0), config)
+    try:
+        app.tasks["design-task"] = {"status": "RUNNING"}
+        result = app.run_candidate_batch(
+            "design-task",
+            "produce",
+            ["deleted-parent"],
+            {
+                "design": {
+                    "layers": [],
+                    "base_asset_id": "deleted-parent_part01:0803-YouTube-7-通用版",
+                }
+            },
+        )
+    finally:
+        app.server_close()
+
+    row = connect_db(config).execute(
+        "SELECT parent_id,status FROM candidates WHERE id='deleted-parent_part01'"
+    ).fetchone()
+    assert result["failed"] == 0
+    assert calls == [("deleted-parent_part01", "deleted-parent_part01:0803-YouTube-7-通用版")]
+    assert row["parent_id"] == "deleted-parent"
+
+
+def test_design_info_returns_asset_package_when_parent_was_deleted(tmp_path: Path, monkeypatch):
+    config = make_config(tmp_path)
+    package = write_server_review_package(config, "deleted-parent_part01", "deleted-parent")
+    asset = package / "0803-YouTube-7-通用版.mp4"
+    asset.write_bytes(b"named-review-video")
+    monkeypatch.setattr("jaguartv_factory.dashboard.media_dimensions", lambda path: (1080, 1440))
+
+    info = candidate_design_info(
+        config,
+        "deleted-parent::asset::deleted-parent_part01:0803-YouTube-7-通用版",
+    )
+
+    assert info["source_candidate_id"] == "deleted-parent_part01"
+    assert info["design_base_asset_id"] == "deleted-parent_part01:0803-YouTube-7-通用版"
+    assert info["source_preview_url"].startswith("/media/review/deleted-parent_part01/")
+
+
 def test_source_upload_becomes_downloaded_candidate(tmp_path: Path, monkeypatch):
     config = {
         "_root": str(tmp_path),
@@ -394,6 +552,25 @@ def test_inventory_parent_candidate_exposes_all_segment_outputs(tmp_path: Path):
     assert row["download_url"].endswith("&download=1")
     assert row["server_url"].endswith("/review/source1_part01/video.mp4")
     assert row["output_assets"][1]["filename"] == "source1_part02.mp4"
+
+
+def test_review_output_label_prefers_design_batch_name_for_part_assets(tmp_path: Path):
+    config = make_config(tmp_path)
+    insert_candidate(config, "source-parent", "READY_FOR_REVIEW")
+    package = write_server_review_package(config, "source-parent_part03", "source-parent")
+    (package / "0816-TikTko-文案设计版-2-通用版.mp4").write_bytes(b"design-video")
+    metadata = json.loads((package / "metadata.json").read_text(encoding="utf-8"))
+    metadata["batch_label"] = "文案设计版"
+    (package / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+
+    row = next(item for item in candidate_rows(config) if item["id"] == "source-parent")
+    design_asset = next(
+        asset for asset in row["output_assets"]
+        if asset["filename"] == "0816-TikTko-文案设计版-2-通用版.mp4"
+    )
+
+    assert design_asset["label"] == "文案设计版 · 通用版"
+    assert design_asset["batch_label"] == "文案设计版"
 
 
 def test_produce_keeps_ready_status_when_partial_outputs_exist(tmp_path: Path, monkeypatch):

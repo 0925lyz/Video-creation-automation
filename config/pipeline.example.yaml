@@ -32,7 +32,7 @@ localization:
   target: pt-BR
   asr_enabled: false
   whisper_model: tiny
-  voice_enabled: false
+  voice_enabled: true
   tts_provider: auto
   edge_tts_voice: pt-BR-AntonioNeural
   preserve_backing_track: false
@@ -63,6 +63,35 @@ brand:
   logo: assets/brand/logo.png
   end_card: assets/brand/end-card.mp4
   default_cta: https://copa.jarg.top/
+
+publishing:
+  enabled: true
+  timezone: America/Sao_Paulo
+  youtube_category_accounts:
+    足球类: jaguartv_vivo
+  accounts:
+    jaguartv_vivo:
+      platform: youtube
+      label: jaguartv vivo
+      channel_id: UC8gCZXc5wbnjuZeco7qbKug
+      channel_key: 8gCZXc5wbnjuZeco7qbKug
+      authorized_email: miirandapache@gmail.com
+      daily_limit: 3
+      schedule_times:
+        - "11:00"
+        - "15:30"
+        - "19:00"
+      allowed_source_platforms:
+        - tiktok
+        - douyin
+        - facebook
+        - bilibili
+      blocked_source_platforms:
+        - youtube
+      content_tags:
+        - 足球类
+      default_privacy_status: public
+      enabled: true
 
 storage:
   provider: factory_server

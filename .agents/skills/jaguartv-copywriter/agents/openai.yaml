@@ -1,0 +1,4 @@
+interface:
+  display_name: "JaguarTV Copywriter"
+  short_description: "Maintain the pt-BR copywriter tool"
+  default_prompt: "Use $jaguartv-copywriter to update the Brazilian Portuguese copy generator."

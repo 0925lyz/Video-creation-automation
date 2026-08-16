@@ -76,7 +76,10 @@ def test_review_gate_blocks_unapproved_publication(tmp_path: Path):
         save_publication(config, {"candidate_id": "cand-1", "platform": "youtube"})
     result = save_review(config, {"candidate_id": "cand-1", "decision": "APPROVED", "reviewer": "tester"})
     assert result["status"] == "APPROVED"
-    assert save_publication(config, {"candidate_id": "cand-1", "platform": "youtube"}) > 0
+    assert save_publication(
+        config,
+        {"candidate_id": "cand-1", "platform": "youtube", "account": "manual_review_channel"},
+    ) > 0
 
 
 def test_review_rejects_invalid_decision(tmp_path: Path):
