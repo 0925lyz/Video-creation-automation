@@ -1,0 +1,29 @@
+publishing:
+  enabled: true
+  timezone: America/Sao_Paulo
+
+  # Route candidate categories to YouTube account keys.
+  youtube_category_accounts:
+    足球类: jaguartv_vivo
+
+  accounts:
+    jaguartv_vivo:
+      platform: youtube
+      label: jaguartv vivo
+      channel_id: UCxxxxxxxxxxxxxxxxxxxxxx
+      daily_limit: 3
+      schedule_times:
+        - "11:00"
+        - "15:30"
+        - "19:00"
+      allowed_source_platforms:
+        - bilibili
+        - douyin
+        - facebook
+        - tiktok
+      blocked_source_platforms:
+        - youtube
+      content_tags:
+        - 足球类
+      default_privacy_status: public
+      enabled: true
