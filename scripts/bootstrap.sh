@@ -4,10 +4,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
-  if command -v brew >/dev/null 2>&1; then
-    brew install ffmpeg
-  elif command -v npm >/dev/null 2>&1; then
+  if command -v npm >/dev/null 2>&1; then
     npm --prefix "$ROOT" install --no-audit --no-fund
+  elif command -v brew >/dev/null 2>&1; then
+    brew install ffmpeg
   else
     echo "Missing ffmpeg/ffprobe and neither brew nor npm is available." >&2
     exit 1

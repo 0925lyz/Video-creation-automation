@@ -14,6 +14,8 @@ from typing import Any, Sequence
 
 from PIL import Image
 
+from .binaries import require_binary
+
 
 @dataclass(frozen=True)
 class LocalizationClass:
@@ -40,6 +42,8 @@ class LocalizationClass:
 
 
 def _run(args: list[str], *, check: bool = False) -> subprocess.CompletedProcess[str]:
+    if args and args[0] in {"ffmpeg", "ffprobe"}:
+        args = [require_binary(args[0]), *args[1:]]
     return subprocess.run(args, check=check, text=True, capture_output=True)
 
 

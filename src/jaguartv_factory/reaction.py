@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from .binaries import require_binary
 
 REACTION_MODES = ("none", "picture_in_picture", "split_vertical", "side_by_side")
 
@@ -54,9 +55,7 @@ def reaction_spec(options: dict[str, Any] | None) -> ReactionSpec:
 
 
 def _probe(path: Path) -> dict[str, Any]:
-    ffprobe = shutil.which("ffprobe")
-    if not ffprobe:
-        raise RuntimeError("Missing required binary: ffprobe")
+    ffprobe = require_binary("ffprobe")
     result = subprocess.run([
         ffprobe, "-v", "error", "-show_entries", "format=duration:stream=index,codec_type,width,height",
         "-of", "json", str(path),
@@ -125,9 +124,7 @@ def compose_reaction(
     reaction_source = Path(spec.source).expanduser().resolve()
     if not reaction_source.is_file() or reaction_source.stat().st_size <= 0:
         raise ValueError(f"reaction source does not exist or is empty: {reaction_source}")
-    ffmpeg = shutil.which("ffmpeg")
-    if not ffmpeg:
-        raise RuntimeError("Missing required binary: ffmpeg")
+    ffmpeg = require_binary("ffmpeg")
     rendered_info = _probe(rendered_video)
     reaction_info = _probe(reaction_source)
     video_stream = next((stream for stream in rendered_info.get("streams", []) if stream.get("codec_type") == "video"), None)
