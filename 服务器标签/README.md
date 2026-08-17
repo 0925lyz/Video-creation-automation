@@ -6,6 +6,7 @@
 
 - `data/category_labels.json`：18 个榜单标签的固定顺序、是否需要关键词、分类提示词。
 - `scripts/import_daily_keywords.py`：把“标签：关键词1、关键词2；关键词3”格式的每日关键词导入服务器 `workspace/factory.db`。
+- `scripts/clear_tag_keywords.py`：每周清空 `daily_keywords:*` 标签关键词库，并自动备份数据库。
 - `server_snapshot/src/jaguartv_factory/dashboard.py`：后端接口与标签分类规则快照。
 - `server_snapshot/src/jaguartv_factory/web/app.js`：前端状态拉取、分类筛选、当日分类关键词表格渲染快照。
 - `server_snapshot/src/jaguartv_factory/web/index.html`：增长分析页面表格结构快照。
@@ -47,6 +48,23 @@ ai短剧：巴西 AI短剧 葡语、série curta IA Brasil、AI short drama Braz
 ```
 
 导入脚本会跳过 `无`、`暂无`、`none` 等空值，并把来源写成 `daily_keywords:<标签>`，用于前端稳定归类。
+
+## 每周一自动清空
+
+服务器使用 systemd timer：
+
+```bash
+sudo systemctl status jaguartv-clear-tag-keywords.timer
+sudo systemctl list-timers --all jaguartv-clear-tag-keywords.timer
+```
+
+当前服务器时区是 `Asia/Shanghai`，定时器设置为每周一 `11:05 CST`，等价于巴西圣保罗时间周一 `00:05`。清空范围只包含：
+
+```sql
+source LIKE 'daily_keywords:%'
+```
+
+不会删除 Google Trends 或其它来源的热词记录。
 
 ## 当前标签顺序
 
