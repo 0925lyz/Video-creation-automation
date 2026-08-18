@@ -1,0 +1,6 @@
+[Unit]
+Description=Clean JaguarTV temporary render caches
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/jaguartv-clean-tmp

@@ -1,10 +1,11 @@
 {
   "name": "服务器功能",
-  "snapshot_date": "2026-08-13",
+  "snapshot_date": "2026-08-15",
   "source_host": "43.134.128.197",
   "source_path": "/opt/jaguartv-content-factory-vnext",
   "local_path": "服务器功能/server-snapshot",
   "purpose": "Archive the current server dashboard, discovery, upload inventory, copy design, download, rendering, review, configuration, scripts, tests, and assets into the repository under one folder.",
+  "refresh_note": "2026-08-15 refresh combines the previous server optimization archive with the current deployed vNEXT dashboard, public upload, design-overlay archive fix, output labels, Copywriter page, discovery, download, production, review, and Remotion template code.",
   "included_top_level_paths": [
     ".agents",
     "AGENTS.md",
@@ -30,6 +31,11 @@
       "server-snapshot/src/jaguartv_factory/web/index.html",
       "server-snapshot/src/jaguartv_factory/web/styles.css",
       "server-snapshot/src/jaguartv_factory/remotion_template"
+    ],
+    "copywriter": [
+      "server-snapshot/src/jaguartv_factory/web/copywriter.html",
+      "server-snapshot/src/jaguartv_factory/web/copywriter.css",
+      "server-snapshot/src/jaguartv_factory/web/copywriter.js"
     ],
     "discover_download_produce": [
       "server-snapshot/src/jaguartv_factory/core.py",

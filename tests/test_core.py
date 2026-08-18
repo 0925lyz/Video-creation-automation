@@ -42,7 +42,12 @@ from jaguartv_factory.core import (
     write_srt,
 )
 from jaguartv_factory import cli
-from jaguartv_factory.source_outro import SourceOutroSettings, classify_outro_detection, detect_source_outro
+from jaguartv_factory.source_outro import (
+    SourceOutroSettings,
+    classify_outro_detection,
+    detect_source_outro,
+    visual_tail_signals,
+)
 
 
 def test_language_detection():
@@ -241,6 +246,20 @@ def outro_settings(**overrides):
     }
     values.update(overrides)
     return SourceOutroSettings(**values)
+
+
+def test_visual_tail_signals_measure_stability_after_last_scene_cut(tmp_path: Path):
+    frames = []
+    for at_sec, color in ((9.0, "red"), (10.0, "blue"), (12.0, "green"), (15.0, "black"), (17.0, "black")):
+        path = tmp_path / f"frame-{at_sec}.png"
+        Image.new("RGB", (160, 90), color).save(path)
+        frames.append((at_sec, path))
+
+    signals = visual_tail_signals(frames, tail_start=9.0)
+
+    assert signals["last_cut_sec"] == 15.0
+    assert signals["tail_static"] is True
+    assert signals["style_shift"] is True
 
 
 def test_source_outro_classifier_trims_static_promo_tail():

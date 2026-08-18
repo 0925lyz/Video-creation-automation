@@ -1058,6 +1058,7 @@ def test_source_outro_trim_is_upstream_of_analysis_and_review_metadata(tmp_path:
     monkeypatch.setattr("jaguartv_factory.core.media_dimensions", lambda path: (1080, 1920))
     monkeypatch.setattr("jaguartv_factory.core.localization_profile_for_candidate", lambda *args, **kwargs: {"audio_mode": "preserve_source", "class": "music_or_no_speech", "reason": "test"})
     monkeypatch.setattr("jaguartv_factory.core.media_has_audio", lambda path: True)
+    monkeypatch.setattr("jaguartv_factory.core.require_binary", lambda name: name)
     monkeypatch.setattr("jaguartv_factory.core.enforce_dual_variant_remotion", lambda config_arg: None)
     monkeypatch.setattr("jaguartv_factory.core.short_video_threshold", lambda config_arg: 10.0)
     monkeypatch.setattr("jaguartv_factory.core.analyze_video", fake_analyze)
