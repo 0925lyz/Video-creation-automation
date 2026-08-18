@@ -7,6 +7,7 @@
 - `data/category_labels.json`：18 个榜单标签的固定顺序、是否需要关键词、分类提示词。
 - `scripts/import_daily_keywords.py`：把“标签：关键词1、关键词2；关键词3”格式的每日关键词导入服务器 `workspace/factory.db`。
 - `scripts/clear_tag_keywords.py`：每周清空 `daily_keywords:*` 标签关键词库，并自动备份数据库。
+- `scripts/carry_forward_tag_keywords.py`：周二到周日如果当天没有标签关键词，自动沿用最近一次标签关键词。
 - `server-snapshot-manifest.json`：本次包内文件清单、SHA256、排除项说明。
 - `server_snapshot/`：可迁移的服务器功能源码快照，包含后端、前端、脚本、测试、示例配置、品牌资产和项目本地 agent skill。
 
@@ -74,6 +75,17 @@ source LIKE 'daily_keywords:%'
 ```
 
 不会删除 Google Trends 或其它来源的热词记录。
+
+## 周内自动沿用
+
+服务器另有 systemd timer：
+
+```bash
+sudo systemctl status jaguartv-carry-forward-tag-keywords.timer
+sudo systemctl list-timers --all jaguartv-carry-forward-tag-keywords.timer
+```
+
+当前服务器时区是 `Asia/Shanghai`，定时器设置为周二到周日 `11:10 CST`，等价于巴西圣保罗时间 `00:10`。如果当天已经有 `daily_keywords:*`，脚本不会重复插入；如果当天没有，会复制最近一天的标签关键词到当天。
 
 ## 当前标签顺序
 
