@@ -1,6 +1,15 @@
-# YouTube 自动发布接口包
+# YouTube 自动发布
 
-本目录是 JaguarTV Content Factory 的 YouTube 自动发布接口交付包。它不包含任何真实密钥、refresh token、cookie 或频道私有凭据。
+本目录是 JaguarTV Content Factory 的 YouTube 自动发布完整交付包，集中保存接口实现、执行说明、配置模板、上线检查清单和常驻 worker 示例。它不包含任何真实密钥、refresh token、cookie 或频道私有凭据。
+
+## 核心目标
+
+- 审核通过后自动生成 YouTube 发布任务。
+- 根据内容分类选择 YouTube 账号。
+- 按账号发布时段和每日上限排程。
+- 发布 worker 到点上传视频到 YouTube。
+- 发布成功后回写 `publications`、`candidates.published_flag` 和事件流水。
+- 仪表盘在审核通过状态下显示已发布到哪个 YouTube 账号。
 
 ## 已验证能力
 
@@ -28,6 +37,24 @@
 | `schema.sql` | YouTube 授权、发布记录、事件记录所需 SQLite schema |
 | `youtube_auto_publish.py` | OAuth 授权、token 加密、频道校验、私密上传的可执行实现 |
 | `server_integration.md` | 接入现有 Dashboard 和服务器的步骤 |
+| `执行说明书.md` | 从配置、授权、审核、排队、发布到排障的完整操作说明 |
+| `上线验收清单.md` | 部署前后必须核对的项目 |
+| `流程图.md` | 自动发布链路流程图 |
+| `代码清单.md` | 自动发布相关代码入口和职责清单 |
+| `templates/env.example` | OAuth 和运行时环境变量模板 |
+| `templates/pipeline-publishing.example.yaml` | 发布账号和排程配置模板 |
+| `systemd/jaguartv-youtube-publish-worker.service.example` | 生产环境常驻发布 worker 模板 |
+
+## 相关代码入口
+
+- `src/jaguartv_factory/publisher.py`
+- `src/jaguartv_factory/publish_worker.py`
+- `src/jaguartv_factory/youtube_publisher.py`
+- `src/jaguartv_factory/cli.py`
+- `src/jaguartv_factory/dashboard.py`
+- `src/jaguartv_factory/core.py`
+- `src/jaguartv_factory/web/app.js`
+- `src/jaguartv_factory/web/styles.css`
 
 ## 基本流程
 
