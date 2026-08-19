@@ -15,6 +15,17 @@ JAGUARTV_OAUTH_STATE_SECRET=...
 JAGUARTV_OAUTH_TOKEN_KEY=...
 ```
 
+自动文案生成可选：
+
+```text
+JAGUARTV_DOUBAO_API_KEY=...
+JAGUARTV_DOUBAO_ENDPOINT=https://ark.cn-beijing.volces.com/api/v3/chat/completions
+JAGUARTV_DOUBAO_MODEL=...
+JAGUARTV_DOUBAO_TIMEOUT_SEC=30
+```
+
+未配置 Doubao 时，系统使用本地兜底文案，不阻塞排队或发布。
+
 生成本地密钥：
 
 ```bash
@@ -46,22 +57,24 @@ GET /oauth/youtube/callback
 
 `callback` 调用 `save_youtube_oauth_callback(config, query)`，成功后显示账号、频道名和 Channel ID。
 
-## 4. 授权 consumer_football
+## 4. 授权 jaguartv_vivo
 
-打开：
+必须从线上服务生成授权链接：
 
 ```text
-https://factory.jarg.top/oauth/youtube/start?account=consumer_football
+https://factory.jarg.top/oauth/youtube/start?account=jaguartv_vivo
 ```
 
 用拥有 `jaguartv vivo` 权限的 Google 账号授权。成功后应显示：
 
 ```text
-账号配置：consumer_football
+账号配置：jaguartv_vivo
 频道：jaguartv vivo
 Channel ID：UC...
 refresh token 已加密保存
 ```
+
+不要把本地脚本生成的 OAuth URL 拿去回调线上域名；`state` 签名密钥不同会导致 `invalid OAuth state signature`。
 
 ## 5. 私密测试上传
 
@@ -81,6 +94,8 @@ python3 自动发布/YouTube自动发布/youtube_auto_publish.py private-upload 
 ## 6. 上线前检查
 
 - 候选状态必须是 `APPROVED`。
+- 发布文案已经根据分类标签、关键词、源标题和源文案生成。
+- 源标题和源文案以 JSON 不可执行素材传入模型。
 - 源平台不能是 YouTube。
 - 目标账号必须已授权。
 - 默认隐私状态先用 `private`。

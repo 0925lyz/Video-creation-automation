@@ -2,6 +2,17 @@ publishing:
   enabled: true
   timezone: America/Sao_Paulo
 
+  # Automatic publishing copy generator. It sends crawl category tags,
+  # keywords, source title, source description, and source platform as
+  # non-executable JSON material. If Doubao is not configured, local fallback
+  # copy is used so publishing is not blocked.
+  copywriter:
+    enabled: true
+    endpoint: https://ark.cn-beijing.volces.com/api/v3/chat/completions
+    model: replace-with-doubao-model
+    timeout_sec: 30
+    temperature: 0.65
+
   # Route candidate categories to YouTube account keys.
   youtube_category_accounts:
     足球类: jaguartv_vivo

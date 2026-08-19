@@ -56,12 +56,12 @@ def ensure_schema(connection: sqlite3.Connection) -> None:
 
 def canonical_account_id(account: str) -> str:
     aliases = {
-        "jaguartv vivo": "consumer_football",
-        "jaguartv_vivo": "consumer_football",
-        "jaguartv futebol": "consumer_football",
+        "jaguartv vivo": "jaguartv_vivo",
+        "jaguartv futebol": "jaguartv_vivo",
+        "consumer_football": "jaguartv_vivo",
     }
     normalized = " ".join(str(account or "").strip().lower().split())
-    return aliases.get(normalized, normalized or "consumer_football")
+    return aliases.get(normalized, normalized or "jaguartv_vivo")
 
 
 def oauth_redirect_uri() -> str:
@@ -424,7 +424,7 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     start = subparsers.add_parser("start-url")
-    start.add_argument("--account", default="consumer_football")
+    start.add_argument("--account", default="jaguartv_vivo")
 
     callback = subparsers.add_parser("callback")
     callback.add_argument("--db", default="workspace/factory.db")
@@ -433,7 +433,7 @@ def main() -> None:
     upload = subparsers.add_parser("private-upload")
     upload.add_argument("--db", default="workspace/factory.db")
     upload.add_argument("--candidate", required=True)
-    upload.add_argument("--account", default="consumer_football")
+    upload.add_argument("--account", default="jaguartv_vivo")
     upload.add_argument("--video", required=True)
     upload.add_argument("--title", required=True)
     upload.add_argument("--description", default="")
