@@ -60,6 +60,7 @@ type CaptionCue = {
   startSeconds: number;
   endSeconds: number;
   text: string;
+  region?: [number, number, number, number];
 };
 
 type CaptionStyle = {
@@ -107,7 +108,7 @@ const fallbackProps: BrandProps = {
     maxWidthRatio: 0.82,
     fontSizeRatio: 0.044,
     backgroundOpacity: 0.74,
-    maxLines: 3,
+    maxLines: 2,
     textColor: "#ffffff",
     backgroundColor: "#050505",
     accentColor: "#f2d14b",
@@ -142,7 +143,12 @@ function JaguarTVVariant(props: BrandProps) {
         {p.customDesign ? <FreeformDesignOverlay layers={p.designLayers || []} /> : null}
         {isGeneric && !p.customDesign ? <CornerOverlays {...p} /> : null}
         {isGeneric && !p.customDesign ? <DesignCopyOverlay {...p} /> : null}
-        <CaptionOverlays captions={p.captions || []} style={p.captionStyle || fallbackProps.captionStyle} />
+        <CaptionOverlays
+          captions={p.captions || []}
+          style={p.captionStyle || fallbackProps.captionStyle}
+          sourceFit={p.sourceFit || "cover"}
+          sourceAspectRatio={p.sourceAspectRatio || width / height}
+        />
       </Sequence>
       {isGeneric && p.imgEndcard ? (
         <Sequence from={contentFrames} durationInFrames={endcardFrames}>
@@ -266,35 +272,80 @@ function DesignCopyOverlay(p: BrandProps) {
   );
 }
 
-function CaptionOverlays({captions, style}: {captions: CaptionCue[]; style?: CaptionStyle}) {
+function sourceVideoRect(width: number, height: number, sourceAspect: number, fit: "cover" | "contain") {
+  const canvasAspect = width / Math.max(1, height);
+  if (fit === "contain") {
+    if (sourceAspect >= canvasAspect) {
+      const displayWidth = width;
+      const displayHeight = width / sourceAspect;
+      return {x: 0, y: (height - displayHeight) / 2, width: displayWidth, height: displayHeight};
+    }
+    const displayHeight = height;
+    const displayWidth = height * sourceAspect;
+    return {x: (width - displayWidth) / 2, y: 0, width: displayWidth, height: displayHeight};
+  }
+  if (sourceAspect >= canvasAspect) {
+    const displayHeight = height;
+    const displayWidth = height * sourceAspect;
+    return {x: (width - displayWidth) / 2, y: 0, width: displayWidth, height: displayHeight};
+  }
+  const displayWidth = width;
+  const displayHeight = width / sourceAspect;
+  return {x: 0, y: (height - displayHeight) / 2, width: displayWidth, height: displayHeight};
+}
+
+function CaptionOverlays({
+  captions,
+  style,
+  sourceFit,
+  sourceAspectRatio,
+}: {
+  captions: CaptionCue[];
+  style?: CaptionStyle;
+  sourceFit: "cover" | "contain";
+  sourceAspectRatio: number;
+}) {
   const {width, height, fps} = useVideoConfig();
   if (!captions.length) {
     return null;
   }
 
   const maxWidth = Math.round(width * (style?.maxWidthRatio || 0.82));
-  const fontSize = Math.max(24, Math.round(height * (style?.fontSizeRatio || 0.044)));
+  const fontSize = Math.max(32, Math.round(height * (style?.fontSizeRatio || 0.052)));
   const lineHeight = Math.round(fontSize * 1.22);
-  const maxLines = Math.max(1, Math.min(4, Math.round(style?.maxLines || 3)));
+  const maxLines = Math.max(1, Math.min(2, Math.round(style?.maxLines || 2)));
   const verticalOffset = Math.round(height * 0.07);
   const placement: React.CSSProperties = style?.position === "top"
     ? {top: verticalOffset}
     : {bottom: verticalOffset};
   const background = hexToRgba(style?.backgroundColor || "#050505", style?.backgroundOpacity ?? 0.74);
+  const rect = sourceVideoRect(width, height, sourceAspectRatio || width / height, sourceFit || "cover");
 
   return (
     <AbsoluteFill style={{pointerEvents: "none"}}>
       {captions.map((caption, index) => {
         const from = Math.max(0, Math.round(caption.startSeconds * fps));
         const durationInFrames = Math.max(1, Math.round((caption.endSeconds - caption.startSeconds) * fps));
+        const region = Array.isArray(caption.region) && caption.region.length === 4 ? caption.region : null;
+        const regionStyle: React.CSSProperties = region ? {
+          left: Math.round(Math.max(width * 0.06, Math.min(width * 0.94, rect.x + ((region[0] + region[2]) / 2) * rect.width))),
+          top: Math.round(Math.max(height * 0.08, Math.min(height * 0.92, rect.y + ((region[1] + region[3]) / 2) * rect.height))),
+          transform: "translate(-50%, -50%)",
+          maxWidth: Math.min(
+            maxWidth,
+            Math.max(Math.round(width * 0.36), Math.round((region[2] - region[0]) * rect.width + fontSize * 3))
+          ),
+        } : {
+          ...placement,
+          maxWidth,
+        };
         return (
           <Sequence key={`${caption.startSeconds}-${index}`} from={from} durationInFrames={durationInFrames}>
             <AbsoluteFill style={{alignItems: "center"}}>
               <div
                 style={{
                   position: "absolute",
-                  ...placement,
-                  maxWidth,
+                  ...regionStyle,
                   borderLeft: `${Math.max(6, Math.round(fontSize * 0.22))}px solid ${style?.accentColor || "#f2d14b"}`,
                   background,
                   color: style?.textColor || "#ffffff",

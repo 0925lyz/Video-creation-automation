@@ -1,5 +1,6 @@
 from pathlib import Path
 import shutil
+from types import SimpleNamespace
 import wave
 
 import pytest
@@ -36,6 +37,7 @@ from jaguartv_factory.core import (
     tts_rate_percent,
     update_render_job,
     should_ocr_blur_source_subtitles,
+    source_text,
     source_filename_label,
     safe_hyperframes_dir_name,
     upsert_render_job,
@@ -213,6 +215,27 @@ def test_remotion_caption_cues_are_safe_and_clamped(tmp_path: Path):
     ]
 
 
+def test_remotion_caption_cues_attach_matching_ocr_region(tmp_path: Path):
+    destination = tmp_path / "captions.srt"
+    destination.write_text(
+        "1\n00:00:01,000 --> 00:00:03,000\nQue golaço!\n",
+        encoding="utf-8",
+    )
+    cues = remotion_caption_cues(
+        destination,
+        timed_regions=[
+            {"start": 0.0, "end": 0.8, "regions": [[0.1, 0.7, 0.4, 0.8]]},
+            {"start": 1.1, "end": 2.8, "regions": [[0.28, 0.36, 0.72, 0.44]]},
+        ],
+    )
+    assert cues == [{
+        "startSeconds": 1.0,
+        "endSeconds": 3.0,
+        "text": "Que golaço!",
+        "region": [0.28, 0.36, 0.72, 0.44],
+    }]
+
+
 def test_remotion_caption_variant_config():
     config = {
         "remotion": {
@@ -228,7 +251,8 @@ def test_remotion_caption_variant_config():
     assert remotion_captions_enabled_for_variant(config, "FB版") is False
     style = remotion_caption_style(config)
     assert style["position"] == "bottom"
-    assert style["fontSizeRatio"] == 0.075
+    assert style["fontSizeRatio"] == 0.085
+    assert style["maxLines"] == 2
 
 
 def outro_settings(**overrides):
@@ -505,7 +529,12 @@ def test_demo_config_loads():
     assert config["edit"]["render_engine"] == "remotion"
     assert config["edit"]["layout_mode"] == "original"
     assert config["edit"]["source_subtitle_cleanup"] == "ocr_blur"
-    assert config["edit"]["ocr_auto_lower_third_fallback"] is True
+    assert config["edit"]["ocr_auto_lower_third_fallback"] is False
+    assert config["edit"]["ocr_blur_sigma"] >= 50
+    assert config["localization"]["asr_enabled"] is True
+    assert config["localization"]["preserve_backing_track"] is True
+    assert config["localization"]["require_backing_track"] is True
+    assert config["remotion"]["captions"]["max_lines"] == 2
     assert config["edit"]["short_video_threshold_sec"] == 75
     assert config["selection"]["max_source_duration_sec"] == 1800
     assert config["brand"]["kits"]["jaguartv"]["endcard"]["mode"] == "orientation_image"
@@ -642,6 +671,13 @@ def test_ocr_blur_runs_only_for_chinese_source_platforms():
     ) is False
     assert should_ocr_blur_source_subtitles(
         "ocr_blur",
+        platform="bilibili",
+        detected_language="zh",
+        title_text="中文歌足球混剪",
+        localization_profile={"subtitle_mode": "none", "class": 3, "chinese_on_screen": False},
+    ) is False
+    assert should_ocr_blur_source_subtitles(
+        "ocr_blur",
         platform="facebook",
         detected_language="zh",
         title_text="巴西足球中文字幕",
@@ -748,6 +784,44 @@ def test_auto_audio_strategy_localizes_when_subtitles_exist(tmp_path: Path):
     assert reason == "subtitle:source.en.vtt"
 
 
+def test_chinese_localization_rejects_metadata_fallback_without_speech(tmp_path: Path):
+    media = tmp_path / "source.mp4"
+    media.touch()
+
+    with pytest.raises(RuntimeError, match="metadata fallback is disabled"):
+        source_text(
+            tmp_path,
+            media,
+            "中文标题只能作为检索信息，不能拿来生成重复配音。",
+            enable_asr=False,
+            config={"localization": {"asr_enabled": False}},
+            allow_metadata_fallback=False,
+        )
+
+    payload = (tmp_path / "transcript_source.json").read_text(encoding="utf-8")
+    assert '"provider": "speech_required"' in payload
+    assert "metadata_fallback" not in payload
+
+
+def test_chinese_localization_uses_asr_transcript_before_metadata_fallback(tmp_path: Path, monkeypatch):
+    media = tmp_path / "source.mp4"
+    media.touch()
+
+    monkeypatch.setattr(
+        "jaguartv_factory.core.transcribe_with_whisper",
+        lambda media_arg, work_arg, config_arg: "中文解说正在介绍巴西本土电商平台和 Casas Bahia 的区别。",
+    )
+
+    assert source_text(
+        tmp_path,
+        media,
+        "中文标题只能作为检索信息，不能拿来生成重复配音。",
+        enable_asr=True,
+        config={"localization": {"asr_enabled": True}},
+        allow_metadata_fallback=False,
+    ) == "中文解说正在介绍巴西本土电商平台和 Casas Bahia 的区别。"
+
+
 def test_localization_profile_only_localizes_chinese_audio_from_bilibili_or_douyin(tmp_path: Path, monkeypatch):
     config = {"_root": str(tmp_path), "run": {"workspace": "workspace"}, "edit": {"ocr_backend": "tesseract"}}
     connection = connect_db(config)
@@ -796,6 +870,52 @@ def test_localization_profile_only_localizes_chinese_audio_from_bilibili_or_douy
     assert profiles["facebook"]["reason"] == "no_chinese_speech_or_subtitle_evidence"
     assert profiles["bilibili"]["audio_mode"] == "localized"
     assert profiles["douyin"]["audio_mode"] == "localized"
+
+
+def test_class_two_candidate_routes_to_original_passthrough(tmp_path: Path, monkeypatch):
+    config = {
+        "_root": str(tmp_path),
+        "run": {"workspace": "workspace"},
+        "edit": {"passthrough_clean_sources": True},
+        "selection": {},
+        "brand": {"default_kit": "jaguartv", "kits": {"jaguartv": {}}},
+    }
+    candidate_id = register_url_stub_candidate(config, "https://www.bilibili.com/video/BVclean")
+    work = tmp_path / "workspace" / "jobs" / candidate_id
+    work.mkdir(parents=True, exist_ok=True)
+    source = work / "source.mp4"
+    source.write_bytes(b"original")
+    row = connect_db(config).execute("SELECT * FROM candidates WHERE id=?", (candidate_id,)).fetchone()
+    strategy = SimpleNamespace(
+        content_type="sports",
+        content_type_confidence=1.0,
+        matched_rules=[],
+        segment_strategy="whole_source",
+        audio_policy="preserve_output_audio",
+        operator_override=False,
+    )
+    calls: dict[str, Path] = {}
+
+    def fake_passthrough(config_arg, row_arg, media, *args, **kwargs):
+        calls["media"] = Path(media)
+        review = tmp_path / "review"
+        review.mkdir()
+        return review
+
+    monkeypatch.setattr("jaguartv_factory.core.require_binary", lambda name: name)
+    monkeypatch.setattr("jaguartv_factory.core.media_duration", lambda path: 18.0)
+    monkeypatch.setattr("jaguartv_factory.core.detect_source_outro", lambda *args, **kwargs: {"applied": False})
+    monkeypatch.setattr("jaguartv_factory.core.resolve_production_strategy", lambda *args, **kwargs: strategy)
+    monkeypatch.setattr("jaguartv_factory.core.assert_render_allowed", lambda *args, **kwargs: {"allowed": True})
+    monkeypatch.setattr(
+        "jaguartv_factory.core.localization_profile_for_candidate",
+        lambda *args, **kwargs: {"class": 2, "audio_mode": "preserve_source", "reason": "no_chinese_speech_or_subtitle_evidence"},
+    )
+    monkeypatch.setattr("jaguartv_factory.core.produce_passthrough_review_package", fake_passthrough)
+
+    review = produce_candidate(config, row)
+    assert review == tmp_path / "review"
+    assert calls["media"] == source
 
 
 def test_localized_clean_render_uses_ptbr_voice_without_fixed_bgm(tmp_path: Path, monkeypatch):

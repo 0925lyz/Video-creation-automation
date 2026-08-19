@@ -99,6 +99,20 @@ def insert_publish_candidate(
     connection.commit()
 
 
+def write_review_package(config: dict, package_id: str, *, source_job_id: str = "") -> None:
+    package = Path(str(config["_root"])) / "workspace" / "server_media" / "review" / package_id
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "video.mp4").write_bytes(b"video")
+    (package / "metadata.json").write_text(
+        json.dumps({
+            "job_id": package_id,
+            "source_job_id": source_job_id,
+            "source": {"platform": "facebook", "title": "Athletico-PR 1-1 RB Bragantino"},
+        }),
+        encoding="utf-8",
+    )
+
+
 def test_copywriter_request_validates_mode_and_count():
     request = copywriter_request({
         "input": "足球，巴西街头足球挑战",
@@ -389,6 +403,86 @@ def test_child_candidate_inherits_parent_initial_category(tmp_path: Path):
     assert dashboard_overview(config)["kpis"]["inventory"] == 1
 
 
+def test_candidate_rows_collapses_review_slice_children_under_parent(tmp_path: Path):
+    config = dashboard_config(tmp_path)
+    insert_publish_candidate(
+        config,
+        candidate_id="source-facebook",
+        platform="facebook",
+        keyword="Brasileirão",
+        status="APPROVED",
+    )
+    for part in ("source-facebook_part01", "source-facebook_part02", "source-facebook_part03"):
+        insert_publish_candidate(
+            config,
+            candidate_id=part,
+            platform="facebook",
+            keyword="Brasileirão",
+            status="READY_FOR_REVIEW",
+            parent_id="source-facebook",
+        )
+        write_review_package(config, part, source_job_id="source-facebook")
+
+    pending_rows = candidate_rows(config, "READY_FOR_REVIEW", 20)
+    approved_rows = candidate_rows(config, "APPROVED", 20)
+
+    assert [row["id"] for row in pending_rows] == []
+    parent = next(row for row in approved_rows if row["id"] == "source-facebook")
+    assert parent["output_count"] == 3
+    assert [asset["label"] for asset in parent["output_assets"]] == [
+        "片段 01 · 通用版",
+        "片段 02 · 通用版",
+        "片段 03 · 通用版",
+    ]
+
+
+def test_save_review_syncs_slice_child_statuses(tmp_path: Path):
+    config = dashboard_config(tmp_path)
+    insert_publish_candidate(
+        config,
+        candidate_id="source-facebook",
+        platform="facebook",
+        keyword="Brasileirão",
+        status="READY_FOR_REVIEW",
+    )
+    insert_publish_candidate(
+        config,
+        candidate_id="source-facebook_part01",
+        platform="facebook",
+        keyword="Brasileirão",
+        status="READY_FOR_REVIEW",
+        parent_id="source-facebook",
+    )
+    insert_publish_candidate(
+        config,
+        candidate_id="source-facebook_part02",
+        platform="facebook",
+        keyword="Brasileirão",
+        status="READY_FOR_REVIEW",
+        parent_id="source-facebook",
+    )
+
+    result = save_review(config, {
+        "candidate_id": "source-facebook",
+        "decision": "APPROVED",
+        "reviewer": "tester",
+    })
+
+    connection = connect_db(config)
+    statuses = {
+        row["id"]: row["status"]
+        for row in connection.execute(
+            "SELECT id,status FROM candidates WHERE id LIKE 'source-facebook%' ORDER BY id"
+        )
+    }
+    assert result["synced_children"] == ["source-facebook_part01", "source-facebook_part02"]
+    assert statuses == {
+        "source-facebook": "APPROVED",
+        "source-facebook_part01": "APPROVED",
+        "source-facebook_part02": "APPROVED",
+    }
+
+
 def test_dashboard_schema_and_overview(tmp_path: Path):
     config = dashboard_config(tmp_path)
     insert_candidate(config)
@@ -559,12 +653,25 @@ def test_x_oauth_start_url_uses_pkce_and_expected_scopes(tmp_path: Path, monkeyp
     assert query["redirect_uri"] == ["https://factory.jarg.top/oauth/x/callback"]
     assert query["code_challenge_method"] == ["S256"]
     assert "tweet.write" in query["scope"][0]
-    assert "media.write" in query["scope"][0]
+    assert "media.write" not in query["scope"][0]
     assert "offline.access" in query["scope"][0]
+    assert "scope=tweet.read%20users.read%20tweet.write%20offline.access" in url
     connection = connect_db(config)
     row = connection.execute("SELECT account,code_verifier FROM x_oauth_states WHERE state=?", (query["state"][0],)).fetchone()
     assert row["account"] == "consumer_football"
     assert len(row["code_verifier"]) >= 43
+
+
+def test_x_oauth_start_url_can_use_configured_scopes(tmp_path: Path, monkeypatch):
+    config = dashboard_config(tmp_path)
+    monkeypatch.setenv("JAGUARTV_X_CLIENT_ID", "x-client-id")
+    monkeypatch.setenv("JAGUARTV_OAUTH_TOKEN_KEY", "token-encryption-key")
+    monkeypatch.setenv("JAGUARTV_X_SCOPES", "tweet.read users.read tweet.write media.write offline.access")
+
+    url = x_oauth_start_url(config, "consumer_football")
+    query = parse_qs(urlparse(url).query)
+
+    assert query["scope"] == ["tweet.read users.read tweet.write media.write offline.access"]
 
 
 def test_x_auth_rows_creates_missing_auth_table(tmp_path: Path):

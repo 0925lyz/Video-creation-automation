@@ -298,15 +298,17 @@ def write_server_review_package(config: dict, package_id: str, source_candidate_
     return package
 
 
-def test_server_review_part_rows_expose_source_candidate_id(tmp_path: Path):
+def test_server_review_part_rows_collapse_under_source_candidate(tmp_path: Path):
     config = make_config(tmp_path)
     insert_candidate(config, "source-parent", "READY_FOR_REVIEW")
     write_server_review_package(config, "source-parent_part01", "source-parent")
 
     rows = candidate_rows(config, "READY_FOR_REVIEW", 20)
-    part = next(row for row in rows if row["id"] == "source-parent_part01")
+    ids = [row["id"] for row in rows]
+    parent = next(row for row in rows if row["id"] == "source-parent")
 
-    assert part["source_candidate_id"] == "source-parent"
+    assert "source-parent_part01" not in ids
+    assert parent["output_assets"][0]["id"] == "source-parent_part01"
 
 
 def test_design_production_resolves_part_package_to_source_candidate(tmp_path: Path, monkeypatch):
@@ -1048,7 +1050,7 @@ def test_source_outro_trim_is_upstream_of_analysis_and_review_metadata(tmp_path:
         clean_inputs.append(Path(media).name)
         output.write_bytes(b"clean")
 
-    def fake_variant(config_arg, clean_media, output, *, variant, subtitles=None, job_id=None, candidate_id=None):
+    def fake_variant(config_arg, clean_media, output, *, variant, subtitles=None, job_id=None, candidate_id=None, **kwargs):
         variant_inputs.append((variant, Path(clean_media).name))
         output.write_bytes(f"{variant}-render".encode())
         return {"variant": variant, "path": str(output), "filename": output.name, "duration": 13.5 if variant == "通用版" else 12.0, "size": output.stat().st_size, "mobile_format": {"applied": False}, "endcard_class": "9:16" if variant == "通用版" else ""}

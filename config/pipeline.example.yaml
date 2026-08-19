@@ -26,16 +26,22 @@ edit:
   original_subtitle_strategy: [inpaint, blur, preserve_and_flag]
   source_subtitle_cleanup: ocr_blur
   ocr_backend: auto
-  ocr_blur_sigma: 28
+  ocr_use_fallback_regions: false
+  ocr_auto_lower_third_fallback: false
+  ocr_blur_sigma: 52
 
 localization:
   target: pt-BR
-  asr_enabled: false
+  asr_enabled: true
+  chinese_audio_detection_enabled: true
+  chinese_audio_detection_model: tiny
+  chinese_audio_threshold: 3
   whisper_model: tiny
   voice_enabled: true
   tts_provider: auto
   edge_tts_voice: pt-BR-AntonioNeural
-  preserve_backing_track: false
+  preserve_backing_track: true
+  require_backing_track: true
   tts_voice: energetic_male
   tts_rate: 1.05
   max_subtitle_chars_per_line: 36

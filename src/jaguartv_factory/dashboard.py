@@ -209,7 +209,7 @@ YOUTUBE_OAUTH_SCOPES = (
 GOOGLE_OAUTH_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 YOUTUBE_CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels"
-X_OAUTH_SCOPES = ("tweet.read", "users.read", "tweet.write", "media.write", "offline.access")
+DEFAULT_X_OAUTH_SCOPES = ("tweet.read", "users.read", "tweet.write", "offline.access")
 X_OAUTH_AUTH_URL = "https://x.com/i/oauth2/authorize"
 X_OAUTH_TOKEN_URL = "https://api.x.com/2/oauth2/token"
 X_USERS_ME_URL = "https://api.x.com/2/users/me"
@@ -689,6 +689,28 @@ def review_package_metadata(config: dict[str, Any], package_id: str) -> dict[str
 
 def review_asset_package_id(asset_id: str) -> str:
     return unquote(str(asset_id or "")).split(":", 1)[0].strip()
+
+
+def review_slice_parent_id(candidate_id: str, parent_id: str = "", source_id: str = "") -> str:
+    parent = str(parent_id or "").strip()
+    for value in (str(candidate_id or "").strip(), str(source_id or "").strip()):
+        match = PART_PACKAGE_PATTERN.match(value.removeprefix("review:"))
+        if match:
+            return parent or match.group("parent")
+    return parent if parent and PART_PACKAGE_PATTERN.match(str(candidate_id or "").strip()) else ""
+
+
+def should_collapse_review_slice(
+    connection: Any,
+    outputs_by_candidate: dict[str, list[dict[str, Any]]],
+    candidate_id: str,
+    parent_id: str = "",
+    source_id: str = "",
+) -> bool:
+    parent = review_slice_parent_id(candidate_id, parent_id, source_id)
+    if not parent or parent == candidate_id or not outputs_by_candidate.get(parent):
+        return False
+    return connection.execute("SELECT 1 FROM candidates WHERE id=?", (parent,)).fetchone() is not None
 
 
 def resolve_production_candidate(
@@ -1838,6 +1860,17 @@ def x_oauth_credentials(config: dict[str, Any]) -> dict[str, str]:
     return {"client_id": client_id, "client_secret": client_secret, "redirect_uri": redirect_uri}
 
 
+def x_oauth_scopes() -> tuple[str, ...]:
+    raw = os.environ.get("JAGUARTV_X_SCOPES", "").strip()
+    scopes = tuple(part for part in raw.split() if part) if raw else DEFAULT_X_OAUTH_SCOPES
+    if not scopes:
+        raise RuntimeError("missing X OAuth scopes")
+    for scope in scopes:
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,80}", scope):
+            raise RuntimeError(f"invalid X OAuth scope: {scope}")
+    return scopes
+
+
 def pkce_code_challenge(verifier: str) -> str:
     digest = hashlib.sha256(verifier.encode("ascii")).digest()
     return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
@@ -1847,7 +1880,7 @@ def make_x_oauth_state(config: dict[str, Any], account: str) -> dict[str, str]:
     account_id = canonical_account_id(account or "consumer_main")
     state = secrets.token_urlsafe(32)
     verifier = secrets.token_urlsafe(64)[:96]
-    scopes = " ".join(X_OAUTH_SCOPES)
+    scopes = " ".join(x_oauth_scopes())
     timestamp = now_iso()
     expires_at = datetime.fromtimestamp(time.time() + 3600, tz=timezone.utc).isoformat()
     ensure_oauth_tables(config)
@@ -1875,7 +1908,7 @@ def x_oauth_start_url(config: dict[str, Any], account: str = "consumer_main") ->
         "code_challenge": pkce_code_challenge(state["code_verifier"]),
         "code_challenge_method": "S256",
     }
-    return f"{X_OAUTH_AUTH_URL}?{urlencode(params)}"
+    return f"{X_OAUTH_AUTH_URL}?{urlencode(params, quote_via=quote)}"
 
 
 def consume_x_oauth_state(config: dict[str, Any], state: str) -> dict[str, str]:
@@ -1962,7 +1995,7 @@ def save_x_oauth_callback(config: dict[str, Any], query: dict[str, list[str]]) -
     timestamp = now_iso()
     expires_in = int(token.get("expires_in") or 0)
     expires_at = datetime.fromtimestamp(time.time() + expires_in, tz=timezone.utc).isoformat() if expires_in else ""
-    scopes = str(token.get("scope") or state["scopes"] or " ".join(X_OAUTH_SCOPES))
+    scopes = str(token.get("scope") or state["scopes"] or " ".join(x_oauth_scopes()))
     ensure_oauth_tables(config)
     connection = connect_db(config)
     connection.execute(
@@ -2110,7 +2143,18 @@ def candidate_rows(config: dict[str, Any], status: str | None = None, limit: int
             """
         )
     }
+    collapsed_ids: set[str] = set()
     for row in rows:
+        candidate_id = str(row["id"] or "")
+        if should_collapse_review_slice(
+            connection,
+            outputs_by_candidate,
+            candidate_id,
+            str(row["parent_id"] or ""),
+            str(row["source_id"] or ""),
+        ):
+            collapsed_ids.add(candidate_id)
+            continue
         item = dict(row)
         metadata: dict[str, Any] = {}
         try:
@@ -2187,7 +2231,7 @@ def candidate_rows(config: dict[str, Any], status: str | None = None, limit: int
             item["failure_detail"] = detail[-4000:]
             item["failure_at"] = failure["created_at"]
         result.append(item)
-    existing = {str(item.get("id") or "") for item in result}
+    existing = {str(item.get("id") or "") for item in result} | collapsed_ids
     if status in {None, "", "READY_FOR_REVIEW", "APPROVED", "REVISION_REQUIRED"}:
         for item in server_review_rows(config, exclude=existing):
             if status and item["status"] != status:
@@ -2221,6 +2265,9 @@ def server_review_rows(config: dict[str, Any], exclude: set[str] | None = None) 
         candidate = str(metadata.get("job_id") or package_dir.name)
         if candidate in exclude:
             continue
+        source_candidate_id = str(metadata.get("source_job_id") or "").strip()
+        if should_collapse_review_slice(connection, outputs_by_candidate, candidate, source_candidate_id, candidate):
+            continue
         review_state = "READY_FOR_REVIEW"
         review_file = package_dir / "review.json"
         if review_file.exists():
@@ -2233,7 +2280,6 @@ def server_review_rows(config: dict[str, Any], exclude: set[str] | None = None) 
             except (json.JSONDecodeError, OSError):
                 pass
         source = metadata.get("source") or {}
-        source_candidate_id = str(metadata.get("source_job_id") or "").strip()
         segment = metadata.get("segment") or {}
         strategy = {
             "content_type": metadata.get("content_type") or "unknown",
@@ -2709,6 +2755,46 @@ def attribution_report(config: dict[str, Any], candidate: str) -> dict[str, Any]
     }
 
 
+def sync_child_slice_review_status(
+    connection: Any,
+    parent_candidate: str,
+    decision: str,
+    *,
+    timestamp: str,
+    reviewer: str = "",
+) -> list[str]:
+    children = [
+        dict(row) for row in connection.execute(
+            """
+            SELECT id,source_id,status
+            FROM candidates
+            WHERE parent_id=?
+              AND status IN ('READY_FOR_REVIEW','APPROVED','REVISION_REQUIRED')
+            """,
+            (parent_candidate,),
+        )
+    ]
+    updated: list[str] = []
+    for child in children:
+        child_id = str(child["id"] or "")
+        if not review_slice_parent_id(child_id, parent_candidate, str(child["source_id"] or "")):
+            continue
+        if str(child["status"] or "") == decision:
+            continue
+        connection.execute(
+            "UPDATE candidates SET status=?,updated_at=? WHERE id=?",
+            (decision, timestamp, child_id),
+        )
+        append_event(
+            connection,
+            child_id,
+            f"REVIEW_{decision}",
+            {"reviewer": reviewer, "synced_from_parent": parent_candidate},
+        )
+        updated.append(child_id)
+    return updated
+
+
 def save_review(config: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     candidate = str(payload.get("candidate_id") or "").strip()
     decision = str(payload.get("decision") or "").strip().upper()
@@ -2744,6 +2830,13 @@ def save_review(config: dict[str, Any], payload: dict[str, Any]) -> dict[str, An
             "reviewer": str(payload.get("reviewer") or ""),
         }, ensure_ascii=False), timestamp),
     )
+    synced_children = sync_child_slice_review_status(
+        connection,
+        candidate,
+        decision,
+        timestamp=timestamp,
+        reviewer=str(payload.get("reviewer") or ""),
+    )
     connection.commit()
     review_file = workspace_dir(config) / "ready_for_review" / candidate / "review.json"
     if review_file.parent.exists():
@@ -2756,7 +2849,7 @@ def save_review(config: dict[str, Any], payload: dict[str, Any]) -> dict[str, An
             }, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-    result = {"candidate_id": candidate, "status": decision}
+    result = {"candidate_id": candidate, "status": decision, "synced_children": synced_children}
     if decision == "APPROVED":
         result["publication"] = auto_enqueue_approved_publication(
             config,

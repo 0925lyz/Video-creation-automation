@@ -106,22 +106,26 @@ edit:
   ocr_backend: auto                    # auto | tesseract | paddleocr
   source_subtitle_crop_bottom_ratio: 0.18
   ocr_use_fallback_regions: false
-  ocr_auto_lower_third_fallback: true
+  ocr_auto_lower_third_fallback: false
   ocr_lower_third_fallback_regions:
     - [0.04, 0.04, 0.42, 0.20]
     - [0.0, 0.68, 1.0, 0.96]
-  ocr_blur_sigma: 28
+  ocr_blur_sigma: 52
   default_segment_strategy: auto
 
 localization:
   target: pt-BR
-  asr_enabled: false
+  asr_enabled: true
+  chinese_audio_detection_enabled: true
+  chinese_audio_detection_model: tiny
+  chinese_audio_threshold: 3
   whisper_model: tiny
   voice_enabled: true                  # only Bilibili/Douyin Chinese narration is replaced with pt-BR voice
   tts_provider: auto                 # edge -> local system voice fallback
   edge_tts_voice: pt-BR-AntonioNeural # energetic Brazilian Portuguese male voice
   speech_style: excited_sports_male
-  preserve_backing_track: false     # true requires optional Demucs install
+  preserve_backing_track: true      # Bilibili/Douyin localized clips must keep separated no-vocals backing
+  require_backing_track: true
   tts_voice: energetic_male
   tts_rate: 1.08
   # Hook variants for A/B testing; tracking.hook_version selects the active one
@@ -182,9 +186,9 @@ remotion:
     variants: [通用版]
     position: bottom
     max_width_ratio: 0.82
-    font_size_ratio: 0.044
+    font_size_ratio: 0.052
     background_opacity: 0.74
-    max_lines: 3
+    max_lines: 2
     text_color: "#ffffff"
     background_color: "#050505"
     accent_color: "#f2d14b"

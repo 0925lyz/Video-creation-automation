@@ -22,7 +22,7 @@ import wave
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Sequence
 
 import yaml
 from PIL import Image, ImageDraw, ImageFont
@@ -41,6 +41,7 @@ from .pyvideotrans_adapter import (
     pyvideotrans_tts,
 )
 from .workbuddy_adapter import (
+    classify_chinese_audio,
     demucs_backing_track,
     detect_chinese_text_regions,
     edge_tts_ptbr,
@@ -1217,6 +1218,7 @@ def source_text(
     *,
     enable_asr: bool = True,
     config: dict[str, Any] | None = None,
+    allow_metadata_fallback: bool = True,
 ) -> str:
     subtitles = sorted([*work.glob("source*.srt"), *work.glob("source*.vtt")])
     for subtitle in subtitles:
@@ -1228,6 +1230,20 @@ def source_text(
             return transcribe_with_whisper(media, work, config)
         except RuntimeError:
             pass
+    if not allow_metadata_fallback:
+        payload = {
+            "provider": "speech_required",
+            "language": "unknown",
+            "text": "",
+            "fallback_rejected": fallback[:500],
+        }
+        (work / "transcript_source.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        raise RuntimeError(
+            "Chinese localization requires real source subtitles or ASR transcript; "
+            "metadata fallback is disabled to avoid repeated generic pt-BR narration"
+        )
     payload = {"provider": "metadata_fallback", "language": "unknown", "text": fallback}
     (work / "transcript_source.json").write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -1277,6 +1293,37 @@ def choose_audio_strategy(
     return "silent", "", "no_speech_evidence_source_has_no_audio"
 
 
+def chinese_audio_evidence(
+    config: dict[str, Any] | None,
+    media: Path,
+) -> tuple[bool | None, dict[str, Any]]:
+    settings = (config or {}).get("localization", {}) or {}
+    if not bool(settings.get("chinese_audio_detection_enabled", True)):
+        return None, {"enabled": False, "reason": "disabled"}
+    model_name = str(settings.get("chinese_audio_detection_model") or settings.get("whisper_model") or "tiny")
+    threshold = int(settings.get("chinese_audio_threshold") or 3)
+    try:
+        result = classify_chinese_audio(media, model_name=model_name, threshold=threshold)
+    except Exception as error:
+        return None, {"enabled": True, "reason": f"unavailable:{error}"}
+    return bool(result.get("chinese_audio")), {
+        "enabled": True,
+        "model": model_name,
+        "language": result.get("language", "unknown"),
+        "language_probability": result.get("language_probability", 0.0),
+        "chinese_characters": result.get("chinese_characters", 0),
+        "transcript_preview": str(result.get("transcript") or "")[:500],
+        "reason": "chinese_audio_detected" if result.get("chinese_audio") else "no_chinese_audio_detected",
+    }
+
+
+def localization_class_id(profile: dict[str, Any]) -> int:
+    try:
+        return int(profile.get("class") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def localization_profile_for_candidate(
     row: sqlite3.Row,
     metadata: dict[str, Any],
@@ -1311,22 +1358,22 @@ def localization_profile_for_candidate(
         except RuntimeError as error:
             ocr_reason = f"ocr_unavailable:{error}"
     chinese_on_screen = chinese_subtitles or bool(ocr_regions)
-    chinese_audio_evidence = can_localize_chinese_audio and has_audio and (
-        chinese_subtitles
-        or chinese_on_screen
-        or detected_language.startswith("zh")
-        or title_has_chinese
+    detected_chinese_audio, audio_detection = (
+        chinese_audio_evidence(config, media) if can_localize_chinese_audio and has_audio else (False, {"reason": "not_checked"})
     )
-    if chinese_audio_evidence and chinese_on_screen:
+    inferred_chinese_audio = bool(detected_chinese_audio)
+    if detected_chinese_audio is None:
+        inferred_chinese_audio = bool(chinese_on_screen and has_audio)
+    if can_localize_chinese_audio and chinese_on_screen and has_audio:
         class_id = 1
         mode = "localized"
         subtitle_mode = "ptbr_subtitles"
-        reason = "chinese_subtitles_detected" if chinese_subtitles else ocr_reason
-    elif chinese_audio_evidence:
+        reason = "chinese_subtitles_detected" if chinese_subtitles else (ocr_reason or "ocr_screen_chinese_detected")
+    elif can_localize_chinese_audio and inferred_chinese_audio:
         class_id = 3
         mode = "localized"
         subtitle_mode = "none"
-        reason = "chinese_audio_inferred_without_screen_subtitles"
+        reason = "chinese_audio_detected_without_screen_subtitles"
     else:
         class_id = 2
         mode = "preserve_source" if has_audio else "silent"
@@ -1339,6 +1386,7 @@ def localization_profile_for_candidate(
         "chinese_subtitles": chinese_subtitles,
         "chinese_on_screen": chinese_on_screen,
         "ocr_regions": ocr_regions,
+        "audio_detection": audio_detection,
         "title_has_chinese": title_has_chinese,
         "detected_language": detected_language or "unknown",
         "subtitle_files": [path.name for path in subtitle_files],
@@ -1365,16 +1413,7 @@ def should_ocr_blur_source_subtitles(
         and bool(localization_profile.get("chinese_on_screen", localization_profile.get("chinese_subtitles")))
     ):
         return True
-    text_has_chinese = bool(re.search(r"[\u4e00-\u9fff]", title_text))
-    profile_has_chinese = bool(localization_profile.get("title_has_chinese"))
-    language_is_chinese = str(detected_language or localization_profile.get("detected_language") or "").lower().startswith("zh")
-    inferred_chinese_audio = int(localization_profile.get("class") or 0) == 3
-    return (
-        text_has_chinese
-        or profile_has_chinese
-        or language_is_chinese
-        or inferred_chinese_audio
-    )
+    return False
 
 
 DEFAULT_HOOK = "Olha só o que aconteceu aqui."
@@ -1817,12 +1856,37 @@ def parse_srt_time(value: str) -> float:
     return int(hours) * 3600 + int(minutes) * 60 + float(remainder)
 
 
+def _caption_region_for_interval(
+    start: float,
+    end: float,
+    timed_regions: Sequence[dict[str, Any]] | None,
+) -> list[float] | None:
+    if not timed_regions:
+        return None
+    midpoint = (start + end) / 2
+    candidates: list[tuple[float, list[float]]] = []
+    for event in timed_regions:
+        event_start = float(event.get("start") or 0.0)
+        event_end = float(event.get("end") or event_start)
+        overlap = max(0.0, min(end, event_end) - max(start, event_start))
+        distance = abs(midpoint - ((event_start + event_end) / 2))
+        score = overlap - distance * 0.08
+        for region in event.get("regions") or []:
+            if len(region) != 4:
+                continue
+            candidates.append((score, [float(value) for value in region]))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[0])[1]
+
+
 def remotion_caption_cues(
     subtitles: Path | None,
     *,
     max_end: float | None = None,
     max_cues: int = 500,
     max_text_chars: int = 180,
+    timed_regions: Sequence[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     if not subtitles:
         return []
@@ -1848,11 +1912,15 @@ def remotion_caption_cues(
         cleaned = re.sub(r"\s+", " ", text).strip()
         if not cleaned:
             continue
-        cues.append({
+        cue = {
             "startSeconds": round(max(0.0, start), 3),
             "endSeconds": round(max(0.0, end), 3),
             "text": cleaned[:max_text_chars],
-        })
+        }
+        region = _caption_region_for_interval(start, end, timed_regions)
+        if region:
+            cue["region"] = region
+        cues.append(cue)
         if len(cues) >= max_cues:
             break
     return cues
@@ -1874,9 +1942,9 @@ def remotion_caption_style(config: dict[str, Any]) -> dict[str, Any]:
     return {
         "position": position,
         "maxWidthRatio": clamp_float(captions.get("max_width_ratio"), 0.82, 0.45, 0.96),
-        "fontSizeRatio": clamp_float(captions.get("font_size_ratio"), 0.044, 0.02, 0.075),
+        "fontSizeRatio": clamp_float(captions.get("font_size_ratio"), 0.052, 0.02, 0.085),
         "backgroundOpacity": clamp_float(captions.get("background_opacity"), 0.74, 0.0, 0.95),
-        "maxLines": int(clamp_float(captions.get("max_lines"), 3, 1, 4)),
+        "maxLines": int(clamp_float(captions.get("max_lines"), 2, 1, 2)),
         "textColor": str(captions.get("text_color", "#ffffff")).strip() or "#ffffff",
         "backgroundColor": str(captions.get("background_color", "#050505")).strip() or "#050505",
         "accentColor": str(captions.get("accent_color", "#f2d14b")).strip() or "#f2d14b",
@@ -3022,6 +3090,7 @@ def render_video_remotion_variant(
     *,
     variant: str,
     subtitles: Path | None = None,
+    caption_regions: Sequence[dict[str, Any]] | None = None,
     job_id: str | None = None,
     candidate_id: str | None = None,
 ) -> dict[str, Any]:
@@ -3079,7 +3148,7 @@ def render_video_remotion_variant(
         "customDesign": custom_design_enabled,
     }
     if remotion_captions_enabled_for_variant(config, variant):
-        caption_cues = remotion_caption_cues(subtitles, max_end=content_duration)
+        caption_cues = remotion_caption_cues(subtitles, max_end=content_duration, timed_regions=caption_regions)
         if caption_cues:
             props["captions"] = caption_cues
             props["captionStyle"] = remotion_caption_style(config)
@@ -3456,6 +3525,124 @@ def produce_design_overlay_from_base(
     return review
 
 
+def produce_passthrough_review_package(
+    config: dict[str, Any],
+    row: sqlite3.Row,
+    media: Path,
+    metadata: dict[str, Any],
+    localization_profile: dict[str, Any],
+    source_outro_detection: dict[str, Any],
+    strategy: Any,
+    compliance: dict[str, Any],
+    progress: Callable[[int, str], None],
+) -> Path:
+    progress(62, "第 2 类素材：无中文字幕/中文声音，直接保留原视频")
+    review_root = workspace_dir(config) / "ready_for_review"
+    review = review_root / row["id"]
+    review.mkdir(parents=True, exist_ok=True)
+    output = review / "video.mp4"
+    shutil.copy2(media, output)
+    cover = review / "cover.jpg"
+    cover_source = render_cover_image(config, brand_kit(config), output, cover)
+    qa = qa_video(output, config)
+    links = tracking_links(config, row["id"])
+    duration = media_duration(output)
+    width, height = media_dimensions(output)
+    variant_outputs = [{
+        "variant": "原视频",
+        "path": str(output),
+        "filename": output.name,
+        "duration": duration,
+        "size": output.stat().st_size,
+        "source_label": source_filename_label(str(row["platform"])),
+        "mobile_format": {
+            "applied": False,
+            "mode": "passthrough_original",
+            "source_width": width,
+            "source_height": height,
+        },
+        "batch_label": "",
+        "qa": qa,
+    }]
+    metadata_payload = {
+        "job_id": row["id"],
+        "source_job_id": row["id"],
+        "keyword": str(metadata.get("keyword") or ""),
+        "category": str(metadata.get("category") or ""),
+        "source": {"platform": row["platform"], "url": row["url"], "title": row["title"]},
+        "content_type": strategy.content_type,
+        "content_type_confidence": strategy.content_type_confidence,
+        "matched_rules": list(strategy.matched_rules),
+        "segment_strategy": "passthrough_original",
+        "audio_policy": "preserve_output_audio",
+        "operator_override": strategy.operator_override,
+        "ptbr_script": "",
+        "youtube": {
+            "title": str(row["title"])[:100],
+            "description": f"{str(row['description'] or '')[:500]}\n\n▶ {links['youtube']}",
+            "hashtags": ["JaguarTV", "Brasil"],
+            "cta_url": links["youtube"],
+        },
+        "tiktok": {"caption": str(row["title"])[:220], "hashtags": ["JaguarTV"], "cta_url": links["tiktok"]},
+        "kwai": {"caption": str(row["title"])[:220], "hashtags": ["JaguarTV"], "cta_url": links["kwai"]},
+        "facebook": {
+            "text": f"{str(row['description'] or row['title'])[:500]}\n\n▶ {links['facebook']}",
+            "hashtags": ["JaguarTV"],
+            "cta_url": links["facebook"],
+        },
+        "brand_kit": brand_kit(config)["_name"],
+        "brand_assets": {"cover_source": cover_source, "watermark": "", "endcard": ""},
+        "output_variants": variant_outputs,
+        "render_engine": "passthrough",
+        "reaction": {"mode": "none"},
+        "compliance": compliance,
+        "tracking_links": links,
+        "audio": {
+            "mode": "preserve_source",
+            "reason": f"localization_class_2:{localization_profile.get('reason')}",
+            "source_audio_removed": False,
+            "source_audio_preserved": True,
+            "voice": "",
+            "bgm": "",
+            "bgm_source": "source_music",
+        },
+        "localization_profile": localization_profile,
+        "visual_cleanup": {
+            "layout_mode": "passthrough_original",
+            "source_subtitle_mode": "off",
+            "source_subtitle_crop_bottom_ratio": 0,
+            "ocr": {"used": False, "regions": [], "reason": "class_2_passthrough", "media": str(output)},
+        },
+        "source_outro_trim": source_outro_detection,
+        "source_outro_trim_summary": review_source_outro_summary(source_outro_detection),
+        "qa": qa,
+    }
+    (review / "metadata.json").write_text(json.dumps(metadata_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    (review / "review.json").write_text(
+        json.dumps({"decision": "pending", "note": "", "reviewed_at": ""}, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    manifest = {
+        "job_id": row["id"],
+        "status": "READY_FOR_REVIEW",
+        "created_at": now_iso(),
+        "mode": "passthrough_original",
+        "assets": {"source": str(media), "reviews": [str(review)]},
+        "localization_profile": localization_profile,
+        "qa": [qa],
+        "source_outro_trim": source_outro_detection,
+    }
+    work = workspace_dir(config) / "jobs" / row["id"]
+    (work / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    storage_result = archive_review_package(config, row["id"], review)
+    connection = connect_db(config)
+    connection.execute("UPDATE candidates SET status='READY_FOR_REVIEW',updated_at=? WHERE id=?", (now_iso(), row["id"]))
+    append_event(connection, row["id"], "READY_FOR_REVIEW", manifest)
+    append_event(connection, row["id"], "SERVER_ARCHIVED", storage_result)
+    connection.commit()
+    progress(100, "第 2 类原视频审核包已生成")
+    return review
+
+
 def produce_candidate(
     config: dict[str, Any], row: sqlite3.Row,
     progress_callback: Callable[[int, str], None] | None = None,
@@ -3522,18 +3709,40 @@ def produce_candidate(
     audio_mode = render_audio_mode(strategy.audio_policy)
     localization_profile = localization_profile_for_candidate(row, candidate_metadata, work, media, config)
     audio_override = str(options.get("audio_policy") or "auto").strip().lower() != "auto"
+    if (
+        not audio_override
+        and localization_class_id(localization_profile) == 2
+        and bool(config.get("edit", {}).get("passthrough_clean_sources", True))
+        and reaction.mode == "none"
+    ):
+        return produce_passthrough_review_package(
+            config,
+            row,
+            original_media,
+            candidate_metadata,
+            localization_profile,
+            source_outro_detection,
+            strategy,
+            compliance,
+            progress,
+        )
     if not audio_override:
         audio_mode = str(localization_profile["audio_mode"])
     transcript = ""
     audio_reason = f"content_policy:{strategy.content_type}->{strategy.audio_policy}"
     audio_reason += f":localization_class_{localization_profile['class']}:{localization_profile['reason']}"
     if audio_mode == "localized":
+        require_source_transcript = (
+            not audio_override
+            and localization_class_id(localization_profile) in {1, 3}
+        )
         transcript = source_text(
             work,
             media,
             f"{row['title']}. {row['description']}".strip(),
             enable_asr=bool(config.get("localization", {}).get("asr_enabled", False)),
             config=config,
+            allow_metadata_fallback=not require_source_transcript,
         )
     elif audio_mode == "preserve_source" and not media_has_audio(media):
         audio_mode = "silent"
@@ -3580,7 +3789,9 @@ def produce_candidate(
             try:
                 bgm = demucs_backing_track(media, work)
                 bgm_source = "demucs_no_vocals"
-            except RuntimeError:
+            except RuntimeError as error:
+                if bool(config.get("localization", {}).get("require_backing_track", False)):
+                    raise RuntimeError(f"background track separation required but failed: {error}") from error
                 bgm = None
                 bgm_source = "none:demucs_unavailable"
         progress(55, "葡语音轨已准备，未添加固定 BGM")
@@ -3737,6 +3948,7 @@ def produce_candidate(
                     variant_output,
                     variant=variant,
                     subtitles=subtitles,
+                    caption_regions=ocr_cleanup.get("timed_regions") if ocr_cleanup.get("used") else None,
                     job_id=package_id,
                     candidate_id=row["id"],
                 )
