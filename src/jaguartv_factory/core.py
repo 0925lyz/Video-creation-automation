@@ -2471,8 +2471,8 @@ def render_video_ffmpeg(
     bgm_volume = float(config.get("audio", {}).get("bgm_volume", 0.62))
     fade_out_start = max(0.0, duration - 1.0)
     if audio_mode == "localized":
-        chains.append(f"[1:a]volume={voice_volume},apad,asplit=2[voice_sc][voice_mix]")
         if bgm:
+            chains.append(f"[1:a]volume={voice_volume},apad,asplit=2[voice_sc][voice_mix]")
             chains.append(
                 f"[2:a]volume={bgm_volume},atrim=0:{duration:.3f},"
                 f"afade=t=in:st=0:d=0.35,afade=t=out:st={fade_out_start:.3f}:d=1[backing]"
@@ -2480,7 +2480,10 @@ def render_video_ffmpeg(
             chains.append("[backing][voice_sc]sidechaincompress=threshold=0.060:ratio=4:attack=12:release=220[backing_ducked]")
             chains.append("[backing_ducked][voice_mix]amix=inputs=2:duration=first:dropout_transition=1:normalize=0[a]")
         else:
-            chains.append(f"[voice_mix]atrim=0:{duration:.3f},afade=t=out:st={fade_out_start:.3f}:d=1[a]")
+            chains.append(
+                f"[1:a]volume={voice_volume},apad,atrim=0:{duration:.3f},"
+                f"afade=t=out:st={fade_out_start:.3f}:d=1[a]"
+            )
     elif audio_mode == "preserve_source":
         source_volume = float(config.get("audio", {}).get("source_music_volume", 1.0))
         chains.append(
@@ -2892,16 +2895,19 @@ def render_clean_segment(
         if not voice:
             raise RuntimeError("Localized clean render requires pt-BR voice")
         args.extend(["-i", str(voice)])
-        audio_chains.append(f"[1:a]volume={voice_volume},apad,asplit=2[voice_sc][voice_mix]")
         if bgm:
             args.extend(["-stream_loop", "-1", "-i", str(bgm)])
             audio_chains.extend([
+                f"[1:a]volume={voice_volume},apad,asplit=2[voice_sc][voice_mix]",
                 f"[2:a]volume={bgm_volume},atrim=0:{duration:.3f},afade=t=in:st=0:d=0.35,afade=t=out:st={fade_out_start:.3f}:d=1[backing]",
                 "[backing][voice_sc]sidechaincompress=threshold=0.060:ratio=4:attack=12:release=220[backing_ducked]",
                 "[backing_ducked][voice_mix]amix=inputs=2:duration=first:dropout_transition=1:normalize=0[a]",
             ])
         else:
-            audio_chains.append(f"[voice_mix]atrim=0:{duration:.3f},afade=t=out:st={fade_out_start:.3f}:d=1[a]")
+            audio_chains.append(
+                f"[1:a]volume={voice_volume},apad,atrim=0:{duration:.3f},"
+                f"afade=t=out:st={fade_out_start:.3f}:d=1[a]"
+            )
     elif audio_mode == "preserve_source":
         audio_chains.append(
             f"[0:a]volume={source_volume},atrim=0:{duration:.3f},afade=t=out:st={fade_out_start:.3f}:d=1[a]"
@@ -4133,7 +4139,7 @@ def produce_candidate(
         storage_result = archive_review_package(config, package_id, review)
         append_event(connect_db(config), row["id"], "SERVER_ARCHIVED", storage_result)
         reviews.append(review)
-        
+
         if segment_total > 1:
             conn = connect_db(config)
             child_title = f"{row['title']} (Slice {segment_index})"
