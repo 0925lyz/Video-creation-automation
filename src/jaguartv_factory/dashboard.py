@@ -209,6 +209,7 @@ YOUTUBE_OAUTH_SCOPES = (
 GOOGLE_OAUTH_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 YOUTUBE_CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels"
+YOUTUBE_AUTH_LINK_MAX_TTL_SECONDS = 7 * 24 * 3600
 DEFAULT_X_OAUTH_SCOPES = ("tweet.read", "users.read", "tweet.write", "offline.access")
 X_OAUTH_AUTH_URL = "https://x.com/i/oauth2/authorize"
 X_OAUTH_TOKEN_URL = "https://api.x.com/2/oauth2/token"
@@ -1608,6 +1609,46 @@ def oauth_state_secret() -> str:
 
 def sign_oauth_state(payload: str) -> str:
     return hmac.new(oauth_state_secret().encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def sign_youtube_auth_link(account: str, expires_at: int) -> str:
+    canonical = canonical_account_id(account)
+    if canonical not in set(ACCOUNT_ALIASES.values()):
+        raise ValueError(f"unknown YouTube account: {canonical or 'empty'}")
+    payload = f"youtube-oauth-start:{canonical}:{int(expires_at)}"
+    return sign_oauth_state(payload)
+
+
+def youtube_auth_link_is_valid(query: dict[str, list[str]], *, now: int | None = None) -> bool:
+    account = canonical_account_id(str((query.get("account") or [""])[0]))
+    expires_raw = str((query.get("expires") or [""])[0]).strip()
+    signature = str((query.get("signature") or [""])[0]).strip()
+    if not account or not expires_raw or not signature:
+        return False
+    try:
+        expires_at = int(expires_raw)
+        expected = sign_youtube_auth_link(account, expires_at)
+    except (TypeError, ValueError):
+        return False
+    current = int(time.time()) if now is None else int(now)
+    if expires_at <= current or expires_at - current > YOUTUBE_AUTH_LINK_MAX_TTL_SECONDS:
+        return False
+    return hmac.compare_digest(signature, expected)
+
+
+def youtube_auth_link(config: dict[str, Any], account: str, *, expires_at: int) -> str:
+    canonical = canonical_account_id(account)
+    callback = youtube_oauth_redirect_uri(config)
+    callback_path = "/oauth/youtube/callback"
+    if not callback.endswith(callback_path):
+        raise ValueError("YouTube OAuth redirect URI must end with /oauth/youtube/callback")
+    base_url = callback[:-len(callback_path)]
+    params = {
+        "account": canonical,
+        "expires": str(int(expires_at)),
+        "signature": sign_youtube_auth_link(canonical, expires_at),
+    }
+    return f"{base_url}/oauth/youtube/start?{urlencode(params)}"
 
 
 def make_oauth_state(account: str) -> str:
@@ -3322,9 +3363,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if parsed.path == "/oauth/x/callback":
                 return self.send_x_oauth_callback(query)
             if parsed.path == "/oauth/youtube/start":
-                if not self.authorized_for_admin(parsed):
-                    return self.send_admin_unauthorized(parsed.path)
                 account = str((query.get("account") or ["consumer_football"])[0]).strip() or "consumer_football"
+                if not self.authorized_for_admin(parsed) and not youtube_auth_link_is_valid(query):
+                    return self.send_admin_unauthorized(parsed.path)
                 try:
                     return self.redirect(youtube_oauth_start_url(self.server.config, account))
                 except Exception as error:

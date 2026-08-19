@@ -1,5 +1,7 @@
 import json
+import http.client
 import threading
+import time
 import urllib.error
 import urllib.request
 from urllib.parse import parse_qs, urlparse
@@ -32,6 +34,9 @@ from jaguartv_factory.dashboard import (
     update_x_auth,
     x_auth_rows,
     x_oauth_start_url,
+    sign_youtube_auth_link,
+    youtube_auth_link,
+    youtube_auth_link_is_valid,
     youtube_oauth_start_url,
 )
 from jaguartv_factory.sessions import check_session, list_sessions, save_session
@@ -598,6 +603,70 @@ def test_youtube_oauth_start_url_includes_offline_state(tmp_path: Path, monkeypa
     assert query["prompt"] == ["consent"]
     assert "https://www.googleapis.com/auth/youtube.upload" in query["scope"][0]
     assert query["state"][0]
+
+
+def test_signed_youtube_auth_link_allows_known_account_until_expiry(tmp_path: Path, monkeypatch):
+    config = dashboard_config(tmp_path)
+    monkeypatch.setenv("JAGUARTV_GOOGLE_REDIRECT_URI", "https://factory.jarg.top/oauth/youtube/callback")
+    monkeypatch.setenv("JAGUARTV_OAUTH_STATE_SECRET", "state-secret")
+    expires_at = 1_800_000_000
+
+    url = youtube_auth_link(config, "partner_embaixador", expires_at=expires_at)
+    query = parse_qs(urlparse(url).query)
+
+    assert url.startswith("https://factory.jarg.top/oauth/youtube/start?")
+    assert query["account"] == ["partner_embaixador"]
+    assert youtube_auth_link_is_valid(query, now=expires_at - 60)
+    assert not youtube_auth_link_is_valid(query, now=expires_at)
+
+
+def test_signed_youtube_auth_link_rejects_tampering_unknown_accounts_and_long_ttl(monkeypatch):
+    monkeypatch.setenv("JAGUARTV_OAUTH_STATE_SECRET", "state-secret")
+    expires_at = 1_800_000_000
+    signature = sign_youtube_auth_link("consumer_main", expires_at)
+
+    assert not youtube_auth_link_is_valid({
+        "account": ["consumer_football"],
+        "expires": [str(expires_at)],
+        "signature": [signature],
+    }, now=expires_at - 60)
+    assert not youtube_auth_link_is_valid({
+        "account": ["unknown_account"],
+        "expires": [str(expires_at)],
+        "signature": [signature],
+    }, now=expires_at - 60)
+    assert not youtube_auth_link_is_valid({
+        "account": ["consumer_main"],
+        "expires": [str(expires_at)],
+        "signature": [signature],
+    }, now=expires_at - (8 * 24 * 3600))
+
+
+def test_signed_youtube_auth_link_bypasses_admin_cookie_for_oauth_start(tmp_path: Path, monkeypatch):
+    config = dashboard_config(tmp_path)
+    monkeypatch.setenv("JAGUARTV_DASHBOARD_TOKEN", "dashboard-secret")
+    monkeypatch.setenv("JAGUARTV_DASHBOARD_PUBLIC", "0")
+    monkeypatch.setenv("JAGUARTV_GOOGLE_CLIENT_ID", "client-id")
+    monkeypatch.setenv("JAGUARTV_GOOGLE_CLIENT_SECRET", "client-secret")
+    monkeypatch.setenv("JAGUARTV_GOOGLE_REDIRECT_URI", "https://factory.jarg.top/oauth/youtube/callback")
+    monkeypatch.setenv("JAGUARTV_OAUTH_TOKEN_KEY", "token-encryption-key")
+    monkeypatch.setenv("JAGUARTV_OAUTH_STATE_SECRET", "state-secret")
+    app = DashboardApplication(("127.0.0.1", 0), config)
+    thread = threading.Thread(target=app.serve_forever, daemon=True)
+    thread.start()
+    try:
+        link = youtube_auth_link(config, "consumer_guide", expires_at=int(time.time()) + 300)
+        parsed = urlparse(link)
+        connection = http.client.HTTPConnection("127.0.0.1", app.server_address[1], timeout=5)
+        connection.request("GET", f"{parsed.path}?{parsed.query}")
+        response = connection.getresponse()
+        assert response.status == 302
+        assert response.getheader("Location", "").startswith("https://accounts.google.com/")
+        connection.close()
+    finally:
+        app.shutdown()
+        thread.join(timeout=5)
+        app.server_close()
 
 
 def test_youtube_oauth_callback_encrypts_refresh_token(tmp_path: Path, monkeypatch):
