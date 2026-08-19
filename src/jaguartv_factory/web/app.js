@@ -432,14 +432,31 @@ function outputAssetsFor(item) {
   }];
 }
 
-function outputActionLinks(asset) {
+function isDesignOutput(asset) {
+  const text = `${asset.label || ""} ${asset.batch_label || ""} ${asset.content_type || ""} ${asset.filename || ""}`;
+  return text.includes("文案设计版") || text.includes("design_overlay");
+}
+
+function outputDesignButton(item, asset) {
+  if (!asset?.id || isDesignOutput(asset)) return "";
+  const payload = escapeHtml(JSON.stringify([{
+    id: asset.id,
+    label: asset.label || "",
+    variant: asset.variant || "",
+    video_url: asset.video_url || "",
+    filename: asset.filename || "",
+  }]));
+  return `<button class="table-action" data-design-id="${escapeHtml(item.id)}" data-design-assets='${payload}' type="button">文案设计</button>`;
+}
+
+function outputActionLinks(asset, item = null) {
   const videoUrl = String(asset.video_url || "");
   if (!videoUrl) return "";
   const downloadUrl = String(asset.download_url || `${videoUrl}${videoUrl.includes("?") ? "&" : "?"}download=1`);
   const serverUrl = String(asset.server_url || videoUrl);
   const filename = String(asset.filename || `${asset.id || "jaguartv-video"}.mp4`).replace(/[^0-9A-Za-z_.-]+/g, "_");
   const payload = escapeHtml(JSON.stringify({ ...asset, download_url: downloadUrl, server_url: serverUrl, filename }));
-  return `<button class="table-action" data-download-asset='${payload}' type="button">登记下载</button><a class="table-action" href="${escapeHtml(serverUrl)}" target="_blank" rel="noopener">服务器成片</a>`;
+  return `<button class="table-action" data-download-asset='${payload}' type="button">登记下载</button><a class="table-action" href="${escapeHtml(serverUrl)}" target="_blank" rel="noopener">服务器成片</a>${item ? outputDesignButton(item, asset) : ""}`;
 }
 
 function approvedOutputActions(item) {
@@ -448,31 +465,24 @@ function approvedOutputActions(item) {
     return `<button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">生成成片</button>`;
   }
   if (assets.length > 1) {
-    return `<div class="row-actions"><details class="output-menu"><summary class="table-action">查看全部 ${assets.length} 条</summary><div class="output-menu-panel">${assets.map((asset) => `<div class="output-menu-row"><strong title="${escapeHtml(asset.label || asset.id || "成片")}">${escapeHtml(asset.label || asset.id || "成片")}</strong><div class="row-actions output-menu-actions">${outputActionLinks(asset)}</div></div>`).join("")}</div></details></div>`;
+    return `<div class="row-actions"><details class="output-menu"><summary class="table-action">查看全部 ${assets.length} 条</summary><div class="output-menu-panel">${assets.map((asset) => `<div class="output-menu-row"><strong title="${escapeHtml(asset.label || asset.id || "成片")}">${escapeHtml(asset.label || asset.id || "成片")}</strong><div class="row-actions output-menu-actions">${outputActionLinks(asset, item)}</div></div>`).join("")}</div></details></div>`;
   }
   const allOutputs = "";
-  return `<div class="row-actions">${outputActionLinks(assets[0])}${allOutputs}</div>`;
+  return `<div class="row-actions">${outputActionLinks(assets[0], item)}${allOutputs}</div>`;
 }
 
 function candidateAction(item) {
   const sourceLink = item.url ? `<button class="table-action" onclick="window.open('${escapeHtml(item.url)}','_blank')">源页</button>` : "";
-  const designAssets = escapeHtml(JSON.stringify(outputAssetsFor(item).map((asset) => ({
-    id: asset.id,
-    variant: asset.variant || "",
-    video_url: asset.video_url || "",
-    filename: asset.filename || "",
-  }))));
-  const designButton = `<button class="table-action" data-design-id="${item.id}" data-design-assets='${designAssets}'>文案设计</button>`;
   const deleteButton = `<button class="table-action danger-action" data-delete-id="${item.id}">删除</button>`;
-  if (item.status === "DISCOVERED") return `${sourceLink}<button class="table-action" data-candidate-action="download" data-candidate-id="${item.id}">下载</button><button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">制作</button>${designButton}${deleteButton}`;
-  if (item.status === "DOWNLOAD_FAILED") return `${sourceLink}<button class="table-action" data-candidate-action="download" data-candidate-id="${item.id}">重新下载</button><button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">下载并制作</button>${designButton}${deleteButton}`;
-  if (item.status === "PRODUCTION_FAILED") return `${sourceLink}<button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">重新制作</button>${designButton}${deleteButton}`;
-  if (["DOWNLOADED", "REVISION_REQUIRED", "BLOCKED_RIGHTS"].includes(item.status)) return `<button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">制作</button>${designButton}${deleteButton}`;
+  if (item.status === "DISCOVERED") return `${sourceLink}<button class="table-action" data-candidate-action="download" data-candidate-id="${item.id}">下载</button><button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">制作</button>${deleteButton}`;
+  if (item.status === "DOWNLOAD_FAILED") return `${sourceLink}<button class="table-action" data-candidate-action="download" data-candidate-id="${item.id}">重新下载</button><button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">下载并制作</button>${deleteButton}`;
+  if (item.status === "PRODUCTION_FAILED") return `${sourceLink}<button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">重新制作</button>${deleteButton}`;
+  if (["DOWNLOADED", "REVISION_REQUIRED", "BLOCKED_RIGHTS"].includes(item.status)) return `<button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">制作</button>${deleteButton}`;
   if (item.status === "READY_FOR_REVIEW") {
-    return `${approvedOutputActions(item)}${designButton}<button class="table-action" data-review-decision="APPROVED" data-candidate-id="${item.id}">通过</button><button class="table-action" data-review-decision="REVISION_REQUIRED" data-candidate-id="${item.id}">返工</button>${deleteButton}`;
+    return `${approvedOutputActions(item)}<button class="table-action" data-review-decision="APPROVED" data-candidate-id="${item.id}">通过</button><button class="table-action" data-review-decision="REVISION_REQUIRED" data-candidate-id="${item.id}">返工</button>${deleteButton}`;
   }
-  if (item.status === "APPROVED") return `${approvedOutputActions(item)}${designButton}${deleteButton}`;
-  return `${designButton}${deleteButton}`;
+  if (item.status === "APPROVED") return `${approvedOutputActions(item)}${deleteButton}`;
+  return `${deleteButton}`;
 }
 
 async function submitReview(decision, candidateId) {
@@ -960,13 +970,14 @@ function parseDesignAssets(raw) {
 function designAssetMap(assets) {
   const generic = assets.find((asset) => asset.variant === "通用版") || assets[0] || null;
   const fb = assets.find((asset) => asset.variant === "FB版") || generic;
+  const selected = assets[0] || null;
+  const selectedVariant = selected?.variant || generic?.variant || "通用版";
   return {
     generic,
     fb,
-    ids: {
-      "通用版": generic?.id || "",
-      "FB版": fb?.id || generic?.id || "",
-    },
+    selected,
+    selectedVariant,
+    ids: { [selectedVariant]: selected?.id || generic?.id || "" },
   };
 }
 
@@ -975,7 +986,7 @@ async function openDesignDialog(candidateId, encodedAssets = "") {
   if (!item) return toast("找不到这条内容", "error");
   const productionCandidateId = item.source_candidate_id || candidateId;
   const assetMap = designAssetMap(parseDesignAssets(encodedAssets));
-  const baseAssetId = assetMap.generic?.id || assetMap.fb?.id || "";
+  const baseAssetId = assetMap.selected?.id || assetMap.generic?.id || assetMap.fb?.id || "";
   if (!baseAssetId) return toast("请先生成服务器成片，再打开文案设计", "error");
   let designInfo = {};
   try {
@@ -985,6 +996,8 @@ async function openDesignDialog(candidateId, encodedAssets = "") {
   }
   Object.assign(item, designInfo);
   item.design_base_asset_ids = assetMap.ids;
+  item.design_variants = [assetMap.selectedVariant];
+  item.design_base_label = `${assetMap.selected?.label || item.display_title || item.title || candidateId}`;
   state.pendingProductionIds = [item.source_candidate_id || productionCandidateId];
   state.designCandidate = item;
   clearDesignImages();
@@ -1000,12 +1013,11 @@ async function openDesignDialog(candidateId, encodedAssets = "") {
     y: 0.10,
   }];
   state.selectedDesignLayerId = "design-text";
-  document.querySelector("#designCandidateLabel").textContent = item.display_title || item.title || candidateId;
+  document.querySelector("#designCandidateLabel").textContent = `${item.display_title || item.title || candidateId} · ${assetMap.selectedVariant}`;
   document.querySelector("#designText").value = "";
   document.querySelector("#designTextColor").value = "#ffffff";
   document.querySelector("#designTextSize").value = 64;
   document.querySelector("#designTextWidth").value = 84;
-  document.querySelector("#designVariant").value = "both";
   document.querySelector("#designUploadProgress").hidden = true;
   setDesignSource(item);
   renderDesignEditor();
@@ -1511,8 +1523,9 @@ document.querySelector("#designForm").addEventListener("submit", async (event) =
       x: layer.x,
       y: layer.y,
     });
-    const variantMode = document.querySelector("#designVariant").value;
-    const variants = variantMode === "generic" ? ["通用版"] : variantMode === "fb" ? ["FB版"] : ["通用版", "FB版"];
+    const variants = Array.isArray(state.designCandidate?.design_variants) && state.designCandidate.design_variants.length
+      ? state.designCandidate.design_variants
+      : ["通用版"];
     const baseAssetIds = state.designCandidate?.design_base_asset_ids || {};
     const options = {
       content_type: "auto",
