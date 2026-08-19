@@ -960,7 +960,8 @@ def test_localized_clean_render_uses_ptbr_voice_without_fixed_bgm(tmp_path: Path
     filter_complex = args[args.index("-filter_complex") + 1]
     assert "-stream_loop" not in args
     assert "amix" not in filter_complex
-    assert "voice_mix" in filter_complex
+    assert "asplit" not in filter_complex
+    assert "[1:a]volume" in filter_complex
     assert output.read_bytes() == b"rendered"
 
 
