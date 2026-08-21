@@ -14,7 +14,12 @@ from .core import (
     storage_root,
     workspace_dir,
 )
-from .publishing_copywriter import generate_publishing_copy, source_material_from, youtube_description
+from .publishing_copywriter import (
+    generate_publishing_copy,
+    source_material_from,
+    youtube_description,
+    youtube_title_with_hashtags,
+)
 
 
 QUEUE_STATUSES = {"QUEUED", "SCHEDULED", "PUBLISHING"}
@@ -190,6 +195,55 @@ def publication_source_context(connection: Any, candidate_id: str) -> dict[str, 
     }
 
 
+def publication_tracking_metadata(
+    connection: Any,
+    candidate_id: str,
+    context: dict[str, Any],
+    review: dict[str, Any],
+    variant: str,
+) -> dict[str, str]:
+    metadata = context.get("metadata") if isinstance(context.get("metadata"), dict) else {}
+    parent_metadata = context.get("parent_metadata") if isinstance(context.get("parent_metadata"), dict) else {}
+
+    def first_value(sources: tuple[dict[str, Any], ...], keys: tuple[str, ...], default: str) -> str:
+        for source in sources:
+            for key in keys:
+                value = str(source.get(key) or "").strip()
+                if value:
+                    return value
+        return default
+
+    category = first_value(
+        (metadata, parent_metadata, review),
+        ("initial_category", "category", "category_label"),
+        "unknown",
+    )
+    keyword = first_value(
+        (metadata, parent_metadata, review),
+        ("keyword", "initial_keyword", "crawl_keyword", "search_keyword"),
+        "unknown",
+    )
+    slice_id = first_value((review, metadata), ("slice_id",), "")
+    version_id = first_value((review, metadata), ("version_id", "production_run_id"), "")
+    output = connection.execute(
+        """
+        SELECT production_run_id,slice_id FROM production_outputs
+        WHERE candidate_id=? AND (?='' OR variant=?)
+        ORDER BY updated_at DESC LIMIT 1
+        """,
+        (candidate_id, variant, variant),
+    ).fetchone()
+    if output:
+        slice_id = slice_id or str(output["slice_id"] or "")
+        version_id = version_id or str(output["production_run_id"] or "")
+    return {
+        "source_category": category,
+        "source_keyword": keyword,
+        "slice_id": slice_id,
+        "version_id": version_id,
+    }
+
+
 def source_allowed_for_publish(candidate: dict[str, Any], account_config: dict[str, Any]) -> tuple[bool, str]:
     source_platform = str(candidate.get("source_platform") or "").strip().lower()
     source_url = str(candidate.get("source_url") or "")
@@ -331,10 +385,11 @@ def publication_text(
     title = str(generated.get("title") or youtube.get("title") or candidate.get("title") or "Jaguar TV").strip()
     caption = str(generated.get("caption") or youtube.get("description") or candidate.get("description") or "").strip()
     generated_tags = generated.get("tags") if isinstance(generated.get("tags"), list) else []
+    normalized_tags = [str(item) for item in generated_tags[:5]]
     return {
-        "title": title[:70],
+        "title": youtube_title_with_hashtags(title[:70], normalized_tags),
         "description": youtube_description(caption),
-        "tags": [str(item) for item in generated_tags[:5]],
+        "tags": normalized_tags,
     }
 
 
@@ -409,13 +464,30 @@ def enqueue_approved_publication(
         return {"candidate_id": candidate_id, "status": "EXISTS", "publication": existing}
     scheduled_at, shifted = next_publish_slot(connection, account_key, account, config, now=now)
     text = publication_text(config, candidate, review, route.get("tags") or [])
+    auth = connection.execute(
+        "SELECT channel_id,channel_title FROM youtube_channel_auths WHERE account=?",
+        (account_key,),
+    ).fetchone()
+    account_label = str((auth["channel_title"] if auth else "") or account.get("label") or account_key)
+    channel_id = str((auth["channel_id"] if auth else "") or account.get("channel_id") or "")
+    scheduled_datetime = parse_datetime(scheduled_at)
+    timezone_name = publishing_timezone(config, account)
+    tracking = publication_tracking_metadata(
+        connection,
+        candidate_id,
+        context,
+        review,
+        str(asset.get("variant") or "通用版"),
+    )
     payload = {
         "candidate_id": candidate_id,
         "account_key": account_key,
-        "account_label": str(account.get("label") or account_key),
-        "channel_id": str(account.get("channel_id") or ""),
+        "account_label": account_label,
+        "channel_id": channel_id,
         "scheduled_at": scheduled_at,
-        "timezone": publishing_timezone(config, account),
+        "scheduled_local_at": scheduled_datetime.astimezone(ZoneInfo(timezone_name)).isoformat() if scheduled_datetime else scheduled_at,
+        "scheduled_utc_at": scheduled_datetime.astimezone(timezone.utc).isoformat() if scheduled_datetime else "",
+        "timezone": timezone_name,
         "asset_id": asset["asset_id"],
         "package_id": asset["package_id"],
         "variant": asset.get("variant") or "通用版",
@@ -425,6 +497,7 @@ def enqueue_approved_publication(
         "tags": text["tags"],
         "privacy_status": str(account.get("default_privacy_status") or account.get("default_visibility") or "public"),
         "daily_limit_shifted": shifted,
+        **tracking,
     }
     if dry_run:
         return {"status": "WOULD_QUEUE", **payload}
@@ -434,23 +507,37 @@ def enqueue_approved_publication(
         INSERT INTO publications(
           candidate_id,package_id,asset_id,variant,source_platform,platform,account,account_label,
           channel_id,scheduled_at,status,title,description,tags_json,privacy_status,timezone,
-          reviewer,review_decision_at,created_at,updated_at
-        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          reviewer,review_decision_at,platform_account_id,authorized_account_id,
+          platform_username_snapshot,scheduled_local_at,scheduled_utc_at,source_category,
+          source_keyword,slice_id,version_id,created_at,updated_at
+        ) VALUES(
+          :candidate_id,:package_id,:asset_id,:variant,:source_platform,'youtube',:account,:account_label,
+          :channel_id,:scheduled_at,'SCHEDULED',:title,:description,:tags_json,:privacy_status,:timezone,
+          :reviewer,:review_decision_at,:account,:account,:account_label,:scheduled_local_at,
+          :scheduled_utc_at,:source_category,:source_keyword,:slice_id,:version_id,:created_at,:updated_at
+        )
         """,
-        (
-            candidate_id, payload["package_id"], payload["asset_id"], payload["variant"],
-            payload["source_platform"], "youtube", account_key, payload["account_label"],
-            payload["channel_id"], scheduled_at, "SCHEDULED", payload["title"], payload["description"],
-            json.dumps(payload["tags"], ensure_ascii=False), payload["privacy_status"], payload["timezone"],
-            reviewer, review_decision_at or timestamp, timestamp, timestamp,
-        ),
+        {
+            **payload,
+            "account": account_key,
+            "tags_json": json.dumps(payload["tags"], ensure_ascii=False),
+            "reviewer": reviewer,
+            "review_decision_at": review_decision_at or timestamp,
+            "created_at": timestamp,
+            "updated_at": timestamp,
+        },
+    )
+    publication_id = int(cursor.lastrowid)
+    connection.execute(
+        "UPDATE publications SET publish_task_id=? WHERE id=?",
+        (f"publication:{publication_id}", publication_id),
     )
     connection.commit()
-    event_payload = {**payload, "publication_id": int(cursor.lastrowid)}
+    event_payload = {**payload, "publication_id": publication_id, "publish_task_id": f"publication:{publication_id}"}
     append_event(connection, candidate_id, "PUBLICATION_QUEUED", event_payload)
     if shifted:
         append_event(connection, candidate_id, "PUBLISH_BLOCKED_DAILY_LIMIT", event_payload)
-    return {"status": "SCHEDULED", "publication_id": int(cursor.lastrowid), **payload}
+    return {"status": "SCHEDULED", "publication_id": publication_id, **payload}
 
 
 def auto_enqueue_approved_publication(

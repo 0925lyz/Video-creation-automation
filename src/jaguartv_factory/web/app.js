@@ -13,21 +13,47 @@ const state = {
   sessions: [],
   uploads: [],
   health: null,
+  publishCapabilities: {},
+  publishAccounts: [],
   tasks: [],
   selectedCandidates: new Set(),
   status: "",
   categoryFilter: "",
   search: "",
   pendingProductionIds: [],
-  pendingDownloadAsset: null,
+  pendingPublishAsset: null,
+  pendingPublishItem: null,
+  posters: [],
+  posterCounts: { ALL: 0, PENDING_SCREENING: 0, PENDING_REVIEW: 0, APPROVED: 0 },
+  posterStatus: "",
+  posterCategory: "",
+  posterPagination: { page: 1, page_size: 24, total: 0, pages: 0 },
+  posterLoading: false,
+  posterError: "",
+  posterRequestSerial: 0,
+  posterAbortController: null,
+  posterPendingActions: new Set(),
+  posterPreviewIndex: -1,
+  posterZoom: 1,
+  pendingPosterDelete: null,
   designCandidate: null,
   designLayers: [],
   selectedDesignLayerId: "design-text",
+  youtubeGrowth: {
+    page: 1,
+    pageSize: 20,
+    pages: 0,
+    total: 0,
+    requestSerial: 0,
+    abortController: null,
+    loaded: false,
+  },
 };
 
 const views = {
   overview: ["OPERATIONS", "内容生产总览"],
   inventory: ["INVENTORY", "内容库存"],
+  posters: ["POSTER INVENTORY", "海报库存"],
   publishing: ["DISTRIBUTION", "发布队列"],
   analytics: ["GROWTH", "增长分析"],
   nodes: ["INFRASTRUCTURE", "运行节点"],
@@ -62,6 +88,14 @@ const initialCategoryLabels = [
   "肥皂剧（电视剧、电影）", "少儿剧", "成人频道", "纪录片（美食、动物、地区发展）",
   "综艺", "社交挑战", "舞蹈", "教程及优点展示类", "官方性质类",
   "合作类", "运营教学类", "教程及答疑类", "未分类",
+];
+
+const posterCategoryLabels = [
+  ["time_location", "时间地点"],
+  ["factor_analysis", "因素分析"],
+  ["match_prediction", "预测比赛"],
+  ["multi_schedule", "多赛程"],
+  ["star_fans", "球星球迷"],
 ];
 
 const matrixAccounts = [
@@ -111,12 +145,15 @@ async function refreshAll(showToast = false) {
   const button = document.querySelector("#refreshButton");
   button.disabled = true;
   try {
-    const [overview, candidates, publications, xAuths, workers, feedback, downloadClaims, keywordGroups, hotKeywords, categoryKeywords, tasks, settings, sessions, health, uploads] = await Promise.all([
-      api("/api/overview"), api("/api/candidates?limit=200"), api("/api/publications"), api("/api/x-auths"), api("/api/workers"), api("/api/feedback"), api("/api/download-claims"), api("/api/keywords"), api("/api/hot-keywords?date=today"), api("/api/category-keywords?date=today"), api("/api/tasks"), api("/api/settings"), api("/api/sessions"), api("/api/health"),
+    const [overview, candidates, publications, xAuths, workers, feedback, downloadClaims, keywordGroups, hotKeywords, categoryKeywords, tasks, settings, sessions, health, capabilities, uploads, posterCounts] = await Promise.all([
+      api("/api/overview"), api("/api/candidates?limit=200"), api("/api/publications"), api("/api/x-auths"), api("/api/workers"), api("/api/feedback"), api("/api/download-claims"), api("/api/keywords"), api("/api/hot-keywords?date=today"), api("/api/category-keywords?date=today"), api("/api/tasks"), api("/api/settings"), api("/api/sessions"), api("/api/health"), api("/api/publish/capabilities"),
       api("/api/uploads").catch(() => []),
+      api("/api/posters/counts"),
     ]);
-    Object.assign(state, { overview, candidates, publications, xAuths, workers, feedback, downloadClaims, keywordGroups, hotKeywords, categoryKeywords, tasks, settings, sessions, health, uploads });
+    Object.assign(state, { overview, candidates, publications, xAuths, workers, feedback, downloadClaims, keywordGroups, hotKeywords, categoryKeywords, tasks, settings, sessions, health, publishCapabilities: capabilities, uploads, posterCounts });
     renderAll();
+    if (document.querySelector("#view-posters").classList.contains("active")) await loadPosters();
+    if (document.querySelector("#view-analytics").classList.contains("active")) await loadYouTubeAnalytics();
     document.querySelector("#serviceTime").textContent = `更新于 ${dateText(overview.generated_at)}`;
     if (showToast) toast("数据已刷新");
   } catch (error) {
@@ -134,6 +171,7 @@ function renderAll() {
   renderRecent();
   renderXAuths();
   renderInventory();
+  renderPosterCounts();
   renderPublications();
   renderAnalytics();
   renderDownloadClaims();
@@ -148,6 +186,7 @@ function renderAll() {
   renderTasks();
   fillCandidateSelects();
   document.querySelector("#navInventory").textContent = state.overview.kpis.inventory;
+  document.querySelector("#navPosters").textContent = state.posterCounts.ALL || 0;
   document.querySelector("#navQueue").textContent = state.overview.kpis.scheduled;
   document.querySelector("#navNodes").textContent = state.workers.length;
 }
@@ -306,9 +345,214 @@ function renderInventory() {
   document.querySelectorAll("[data-candidate-action]").forEach((button) => button.addEventListener("click", () => runCandidateAction(button.dataset.candidateAction, button.dataset.candidateId)));
   document.querySelectorAll("[data-delete-id]").forEach((button) => button.addEventListener("click", () => deleteCandidates([button.dataset.deleteId])));
   document.querySelectorAll("[data-review-decision]").forEach((button) => button.addEventListener("click", () => submitReview(button.dataset.reviewDecision, button.dataset.candidateId)));
-  document.querySelectorAll("[data-download-asset]").forEach((button) => button.addEventListener("click", () => openDownloadClaimDialog(button.dataset.downloadAsset)));
+  document.querySelectorAll("[data-publish-asset]").forEach((button) => button.addEventListener("click", () => openPublishDialog(button.dataset.publishAsset, button.dataset.publishCandidate || "")));
   document.querySelectorAll("[data-design-id]").forEach((button) => button.addEventListener("click", () => openDesignDialog(button.dataset.designId, button.dataset.designAssets || "")));
   updateBatchToolbar();
+}
+
+function posterRequestId(action, posterId) {
+  const suffix = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${action}-${posterId}-${suffix}`.slice(0, 160);
+}
+
+function renderPosterCounts() {
+  document.querySelectorAll("[data-poster-count]").forEach((element) => {
+    element.textContent = number(state.posterCounts[element.dataset.posterCount] || 0);
+  });
+  const nav = document.querySelector("#navPosters");
+  if (nav) nav.textContent = number(state.posterCounts.ALL || 0);
+}
+
+function renderPosterCategoryFilters() {
+  const container = document.querySelector("#posterCategoryFilters");
+  container.innerHTML = [
+    `<button class="${state.posterCategory ? "" : "active"}" data-poster-category="" type="button">全部分类</button>`,
+    ...posterCategoryLabels.map(([id, label]) => `<button class="${state.posterCategory === id ? "active" : ""}" data-poster-category="${id}" type="button">${label}</button>`),
+  ].join("");
+  container.querySelectorAll("[data-poster-category]").forEach((button) => button.addEventListener("click", () => {
+    if (state.posterLoading || state.posterCategory === button.dataset.posterCategory) return;
+    state.posterCategory = button.dataset.posterCategory || "";
+    state.posterPagination.page = 1;
+    loadPosters();
+  }));
+}
+
+function posterActionButtons(item) {
+  const pending = (action) => state.posterPendingActions.has(`${action}:${item.id}`);
+  const deleteButton = `<button class="table-action danger-action" data-poster-delete="${escapeHtml(item.id)}" type="button" ${pending("delete") ? "disabled" : ""}>${pending("delete") ? "删除中" : "删除"}</button>`;
+  const previewButton = `<button class="table-action" data-poster-preview="${escapeHtml(item.id)}" type="button">预览</button>`;
+  const approveButton = ["PENDING_SCREENING", "PENDING_REVIEW"].includes(item.status_id)
+    ? `<button class="table-action" data-poster-approve="${escapeHtml(item.id)}" type="button" ${pending("approve") ? "disabled" : ""}>${pending("approve") ? "处理中" : "通过"}</button>`
+    : "";
+  const downloadButton = item.status_id === "APPROVED"
+    ? `<a class="table-action" data-poster-download="${escapeHtml(item.id)}" href="${escapeHtml(item.download_url)}" download>下载</a>`
+    : "";
+  return `<div class="row-actions poster-row-actions">${deleteButton}${previewButton}${approveButton}${downloadButton}</div>`;
+}
+
+function renderPosterInventory() {
+  renderPosterCounts();
+  renderPosterCategoryFilters();
+  const table = document.querySelector("#posterInventoryTable");
+  const pagination = document.querySelector("#posterPagination");
+  const posterTableEmpty = state.posterLoading || Boolean(state.posterError) || state.posters.length === 0;
+  table.closest(".poster-table-wrap").classList.toggle("poster-table-empty", posterTableEmpty);
+  document.querySelector("#posterInventoryCount").textContent = `${number(state.posterPagination.total || 0)} 张海报`;
+  if (state.posterLoading) {
+    table.innerHTML = `<tr><td colspan="6"><div class="empty-state poster-loading-state"><span class="loading-spinner"></span>正在加载海报</div></td></tr>`;
+    pagination.hidden = true;
+    return;
+  }
+  if (state.posterError) {
+    table.innerHTML = `<tr><td colspan="6"><div class="empty-state poster-error-state"><span>${escapeHtml(state.posterError)}</span><button class="secondary-button" id="retryPosters" type="button">重试</button></div></td></tr>`;
+    document.querySelector("#retryPosters").addEventListener("click", loadPosters);
+    pagination.hidden = true;
+    return;
+  }
+  table.innerHTML = state.posters.length ? state.posters.map((item) => {
+    const reviewedAt = item.approved_at || item.screened_at;
+    const statusClassName = item.status_id === "APPROVED" ? "ready" : item.status_id === "PENDING_REVIEW" ? "running" : "";
+    const unknownClass = item.category_known ? "" : " unknown";
+    return `<tr>
+      <td><div class="content-cell poster-content-cell"><div class="poster-thumb-shell"><img class="poster-thumbnail" src="${escapeHtml(item.thumbnail_url)}" alt="${escapeHtml(item.name)}" loading="lazy"><span class="poster-thumb-error" hidden>图片失效</span></div><div><strong title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</strong><small>${escapeHtml(item.id)}</small></div></div></td>
+      <td><span class="category-pill${unknownClass}" title="${escapeHtml(item.category_id)}">${escapeHtml(item.category_label)}</span></td>
+      <td><span class="status-pill ${statusClassName}">${escapeHtml(item.status_label)}</span></td>
+      <td>${dateText(item.created_at)}</td>
+      <td>${dateText(reviewedAt)}</td>
+      <td>${posterActionButtons(item)}</td>
+    </tr>`;
+  }).join("") : `<tr><td colspan="6"><div class="empty-state">当前筛选条件下没有海报</div></td></tr>`;
+
+  table.querySelectorAll(".poster-thumbnail").forEach((image) => image.addEventListener("error", () => {
+    image.hidden = true;
+    image.nextElementSibling.hidden = false;
+  }, { once: true }));
+  table.querySelectorAll("[data-poster-preview]").forEach((button) => button.addEventListener("click", () => openPosterPreview(button.dataset.posterPreview)));
+  table.querySelectorAll("[data-poster-approve]").forEach((button) => button.addEventListener("click", () => approvePoster(button.dataset.posterApprove)));
+  table.querySelectorAll("[data-poster-delete]").forEach((button) => button.addEventListener("click", () => openPosterDelete(button.dataset.posterDelete)));
+  table.querySelectorAll("[data-poster-download]").forEach((link) => link.addEventListener("click", () => toast("正在下载审核通过的海报")));
+
+  const { page, pages, total } = state.posterPagination;
+  pagination.hidden = total === 0;
+  document.querySelector("#posterPageSummary").textContent = pages ? `第 ${page} / ${pages} 页 · 共 ${number(total)} 张` : "";
+  document.querySelector("#posterPreviousPage").disabled = page <= 1;
+  document.querySelector("#posterNextPage").disabled = !pages || page >= pages;
+}
+
+async function loadPosters() {
+  state.posterAbortController?.abort();
+  const controller = new AbortController();
+  state.posterAbortController = controller;
+  const serial = ++state.posterRequestSerial;
+  state.posterLoading = true;
+  state.posterError = "";
+  renderPosterInventory();
+  const query = new URLSearchParams({
+    page: String(state.posterPagination.page || 1),
+    page_size: String(state.posterPagination.page_size || 24),
+  });
+  if (state.posterStatus) query.set("status", state.posterStatus);
+  if (state.posterCategory) query.set("category", state.posterCategory);
+  try {
+    const payload = await api(`/api/posters?${query}`, { signal: controller.signal });
+    if (serial !== state.posterRequestSerial) return;
+    state.posters = payload.items || [];
+    state.posterCounts = payload.counts || state.posterCounts;
+    state.posterPagination = payload.pagination || state.posterPagination;
+  } catch (error) {
+    if (error.name === "AbortError" || serial !== state.posterRequestSerial) return;
+    state.posterError = `海报列表加载失败：${error.message}`;
+  } finally {
+    if (serial === state.posterRequestSerial) {
+      state.posterLoading = false;
+      renderPosterInventory();
+    }
+  }
+}
+
+async function approvePoster(posterId) {
+  const item = state.posters.find((poster) => poster.id === posterId);
+  if (!item || !["PENDING_SCREENING", "PENDING_REVIEW"].includes(item.status_id)) return;
+  const target = item.status_id === "PENDING_SCREENING" ? "待审核" : "审核通过";
+  if (!confirm(`确认通过“${item.name}”并进入${target}？`)) return;
+  const pendingKey = `approve:${posterId}`;
+  if (state.posterPendingActions.has(pendingKey)) return;
+  state.posterPendingActions.add(pendingKey);
+  renderPosterInventory();
+  try {
+    const result = await api(`/api/posters/${encodeURIComponent(posterId)}/approve`, {
+      method: "POST",
+      headers: { "X-Request-ID": posterRequestId("approve", posterId) },
+      body: JSON.stringify({
+        actor: localStorage.getItem("jaguartvOperatorName") || "dashboard",
+        expected_status: item.status_id,
+      }),
+    });
+    toast(`海报已进入${result.status_label}`);
+    await loadPosters();
+  } catch (error) {
+    toast(`通过失败：${error.message}`, "error");
+  } finally {
+    state.posterPendingActions.delete(pendingKey);
+    if (!state.posterLoading) renderPosterInventory();
+  }
+}
+
+function openPosterDelete(posterId) {
+  const item = state.posters.find((poster) => poster.id === posterId);
+  if (!item || state.posterPendingActions.has(`delete:${posterId}`)) return;
+  state.pendingPosterDelete = item;
+  document.querySelector("#posterDeleteName").textContent = item.name;
+  const thumbnail = document.querySelector("#posterDeleteThumbnail");
+  thumbnail.hidden = false;
+  thumbnail.src = item.thumbnail_url;
+  thumbnail.alt = item.name;
+  thumbnail.onerror = () => { thumbnail.hidden = true; };
+  document.querySelector("#confirmPosterDelete").disabled = false;
+  document.querySelector("#posterDeleteDialog").showModal();
+}
+
+function applyPosterZoom(value) {
+  state.posterZoom = Math.min(4, Math.max(0.25, value));
+  document.querySelector("#posterPreviewImage").style.transform = `scale(${state.posterZoom})`;
+  document.querySelector("#posterZoomValue").textContent = `${Math.round(state.posterZoom * 100)}%`;
+}
+
+function showPosterPreview(index) {
+  if (!state.posters.length || index < 0 || index >= state.posters.length) return;
+  state.posterPreviewIndex = index;
+  const item = state.posters[index];
+  document.querySelector("#posterPreviewTitle").textContent = item.name;
+  document.querySelector("#posterPreviewMeta").textContent = `${item.category_label} · ${item.status_label} · 创建于 ${dateText(item.created_at)}`;
+  document.querySelector("#posterPreviewPrevious").disabled = index <= 0;
+  document.querySelector("#posterPreviewNext").disabled = index >= state.posters.length - 1;
+  const image = document.querySelector("#posterPreviewImage");
+  const message = document.querySelector("#posterPreviewMessage");
+  applyPosterZoom(1);
+  image.hidden = true;
+  message.hidden = false;
+  message.textContent = "正在加载图片";
+  message.classList.remove("error");
+  image.onload = () => {
+    image.hidden = false;
+    message.hidden = true;
+  };
+  image.onerror = () => {
+    image.hidden = true;
+    message.hidden = false;
+    message.textContent = "图片不存在、格式错误或加载失败";
+    message.classList.add("error");
+  };
+  image.alt = item.name;
+  image.src = item.preview_url;
+}
+
+function openPosterPreview(posterId) {
+  const index = state.posters.findIndex((item) => item.id === posterId);
+  if (index < 0) return;
+  showPosterPreview(index);
+  const dialog = document.querySelector("#posterPreviewDialog");
+  if (!dialog.open) dialog.showModal();
 }
 
 function publicationStateText(state) {
@@ -456,7 +700,8 @@ function outputActionLinks(asset, item = null) {
   const serverUrl = String(asset.server_url || videoUrl);
   const filename = String(asset.filename || `${asset.id || "jaguartv-video"}.mp4`).replace(/[^0-9A-Za-z_.-]+/g, "_");
   const payload = escapeHtml(JSON.stringify({ ...asset, download_url: downloadUrl, server_url: serverUrl, filename }));
-  return `<button class="table-action" data-download-asset='${payload}' type="button">登记下载</button><a class="table-action" href="${escapeHtml(serverUrl)}" target="_blank" rel="noopener">服务器成片</a>${item ? outputDesignButton(item, asset) : ""}`;
+  const publishButton = item?.status === "APPROVED" ? `<button class="table-action" data-publish-candidate="${escapeHtml(item.id)}" data-publish-asset='${payload}' type="button">发布</button>` : "";
+  return `${publishButton}<a class="table-action" href="${escapeHtml(serverUrl)}" target="_blank" rel="noopener">服务器成片</a>${item ? outputDesignButton(item, asset) : ""}`;
 }
 
 function approvedOutputActions(item) {
@@ -612,6 +857,186 @@ function renderAnalytics() {
   document.querySelector("#feedbackList").innerHTML = state.feedback.length ? state.feedback.map((item) => `<div class="feedback-item"><strong>${escapeHtml(item.action_type)} · ${escapeHtml(item.keyword || item.candidate_id || "内容")}</strong><span>${escapeHtml(item.reason)} · 信号分 ${Number(item.score).toFixed(2)}</span></div>`).join("") : `<div class="empty-state">当视频达到最低播放量且注册率或分享率突出时，系统会在这里提出关键词增强建议。<br>建议先审核，再应用到发现配置。</div>`;
 }
 
+const ptBRNumber = (value, options = {}) => value === null || value === undefined
+  ? "暂无数据"
+  : new Intl.NumberFormat("pt-BR", { maximumFractionDigits: 2, ...options }).format(Number(value));
+
+function youtubeDuration(value) {
+  if (value === null || value === undefined) return "暂无数据";
+  const seconds = Number(value);
+  const rounded = Math.max(0, Math.round(seconds));
+  const minutes = Math.floor(rounded / 60);
+  const remainder = rounded % 60;
+  return `${ptBRNumber(seconds)} s · ${minutes}:${String(remainder).padStart(2, "0")}`;
+}
+
+function youtubePercentage(value, unavailable = false) {
+  if (value === null || value === undefined) return unavailable ? "暂不可用" : "暂无数据";
+  return `${ptBRNumber(value)}%`;
+}
+
+function saoPauloDateTime(value) {
+  if (!value) return "暂无数据";
+  return new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
+function youtubeSyncStatus(value) {
+  return {
+    PENDING: "等待同步",
+    IN_PROGRESS: "同步中",
+    SUCCESS: "同步成功",
+    PARTIAL: "部分数据",
+    RETRY: "等待重试",
+    BLOCKED: "暂不可用",
+    NEEDS_REAUTH: "需要重新授权",
+  }[value] || value || "尚未调度";
+}
+
+function youtubeGrowthQuery() {
+  const params = new URLSearchParams({
+    range: document.querySelector("#youtubeGrowthRange").value,
+    account_id: document.querySelector("#youtubeGrowthAccount").value,
+  });
+  if (params.get("range") === "custom") {
+    params.set("start_date", document.querySelector("#youtubeGrowthStart").value);
+    params.set("end_date", document.querySelector("#youtubeGrowthEnd").value);
+  }
+  return params;
+}
+
+function renderYouTubeGrowthAccounts(accounts) {
+  const select = document.querySelector("#youtubeGrowthAccount");
+  const selected = select.value;
+  select.innerHTML = `<option value="">全部账号</option>${accounts.map((item) => `
+    <option value="${escapeHtml(item.account_id)}">${escapeHtml(item.current_channel_title || item.account_id)} · ${escapeHtml(item.account_id)}${item.status === "ANALYTICS_SCOPE_MISSING" ? " · 需补分析授权" : item.status === "NEEDS_REAUTH" ? " · 需重新授权" : ""}</option>
+  `).join("")}`;
+  if ([...select.options].some((option) => option.value === selected)) select.value = selected;
+}
+
+function renderYouTubeGrowthSummary(summary) {
+  const cards = [
+    ["视频数量", ptBRNumber(summary.video_count)],
+    ["YouTube账号", ptBRNumber(summary.account_count)],
+    ["观看次数", ptBRNumber(summary.view_count)],
+    ["评论数", ptBRNumber(summary.comment_count)],
+    ["点赞量", ptBRNumber(summary.like_count)],
+    ["分享数量", ptBRNumber(summary.share_count)],
+    ["加权平均观看", youtubeDuration(summary.average_view_duration)],
+    ["加权完播率", youtubePercentage(summary.completion_rate, true)],
+    ["最后成功更新", summary.last_successful_update ? saoPauloDateTime(summary.last_successful_update) : "暂无数据"],
+    ["延迟或缺失视频", ptBRNumber(summary.missing_video_count)],
+  ];
+  document.querySelector("#youtubeGrowthSummary").innerHTML = cards.map(([label, value]) => `
+    <article class="youtube-growth-kpi"><span>${label}</span><strong>${value}</strong></article>
+  `).join("");
+  document.querySelector("#youtubeGrowthFreshness").textContent = summary.last_successful_update
+    ? `最后成功更新 ${saoPauloDateTime(summary.last_successful_update)}`
+    : "当前筛选范围尚无成功快照";
+}
+
+function renderYouTubeRanking(payload) {
+  const body = document.querySelector("#youtubeRankingBody");
+  body.innerHTML = payload.items.map((item) => {
+    const thumbnail = item.thumbnail_url
+      ? `<img class="youtube-video-thumbnail" src="${escapeHtml(item.thumbnail_url)}" alt="" loading="lazy" referrerpolicy="no-referrer">`
+      : `<div class="youtube-video-thumbnail placeholder">YT</div>`;
+    const title = escapeHtml(item.title || item.youtube_video_id || "未命名视频");
+    const link = item.public_url
+      ? `<a href="${escapeHtml(item.public_url)}" target="_blank" rel="noopener noreferrer">${title}</a>`
+      : title;
+    const error = item.last_error_summary
+      ? `<small class="youtube-sync-error" title="${escapeHtml(item.last_error_summary)}">${escapeHtml(item.last_error_category || item.last_error_summary)}</small>`
+      : "";
+    return `<tr>
+      <td><div class="youtube-video-cell">${thumbnail}<div><strong>${link}</strong><small>${escapeHtml(item.youtube_video_id || "")}</small></div></div></td>
+      <td><strong>${escapeHtml(item.current_channel_title || "未知")}</strong><small>发布时：${escapeHtml(item.published_channel_title || "未知")}</small></td>
+      <td>${escapeHtml(item.channel_id || "未知")}</td>
+      <td>${saoPauloDateTime(item.published_local_at)}</td>
+      <td>${escapeHtml(item.source_platform || "未知")}</td>
+      <td>${escapeHtml(!item.source_category || item.source_category === "unknown" ? "未知" : item.source_category)}</td>
+      <td>${escapeHtml(!item.source_keyword || item.source_keyword === "unknown" ? "未知" : item.source_keyword)}</td>
+      <td>${ptBRNumber(item.view_count)}</td>
+      <td>${ptBRNumber(item.comment_count)}</td>
+      <td>${ptBRNumber(item.like_count)}</td>
+      <td title="原始秒数：${item.average_view_duration ?? "暂无数据"}">${youtubeDuration(item.average_view_duration)}</td>
+      <td title="末段桶 ${item.completion_bucket_ratio ?? "暂不可用"} · 原始比例 ${item.completion_raw_ratio ?? "暂不可用"}">${youtubePercentage(item.completion_rate, true)}</td>
+      <td>${ptBRNumber(item.share_count)}</td>
+      <td><span>最后请求：${saoPauloDateTime(item.last_attempted_at)}</span><small>Analytics 截至：${escapeHtml(item.data_through_date || "暂无数据")} · 下次：${saoPauloDateTime(item.next_sync_at)}</small></td>
+      <td><span class="status-pill ${statusClass(item.sync_status)}">${escapeHtml(youtubeSyncStatus(item.sync_status))}</span>${error}</td>
+    </tr>`;
+  }).join("");
+  state.youtubeGrowth.pages = payload.pages;
+  state.youtubeGrowth.total = payload.total;
+  document.querySelector("#youtubeGrowthPageStatus").textContent = payload.total
+    ? `第 ${payload.page} / ${payload.pages} 页 · ${ptBRNumber(payload.total)} 个视频`
+    : "";
+  document.querySelector("#youtubeGrowthPrevious").disabled = payload.page <= 1;
+  document.querySelector("#youtubeGrowthNext").disabled = payload.page >= payload.pages;
+  document.querySelector("#youtubeGrowthPagination").hidden = payload.pages <= 1;
+}
+
+function setYouTubeGrowthState(name, message = "") {
+  document.querySelector("#youtubeGrowthLoading").hidden = name !== "loading";
+  document.querySelector("#youtubeGrowthError").hidden = name !== "error";
+  document.querySelector("#youtubeGrowthEmpty").hidden = name !== "empty";
+  document.querySelector("#youtubeGrowthTable").hidden = name !== "ready";
+  if (message) document.querySelector("#youtubeGrowthError span").textContent = message;
+}
+
+async function loadYouTubeAnalytics({ resetPage = false } = {}) {
+  if (resetPage) state.youtubeGrowth.page = 1;
+  if (state.youtubeGrowth.abortController) state.youtubeGrowth.abortController.abort();
+  const controller = new AbortController();
+  const serial = ++state.youtubeGrowth.requestSerial;
+  state.youtubeGrowth.abortController = controller;
+  setYouTubeGrowthState("loading");
+  try {
+    const query = youtubeGrowthQuery();
+    const rankingQuery = new URLSearchParams(query);
+    rankingQuery.set("metric", document.querySelector("#youtubeGrowthMetric").value);
+    rankingQuery.set("page", String(state.youtubeGrowth.page));
+    rankingQuery.set("page_size", String(state.youtubeGrowth.pageSize));
+    const [accounts, summary, ranking] = await Promise.all([
+      api("/api/youtube-analytics/accounts", { signal: controller.signal }),
+      api(`/api/youtube-analytics/summary?${query}`, { signal: controller.signal }),
+      api(`/api/youtube-analytics/ranking?${rankingQuery}`, { signal: controller.signal }),
+    ]);
+    if (serial !== state.youtubeGrowth.requestSerial) return;
+    renderYouTubeGrowthAccounts(accounts);
+    renderYouTubeGrowthSummary(summary);
+    renderYouTubeRanking(ranking);
+    setYouTubeGrowthState(ranking.items.length ? "ready" : "empty");
+    state.youtubeGrowth.loaded = true;
+  } catch (error) {
+    if (error.name === "AbortError" || serial !== state.youtubeGrowth.requestSerial) return;
+    setYouTubeGrowthState("error", `数据加载失败：${error.message}`);
+  }
+}
+
+function updateYouTubeCustomDates() {
+  const custom = document.querySelector("#youtubeGrowthRange").value === "custom";
+  document.querySelectorAll(".youtube-custom-date").forEach((label) => { label.hidden = !custom; });
+  document.querySelector("#youtubeGrowthStart").required = custom;
+  document.querySelector("#youtubeGrowthEnd").required = custom;
+  if (custom && !document.querySelector("#youtubeGrowthEnd").value) {
+    const formatter = new Intl.DateTimeFormat("sv-SE", {
+      timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit",
+    });
+    const end = formatter.format(new Date());
+    const startDate = new Date(`${end}T12:00:00-03:00`);
+    startDate.setDate(startDate.getDate() - 29);
+    document.querySelector("#youtubeGrowthStart").value = formatter.format(startDate);
+    document.querySelector("#youtubeGrowthEnd").value = end;
+  }
+}
+
 function renderDownloadClaims() {
   const table = document.querySelector("#downloadClaimTable");
   if (!table) return;
@@ -625,22 +1050,120 @@ function renderDownloadClaims() {
       <td>${number(item.registrations)}</td>
       <td><button class="table-action" data-claim-metrics="${item.id}" type="button">回传数据</button></td>
     </tr>
-  `).join("") : `<tr><td colspan="7"><div class="empty-state">还没有下载登记。审核通过的视频点击“登记下载”后会出现在这里。</div></td></tr>`;
+  `).join("") : `<tr><td colspan="7"><div class="empty-state">还没有下载记录。审核通过的视频通过“发布”向导选择未配置自动发布的平台后会出现在这里。</div></td></tr>`;
   table.querySelectorAll("[data-claim-metrics]").forEach((button) => button.addEventListener("click", () => openClaimMetricsDialog(button.dataset.claimMetrics)));
 }
 
-function openDownloadClaimDialog(rawAsset) {
-  try {
-    state.pendingDownloadAsset = JSON.parse(rawAsset || "{}");
-  } catch {
-    state.pendingDownloadAsset = null;
+function saoPauloNowForInput() {
+  const parts = new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date()).reduce((acc, part) => ({ ...acc, [part.type]: part.value }), {});
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
+}
+
+function tagsFromInput(value) {
+  return String(value || "").split(/[,，#\n]+/).map((item) => item.trim()).filter(Boolean);
+}
+
+function selectedPublishCapability() {
+  return state.publishCapabilities[document.querySelector("#publishPlatform").value] || {};
+}
+
+function renderPublishPreview() {
+  const capability = selectedPublishCapability();
+  const accountSelect = document.querySelector("#publishAccount");
+  const accountLabel = accountSelect.selectedOptions[0]?.textContent || "未选择账号";
+  const mode = document.querySelector("#publishScheduleMode").value;
+  const localTime = mode === "scheduled" ? document.querySelector("#publishScheduledLocal").value : "立即发布";
+  const operation = capability.operation_type === "PUBLICATION" ? "公开发布" : "仅下载到本地";
+  document.querySelector("#publishPreview").innerHTML = `
+    <div><strong>发布平台</strong><span>${escapeHtml(capability.label || document.querySelector("#publishPlatform").value)}</span></div>
+    <div><strong>平台授权账号</strong><span>${escapeHtml(accountLabel)}</span></div>
+    <div><strong>发布时间</strong><span>${escapeHtml(localTime)} · America/Sao_Paulo</span></div>
+    <div><strong>公开范围</strong><span>public</span></div>
+    <div><strong>当前操作</strong><span>${escapeHtml(operation)}</span></div>
+    <div><strong>标题</strong><span>${escapeHtml(document.querySelector("#publishTitle").value)}</span></div>
+    <div><strong>标签</strong><span>${escapeHtml(tagsFromInput(document.querySelector("#publishTags").value).join(", "))}</span></div>
+  `;
+}
+
+async function loadPublishAccounts(platform) {
+  const accounts = await api(`/api/publish/accounts?platform=${encodeURIComponent(platform)}`);
+  state.publishAccounts = accounts;
+  const capability = state.publishCapabilities[platform] || {};
+  const usable = accounts.filter((item) => item.status === "AVAILABLE");
+  const select = document.querySelector("#publishAccount");
+  if (!accounts.length && capability.operation_type !== "PUBLICATION") {
+    select.innerHTML = `<option value="">无需平台账号（仅下载）</option>`;
+    select.disabled = true;
+  } else {
+    select.innerHTML = accounts.length
+      ? accounts.map((item) => `<option value="${escapeHtml(item.id)}" ${item.status === "AVAILABLE" ? "" : "disabled"}>${escapeHtml(item.username || item.id)} · ${escapeHtml(item.status === "AVAILABLE" ? "可用" : item.status_reason || "不可用")}</option>`).join("")
+      : `<option value="">没有可用账号</option>`;
+    select.disabled = !accounts.length;
   }
-  if (!state.pendingDownloadAsset?.download_url) return toast("这个成片没有可下载链接", "error");
-  document.querySelector("#downloadClaimAsset").textContent = state.pendingDownloadAsset.label || state.pendingDownloadAsset.filename || "成片";
-  document.querySelector("#downloadClaimPublisher").value = localStorage.getItem("jaguartvPublisherName") || "";
-  document.querySelector("#downloadClaimPlatform").value = "facebook";
-  document.querySelector("#downloadClaimNote").value = "";
-  document.querySelector("#downloadClaimDialog").showModal();
+  if (capability.requires_account && !usable.length) {
+    document.querySelector("#publishCapabilityNotice").textContent = "YouTube 必须选择一个可用授权账号；当前没有可用账号，不能创建真实发布任务。";
+  } else {
+    document.querySelector("#publishCapabilityNotice").textContent = capability.notice || "";
+  }
+  renderPublishPreview();
+}
+
+async function generatePublishCopy() {
+  const asset = state.pendingPublishAsset;
+  if (!asset?.id) return toast("请先选择成片", "error");
+  const button = document.querySelector("#regeneratePublishCopy");
+  button.disabled = true;
+  try {
+    const result = await api("/api/publish/copy", {
+      method: "POST",
+      body: JSON.stringify({
+        candidate_id: String(asset.id).split(":", 1)[0],
+        asset_id: asset.id,
+        filename: asset.filename,
+        variant: asset.variant || "",
+        platform: document.querySelector("#publishPlatform").value,
+      }),
+    });
+    document.querySelector("#publishTitle").value = result.title || "";
+    document.querySelector("#publishDescription").value = result.description || "";
+    document.querySelector("#publishTags").value = (result.tags || []).join(", ");
+    renderPublishPreview();
+  } catch (error) {
+    toast(`AI 文案生成失败：${error.message}`, "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function openPublishDialog(rawAsset, candidateId = "") {
+  try {
+    state.pendingPublishAsset = JSON.parse(rawAsset || "{}");
+  } catch {
+    state.pendingPublishAsset = null;
+  }
+  state.pendingPublishItem = state.candidates.find((item) => item.id === candidateId) || null;
+  if (state.pendingPublishItem?.status !== "APPROVED") return toast("只有审核通过的视频才能发布", "error");
+  if (!state.pendingPublishAsset?.download_url) return toast("这个成片没有可下载链接", "error");
+  const asset = state.pendingPublishAsset;
+  document.querySelector("#publishAssetSummary").textContent = `${state.pendingPublishItem.display_title || state.pendingPublishItem.title || candidateId} · ${asset.label || asset.filename || "成片"} · ${asset.variant || "版本"}`;
+  document.querySelector("#publishPlatform").value = "youtube";
+  document.querySelector("#publishScheduleMode").value = "now";
+  document.querySelector("#publishScheduledLocal").value = saoPauloNowForInput();
+  document.querySelector("#publishScheduleField").hidden = true;
+  document.querySelector("#publishTitle").value = "";
+  document.querySelector("#publishDescription").value = "";
+  document.querySelector("#publishTags").value = "";
+  document.querySelector("#publishDialog").showModal();
+  await loadPublishAccounts("youtube");
+  await generatePublishCopy();
 }
 
 function openClaimMetricsDialog(claimId) {
@@ -946,10 +1469,15 @@ function fillCandidateSelects() {
 }
 
 function openView(name) {
+  if (!views[name]) return;
   document.querySelectorAll(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.view === name));
   document.querySelectorAll(".view").forEach((item) => item.classList.toggle("active", item.id === `view-${name}`));
   document.querySelector("#viewEyebrow").textContent = views[name][0];
   document.querySelector("#viewTitle").textContent = views[name][1];
+  document.querySelector(".top-actions .search").hidden = name === "posters";
+  document.querySelector("#discoverButton").hidden = name === "posters";
+  if (name === "posters") loadPosters();
+  if (name === "analytics" && !state.youtubeGrowth.loaded) loadYouTubeAnalytics();
 }
 
 function openProductionDialog(candidateIds) {
@@ -1316,8 +1844,8 @@ document.querySelector("#discoverButton").addEventListener("click", () => {
 });
 document.querySelector("#closeDiscoverDialog").addEventListener("click", () => document.querySelector("#discoverDialog").close());
 document.querySelector("#cancelDiscoverDialog").addEventListener("click", () => document.querySelector("#discoverDialog").close());
-document.querySelector("#closeDownloadClaimDialog").addEventListener("click", () => document.querySelector("#downloadClaimDialog").close());
-document.querySelector("#cancelDownloadClaimDialog").addEventListener("click", () => document.querySelector("#downloadClaimDialog").close());
+document.querySelector("#closePublishDialog").addEventListener("click", () => document.querySelector("#publishDialog").close());
+document.querySelector("#cancelPublishDialog").addEventListener("click", () => document.querySelector("#publishDialog").close());
 document.querySelector("#closeClaimMetricsDialog").addEventListener("click", () => document.querySelector("#claimMetricsDialog").close());
 document.querySelector("#cancelClaimMetricsDialog").addEventListener("click", () => document.querySelector("#claimMetricsDialog").close());
 document.querySelector("#globalSearch").addEventListener("input", (event) => { state.search = event.target.value; renderInventory(); });
@@ -1338,38 +1866,124 @@ document.querySelectorAll("#statusFilters button").forEach((button) => button.ad
   state.status = button.dataset.status;
   renderInventory();
 }));
-
-document.querySelector("#downloadClaimForm").addEventListener("submit", async (event) => {
+document.querySelectorAll("#posterStatusFilters button").forEach((button) => button.addEventListener("click", () => {
+  if (state.posterLoading || state.posterStatus === (button.dataset.posterStatus || "")) return;
+  document.querySelectorAll("#posterStatusFilters button").forEach((item) => item.classList.toggle("active", item === button));
+  state.posterStatus = button.dataset.posterStatus || "";
+  state.posterPagination.page = 1;
+  loadPosters();
+}));
+document.querySelector("#posterPreviousPage").addEventListener("click", () => {
+  if (state.posterLoading || state.posterPagination.page <= 1) return;
+  state.posterPagination.page -= 1;
+  loadPosters();
+});
+document.querySelector("#posterNextPage").addEventListener("click", () => {
+  if (state.posterLoading || state.posterPagination.page >= state.posterPagination.pages) return;
+  state.posterPagination.page += 1;
+  loadPosters();
+});
+document.querySelector("#closePosterPreview").addEventListener("click", () => document.querySelector("#posterPreviewDialog").close());
+document.querySelector("#posterPreviewPrevious").addEventListener("click", () => showPosterPreview(state.posterPreviewIndex - 1));
+document.querySelector("#posterPreviewNext").addEventListener("click", () => showPosterPreview(state.posterPreviewIndex + 1));
+document.querySelector("#posterZoomOut").addEventListener("click", () => applyPosterZoom(state.posterZoom - 0.25));
+document.querySelector("#posterZoomIn").addEventListener("click", () => applyPosterZoom(state.posterZoom + 0.25));
+document.querySelector("#posterZoomReset").addEventListener("click", () => applyPosterZoom(1));
+document.querySelector("#posterPreviewStage").addEventListener("wheel", (event) => {
   event.preventDefault();
-  const asset = state.pendingDownloadAsset;
-  if (!asset?.download_url) return toast("这个成片没有可下载链接", "error");
-  const publisher = document.querySelector("#downloadClaimPublisher").value.trim();
-  const publishPlatform = document.querySelector("#downloadClaimPlatform").value;
-  if (!publisher) return toast("请先填写下载人/发布人", "error");
+  applyPosterZoom(state.posterZoom + (event.deltaY < 0 ? 0.15 : -0.15));
+}, { passive: false });
+document.querySelector("#closePosterDelete").addEventListener("click", () => document.querySelector("#posterDeleteDialog").close());
+document.querySelector("#cancelPosterDelete").addEventListener("click", () => document.querySelector("#posterDeleteDialog").close());
+document.querySelector("#posterDeleteForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const item = state.pendingPosterDelete;
+  if (!item) return;
+  const pendingKey = `delete:${item.id}`;
+  if (state.posterPendingActions.has(pendingKey)) return;
+  state.posterPendingActions.add(pendingKey);
+  const button = document.querySelector("#confirmPosterDelete");
+  button.disabled = true;
+  button.textContent = "删除中";
   try {
-    localStorage.setItem("jaguartvPublisherName", publisher);
-    await api("/api/download-claims", { method: "POST", body: JSON.stringify({
-      candidate_id: asset.id,
+    await api(`/api/posters/${encodeURIComponent(item.id)}/delete`, {
+      method: "POST",
+      headers: { "X-Request-ID": posterRequestId("delete", item.id) },
+      body: JSON.stringify({ actor: localStorage.getItem("jaguartvOperatorName") || "dashboard" }),
+    });
+    document.querySelector("#posterDeleteDialog").close();
+    state.pendingPosterDelete = null;
+    toast(`已删除海报“${item.name}”`);
+    const remainingOnPage = Math.max(0, state.posters.length - 1);
+    if (!remainingOnPage && state.posterPagination.page > 1) state.posterPagination.page -= 1;
+    await loadPosters();
+  } catch (error) {
+    toast(`删除失败：${error.message}`, "error");
+  } finally {
+    state.posterPendingActions.delete(pendingKey);
+    button.disabled = false;
+    button.textContent = "确认删除";
+    if (!state.posterLoading) renderPosterInventory();
+  }
+});
+
+document.querySelector("#publishPlatform").addEventListener("change", async (event) => {
+  await loadPublishAccounts(event.target.value);
+  await generatePublishCopy();
+});
+document.querySelector("#publishAccount").addEventListener("change", renderPublishPreview);
+document.querySelector("#publishScheduleMode").addEventListener("change", (event) => {
+  document.querySelector("#publishScheduleField").hidden = event.target.value !== "scheduled";
+  renderPublishPreview();
+});
+["#publishScheduledLocal", "#publishTitle", "#publishDescription", "#publishTags"].forEach((selector) => {
+  document.querySelector(selector).addEventListener("input", renderPublishPreview);
+});
+document.querySelector("#regeneratePublishCopy").addEventListener("click", generatePublishCopy);
+
+document.querySelector("#publishForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const asset = state.pendingPublishAsset;
+  if (!asset?.download_url) return toast("这个成片没有可下载链接", "error");
+  const platform = document.querySelector("#publishPlatform").value;
+  const capability = state.publishCapabilities[platform] || {};
+  const account = document.querySelector("#publishAccount").value;
+  if (capability.requires_account && !account) return toast("YouTube 必须选择可用授权账号", "error");
+  const title = document.querySelector("#publishTitle").value.trim();
+  const description = document.querySelector("#publishDescription").value.trim();
+  const tags = tagsFromInput(document.querySelector("#publishTags").value);
+  if (!title || !description || !tags.length) return toast("请先生成或填写标题、文案和标签", "error");
+  try {
+    const result = await api("/api/publications", { method: "POST", body: JSON.stringify({
+      candidate_id: String(asset.id).split(":", 1)[0],
       asset_id: asset.id,
       filename: asset.filename,
       variant: asset.variant || "",
-      publisher,
-      publish_platform: publishPlatform,
-      note: document.querySelector("#downloadClaimNote").value.trim(),
+      platform,
+      account,
+      schedule_mode: document.querySelector("#publishScheduleMode").value,
+      scheduled_local_at: document.querySelector("#publishScheduledLocal").value,
+      title,
+      description,
+      tags,
     }) });
-    document.querySelector("#downloadClaimDialog").close();
-    toast("已登记下载人，开始下载");
-    const link = document.createElement("a");
-    link.href = asset.download_url;
-    link.download = asset.filename || "";
-    link.target = "_blank";
-    link.rel = "noopener";
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
+    document.querySelector("#publishDialog").close();
+    if (result.operation_type === "LOCAL_DOWNLOAD") {
+      toast("该平台暂未配置自动发布，本次仅下载到本地");
+      const link = document.createElement("a");
+      link.href = result.download_url || asset.download_url;
+      link.download = asset.filename || "";
+      link.target = "_blank";
+      link.rel = "noopener";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } else {
+      toast(result.status === "SCHEDULED" ? "已创建预约发布任务" : "已创建 YouTube 发布任务");
+    }
     await refreshAll();
   } catch (error) {
-    toast(`登记失败：${error.message}`, "error");
+    toast(`发布失败：${error.message}`, "error");
   }
 });
 
@@ -1635,6 +2249,31 @@ document.querySelector("#metricsForm").addEventListener("submit", async (event) 
     await refreshAll();
   } catch (error) { toast(error.message, "error"); }
 });
+
+document.querySelector("#youtubeGrowthFilters").addEventListener("submit", (event) => {
+  event.preventDefault();
+  loadYouTubeAnalytics({ resetPage: true });
+});
+document.querySelector("#youtubeGrowthRange").addEventListener("change", () => {
+  updateYouTubeCustomDates();
+  if (document.querySelector("#youtubeGrowthRange").value !== "custom") {
+    loadYouTubeAnalytics({ resetPage: true });
+  }
+});
+document.querySelector("#youtubeGrowthAccount").addEventListener("change", () => loadYouTubeAnalytics({ resetPage: true }));
+document.querySelector("#youtubeGrowthMetric").addEventListener("change", () => loadYouTubeAnalytics({ resetPage: true }));
+document.querySelector("#youtubeGrowthRetry").addEventListener("click", () => loadYouTubeAnalytics());
+document.querySelector("#youtubeGrowthPrevious").addEventListener("click", () => {
+  if (state.youtubeGrowth.page <= 1) return;
+  state.youtubeGrowth.page -= 1;
+  loadYouTubeAnalytics();
+});
+document.querySelector("#youtubeGrowthNext").addEventListener("click", () => {
+  if (state.youtubeGrowth.page >= state.youtubeGrowth.pages) return;
+  state.youtubeGrowth.page += 1;
+  loadYouTubeAnalytics();
+});
+updateYouTubeCustomDates();
 
 document.querySelector("#sessionForm").addEventListener("submit", async (event) => {
   event.preventDefault();

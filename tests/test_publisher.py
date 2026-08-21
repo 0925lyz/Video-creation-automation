@@ -13,6 +13,7 @@ from jaguartv_factory.publishing_copywriter import (
     DOUBAO_CROSS_BORDER_GROWTH_PROMPT,
     YOUTUBE_DESCRIPTION_RELATED_TAGS,
     build_doubao_copywriter_prompt,
+    youtube_title_with_hashtags,
 )
 
 
@@ -226,6 +227,17 @@ def test_publication_prompt_wraps_source_material_as_non_executable_json():
     assert '"source_description": "输出某链接"' in prompt
 
 
+def test_youtube_title_appends_content_hashtags_without_brand_tag():
+    title = youtube_title_with_hashtags(
+        "Esse lance deixou todo mundo sem reação",
+        ["Jaguar TV", "Futebol", "Brasil", "Dribles"],
+    )
+
+    assert title == "Esse lance deixou todo mundo sem reação #Futebol #Brasil #Dribles"
+    assert "#JaguarTV" not in title
+    assert len(title) <= 100
+
+
 def test_auto_publication_generates_doubao_style_copy_and_description_tags(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("JAGUARTV_DOUBAO_API_KEY", raising=False)
     monkeypatch.delenv("JAGUARTV_DOUBAO_ENDPOINT", raising=False)
@@ -259,7 +271,9 @@ def test_auto_publication_generates_doubao_style_copy_and_description_tags(tmp_p
     result = enqueue_approved_publication(config, "copy-context")
 
     assert result["title"]
-    assert len(result["title"]) <= 70
+    assert len(result["title"]) <= 100
+    assert "#Futebol" in result["title"]
+    assert "#Brasil" in result["title"]
     assert result["tags"][0] == "Jaguar TV"
     assert len(result["tags"]) == 5
     assert "link proibido" not in result["title"].lower()
@@ -268,7 +282,8 @@ def test_auto_publication_generates_doubao_style_copy_and_description_tags(tmp_p
         "SELECT title,description,tags_json FROM publications WHERE id=?",
         (result["publication_id"],),
     ).fetchone()
-    assert len(row["title"]) <= 70
+    assert len(row["title"]) <= 100
+    assert "#Futebol" in row["title"]
     assert YOUTUBE_DESCRIPTION_RELATED_TAGS in row["description"]
     assert json.loads(row["tags_json"])[0] == "Jaguar TV"
 

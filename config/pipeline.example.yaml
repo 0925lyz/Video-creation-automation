@@ -36,7 +36,7 @@ localization:
   chinese_audio_detection_enabled: true
   chinese_audio_detection_model: tiny
   chinese_audio_threshold: 3
-  whisper_model: tiny
+  whisper_model: small
   voice_enabled: true
   tts_provider: auto
   edge_tts_voice: pt-BR-AntonioNeural
@@ -102,6 +102,7 @@ publishing:
 storage:
   provider: factory_server
   root: workspace/server_media
+  poster_subdir: posters            # relative to storage.root; absolute/traversal paths are rejected
   public_base_url: https://factory.jarg.top/media
   max_upload_bytes: 2147483648
   upload_chunk_bytes: 8388608
@@ -121,3 +122,8 @@ workers:
   download: 3
   analysis: 2
   render: 1
+
+youtube_analytics:
+  poll_interval_minutes: 60
+  batch_size: 50
+  backfill_rate_limit_per_minute: 6

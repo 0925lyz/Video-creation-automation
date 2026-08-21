@@ -46,7 +46,33 @@ from .core import (
     workspace_dir,
 )
 from .publisher import auto_enqueue_approved_publication, publication_state_for_candidates
+from .posters import (
+    PosterError,
+    approve_poster,
+    delete_poster,
+    list_posters,
+    poster_counts,
+    poster_detail,
+    poster_download_name,
+    resolve_poster_file,
+)
+from .publish_flow import (
+    create_publish_operation,
+    generate_publish_copy_preview,
+    list_publish_accounts,
+    platform_capabilities,
+)
 from .sessions import check_session, delete_session, list_sessions, save_session
+from .youtube_analytics import (
+    analytics_accounts,
+    analytics_history,
+    analytics_ranking,
+    analytics_summary,
+    backfill_report,
+    publication_latest,
+    retry_publication_sync,
+    set_backfill_status,
+)
 from .server_store import (
     complete_chunked_upload,
     find_upload,
@@ -205,6 +231,8 @@ YOUTUBE_SOURCE_BLOCKED_ACCOUNTS = {"consumer_main", "consumer_football", "consum
 YOUTUBE_OAUTH_SCOPES = (
     "https://www.googleapis.com/auth/youtube.upload",
     "https://www.googleapis.com/auth/youtube.readonly",
+    "https://www.googleapis.com/auth/youtube.force-ssl",
+    "https://www.googleapis.com/auth/yt-analytics.readonly",
 )
 GOOGLE_OAUTH_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -292,6 +320,18 @@ def int_value(value: Any, default: int = 0) -> int:
         return max(0, int(value))
     except (TypeError, ValueError):
         return default
+
+
+def validated_positive_int(value: Any, name: str, default: int) -> int:
+    if value is None or value == "":
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{name} must be an integer") from error
+    if parsed < 1:
+        raise ValueError(f"{name} must be positive")
+    return parsed
 
 
 def gemini_model_name(value: str | None = None) -> str:
@@ -1241,11 +1281,13 @@ def save_download_claim(config: dict[str, Any], payload: dict[str, Any]) -> dict
     if publish_platform and publish_platform not in PUBLISH_TARGETS:
         raise ValueError(f"publish_platform must be one of {PUBLISH_TARGETS}")
     connection = connect_db(config)
-    row = connection.execute("SELECT id FROM candidates WHERE id=?", (candidate,)).fetchone()
+    row = connection.execute("SELECT id,status FROM candidates WHERE id=?", (candidate,)).fetchone()
     server_package = storage_root(config) / "review" / candidate
     local_package = workspace_dir(config) / "ready_for_review" / candidate
     if not row and not server_package.exists() and not local_package.exists():
         raise ValueError("candidate does not exist")
+    if row and row["status"] != "APPROVED":
+        raise ValueError(f"candidate must be APPROVED before downloading (current status: {row['status']})")
     timestamp = now_iso()
     cursor = connection.execute(
         """
@@ -1838,9 +1880,9 @@ def save_youtube_oauth_callback(config: dict[str, Any], query: dict[str, list[st
         """
         INSERT INTO youtube_channel_auths(
           account,channel_id,channel_title,scopes,encrypted_refresh_token,
-          token_type,expires_in,authorized_at,updated_at,metadata_json
+          token_type,expires_in,authorized_at,updated_at,metadata_json,status
         )
-        VALUES(?,?,?,?,?,?,?,?,?,?)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(account) DO UPDATE SET
           channel_id=excluded.channel_id,
           channel_title=excluded.channel_title,
@@ -1849,7 +1891,10 @@ def save_youtube_oauth_callback(config: dict[str, Any], query: dict[str, list[st
           token_type=excluded.token_type,
           expires_in=excluded.expires_in,
           updated_at=excluded.updated_at,
-          metadata_json=excluded.metadata_json
+          metadata_json=excluded.metadata_json,
+          status='AUTHORIZED',
+          last_error_category='',
+          last_error_summary=''
         """,
         (
             account,
@@ -1862,6 +1907,7 @@ def save_youtube_oauth_callback(config: dict[str, Any], query: dict[str, list[st
             timestamp,
             timestamp,
             json.dumps({"provider": "google_oauth", "redirect_uri": credentials["redirect_uri"]}, ensure_ascii=False),
+            "AUTHORIZED",
         ),
     )
     connection.commit()
@@ -3406,8 +3452,72 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 status = query.get("status", [None])[0]
                 limit = int_value(query.get("limit", [100])[0], 100)
                 return self.send_json(candidate_rows(self.server.config, status, limit))
+            if parsed.path == "/api/posters":
+                return self.send_json(list_posters(
+                    self.server.config,
+                    status=(query.get("status") or [""])[0],
+                    category=(query.get("category") or [""])[0],
+                    page=(query.get("page") or [1])[0],
+                    page_size=(query.get("page_size") or [24])[0],
+                ))
+            if parsed.path == "/api/posters/counts":
+                return self.send_json(poster_counts(
+                    self.server.config,
+                    category=(query.get("category") or [""])[0],
+                ))
+            poster_parts = parsed.path.strip("/").split("/")
+            if len(poster_parts) == 3 and poster_parts[:2] == ["api", "posters"]:
+                return self.send_json(poster_detail(self.server.config, unquote(poster_parts[2])))
+            if len(poster_parts) == 4 and poster_parts[:2] == ["api", "posters"]:
+                poster_id = unquote(poster_parts[2])
+                if poster_parts[3] == "preview":
+                    return self.send_poster_asset(poster_id, download=False)
+                if poster_parts[3] == "thumbnail":
+                    return self.send_poster_asset(poster_id, download=False, thumbnail=True)
+                if poster_parts[3] == "download":
+                    return self.send_poster_asset(poster_id, download=True)
             if parsed.path == "/api/publications":
                 return self.send_json(publication_rows(self.server.config))
+            if parsed.path == "/api/youtube-analytics/summary":
+                return self.send_json(analytics_summary(
+                    self.server.config,
+                    range_name=str((query.get("range") or ["30d"])[0]),
+                    start_date=str((query.get("start_date") or [""])[0]),
+                    end_date=str((query.get("end_date") or [""])[0]),
+                    account_id=str((query.get("account_id") or [""])[0]),
+                ))
+            if parsed.path == "/api/youtube-analytics/ranking":
+                return self.send_json(analytics_ranking(
+                    self.server.config,
+                    range_name=str((query.get("range") or ["30d"])[0]),
+                    start_date=str((query.get("start_date") or [""])[0]),
+                    end_date=str((query.get("end_date") or [""])[0]),
+                    account_id=str((query.get("account_id") or [""])[0]),
+                    metric=str((query.get("metric") or ["views"])[0]),
+                    page=validated_positive_int((query.get("page") or [1])[0], "page", 1),
+                    page_size=validated_positive_int((query.get("page_size") or [20])[0], "page_size", 20),
+                ))
+            if parsed.path == "/api/youtube-analytics/accounts":
+                return self.send_json(analytics_accounts(self.server.config))
+            analytics_parts = parsed.path.strip("/").split("/")
+            if len(analytics_parts) in {4, 5} and analytics_parts[:3] == ["api", "youtube-analytics", "publications"]:
+                publication_id = validated_positive_int(analytics_parts[3], "publication_id", 0)
+                if len(analytics_parts) == 5 and analytics_parts[4] == "history":
+                    return self.send_json(analytics_history(
+                        self.server.config,
+                        publication_id,
+                        limit=validated_positive_int((query.get("limit") or [100])[0], "limit", 100),
+                    ))
+                if len(analytics_parts) == 4:
+                    detail = publication_latest(self.server.config, publication_id)
+                    if detail is None:
+                        return self.send_json({"error": "publication not found"}, HTTPStatus.NOT_FOUND)
+                    return self.send_json(detail)
+            if parsed.path == "/api/publish/capabilities":
+                return self.send_json(platform_capabilities())
+            if parsed.path == "/api/publish/accounts":
+                platform = (query.get("platform") or [""])[0].strip()
+                return self.send_json(list_publish_accounts(self.server.config, platform))
             if parsed.path == "/api/x-auths":
                 return self.send_json(x_auth_rows(self.server.config))
             if parsed.path == "/api/workers":
@@ -3476,6 +3586,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 download = str((query.get("download") or [""])[0]).lower() in {"1", "true", "yes"}
                 return self.send_media(parsed.path.removeprefix("/media/"), download=download)
             return self.send_static(parsed.path)
+        except PosterError as error:
+            self.send_json({"error": str(error)}, HTTPStatus(error.status))
+        except ValueError as error:
+            self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
         except Exception as error:
             self.send_json({"error": str(error)}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
@@ -3488,6 +3602,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return self.send_private_upload(parsed, head_only=True)
         if parsed.path.startswith("/api/candidates/") and parsed.path.endswith("/source"):
             return self.send_candidate_source(parsed, head_only=True)
+        poster_parts = parsed.path.strip("/").split("/")
+        if len(poster_parts) == 4 and poster_parts[:2] == ["api", "posters"]:
+            poster_id = unquote(poster_parts[2])
+            try:
+                if poster_parts[3] == "preview":
+                    return self.send_poster_asset(poster_id, download=False, head_only=True)
+                if poster_parts[3] == "thumbnail":
+                    return self.send_poster_asset(
+                        poster_id, download=False, thumbnail=True, head_only=True
+                    )
+                if poster_parts[3] == "download":
+                    return self.send_poster_asset(poster_id, download=True, head_only=True)
+            except PosterError as error:
+                return self.send_json({"error": str(error)}, HTTPStatus(error.status))
         if parsed.path.startswith("/media/"):
             download = str((query.get("download") or [""])[0]).lower() in {"1", "true", "yes"}
             return self.send_media(parsed.path.removeprefix("/media/"), download=download)
@@ -3496,6 +3624,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         try:
+            analytics_mutation = (
+                parsed.path == "/api/youtube-analytics/backfill"
+                or parsed.path.startswith("/api/youtube-analytics/backfill/")
+                or (
+                    parsed.path.startswith("/api/youtube-analytics/publications/")
+                    and parsed.path.endswith("/retry")
+                )
+            )
+            if analytics_mutation and not self.authorized_for_admin(parsed):
+                return self.send_admin_unauthorized(parsed.path)
             if self.admin_required_path(parsed.path) and not self.authorized_for_admin(parsed):
                 return self.send_admin_unauthorized(parsed.path)
             if parsed.path == "/api/uploads/init":
@@ -3556,6 +3694,32 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 result["download_url"] = signed_upload_url(result["id"])
                 return self.send_json(result, HTTPStatus.CREATED)
             payload = self.read_json()
+            analytics_parts = parsed.path.strip("/").split("/")
+            if len(analytics_parts) == 5 and analytics_parts[:3] == ["api", "youtube-analytics", "publications"] and analytics_parts[4] == "retry":
+                return self.send_json(
+                    retry_publication_sync(
+                        self.server.config,
+                        validated_positive_int(analytics_parts[3], "publication_id", 0),
+                    ),
+                    HTTPStatus.OK,
+                )
+            if parsed.path == "/api/youtube-analytics/backfill":
+                dry_run_value = payload.get("dry_run", True)
+                if not isinstance(dry_run_value, bool):
+                    raise ValueError("dry_run must be a boolean")
+                return self.send_json(backfill_report(
+                    self.server.config,
+                    dry_run=dry_run_value,
+                    rate_limit_per_minute=validated_positive_int(
+                        payload.get("rate_limit_per_minute"), "rate_limit_per_minute", 6
+                    ),
+                ), HTTPStatus.OK if dry_run_value else HTTPStatus.ACCEPTED)
+            if len(analytics_parts) == 5 and analytics_parts[:3] == ["api", "youtube-analytics", "backfill"] and analytics_parts[4] == "status":
+                return self.send_json(set_backfill_status(
+                    self.server.config,
+                    validated_positive_int(analytics_parts[3], "run_id", 0),
+                    str(payload.get("action") or ""),
+                ), HTTPStatus.OK)
             if parsed.path == "/api/actions":
                 task_id = self.server.start_action(payload)
                 return self.send_json({"task_id": task_id, "status": "RUNNING"}, HTTPStatus.ACCEPTED)
@@ -3569,7 +3733,35 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     return self.send_json({"error": str(error)}, HTTPStatus.SERVICE_UNAVAILABLE)
             if parsed.path == "/api/candidates/delete":
                 return self.send_json(delete_candidates(self.server.config, payload), HTTPStatus.OK)
+            poster_parts = parsed.path.strip("/").split("/")
+            if len(poster_parts) == 4 and poster_parts[:2] == ["api", "posters"]:
+                poster_id = unquote(poster_parts[2])
+                audit = {
+                    "actor": payload.get("actor") or self.headers.get("X-Operator", ""),
+                    "request_id": payload.get("request_id") or self.headers.get("X-Request-ID", ""),
+                }
+                if poster_parts[3] == "approve":
+                    return self.send_json(
+                        approve_poster(
+                            self.server.config,
+                            poster_id,
+                            expected_status=payload.get("expected_status") or "",
+                            **audit,
+                        ),
+                        HTTPStatus.OK,
+                    )
+                if poster_parts[3] == "delete":
+                    return self.send_json(
+                        delete_poster(self.server.config, poster_id, **audit), HTTPStatus.OK
+                    )
+            if parsed.path == "/api/publish/copy":
+                try:
+                    return self.send_json(generate_publish_copy_preview(self.server.config, payload), HTTPStatus.OK)
+                except RuntimeError as error:
+                    return self.send_json({"error": str(error)}, HTTPStatus.SERVICE_UNAVAILABLE)
             if parsed.path == "/api/publications":
+                if payload.get("asset_id") or payload.get("title") or payload.get("operation_type"):
+                    return self.send_json(create_publish_operation(self.server.config, payload), HTTPStatus.CREATED)
                 return self.send_json({"id": save_publication(self.server.config, payload)}, HTTPStatus.CREATED)
             if parsed.path == "/api/publications/status":
                 return self.send_json(update_publication_status(self.server.config, payload), HTTPStatus.OK)
@@ -3634,6 +3826,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     )
                 return self.send_json(save_events(self.server.config, payload), HTTPStatus.CREATED)
             self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+        except PosterError as error:
+            self.send_json({"error": str(error)}, HTTPStatus(error.status))
         except ValueError as error:
             self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
         except Exception as error:
@@ -3777,6 +3971,32 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if source is None:
             return self.send_error(HTTPStatus.NOT_FOUND)
         self.send_file(source, cache="private, no-store", head_only=head_only)
+
+    def send_poster_asset(
+        self,
+        poster_id: str,
+        *,
+        download: bool,
+        thumbnail: bool = False,
+        head_only: bool = False,
+    ) -> None:
+        path = resolve_poster_file(
+            self.server.config,
+            poster_id,
+            require_approved=download,
+            thumbnail=thumbnail,
+        )
+        disposition = "inline"
+        if download:
+            filename = poster_download_name(self.server.config, poster_id)
+            fallback = f"poster{path.suffix.lower()}"
+            disposition = f"attachment; filename={fallback}; filename*=UTF-8''{quote(filename)}"
+        self.send_file(
+            path,
+            cache="private, no-store",
+            disposition=disposition,
+            head_only=head_only,
+        )
 
     def read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length") or 0)
@@ -3929,6 +4149,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(length))
         self.send_header("Cache-Control", cache)
         self.send_header("Accept-Ranges", "bytes")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
         if cookie := self.admin_cookie_header():
             self.send_header("Set-Cookie", cookie)
         if disposition:

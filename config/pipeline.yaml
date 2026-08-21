@@ -119,7 +119,7 @@ localization:
   chinese_audio_detection_enabled: true
   chinese_audio_detection_model: tiny
   chinese_audio_threshold: 3
-  whisper_model: tiny
+  whisper_model: small
   voice_enabled: true                  # only Bilibili/Douyin Chinese narration is replaced with pt-BR voice
   tts_provider: auto                 # edge -> local system voice fallback
   edge_tts_voice: pt-BR-AntonioNeural # energetic Brazilian Portuguese male voice
@@ -176,6 +176,7 @@ remotion:
     facebook_label: FB版
     tu_yi: assets/brand/overlay_tu_yi.jpg
     tu_er: assets/brand/overlay_tu_er.png
+    bottom_banner: assets/brand/generic_bottom_banner.jpg
     lv_tu: assets/brand/endcard_portrait_green_v2.png
     lan_tu: assets/brand/endcard_landscape_blue_v2.png
   add_bgm_under_source: false
@@ -280,6 +281,7 @@ publishing:
 storage:
   provider: factory_server
   root: workspace/server_media
+  poster_subdir: posters
   public_base_url: https://factory.jarg.top/media
   remote_review_host: 43.134.128.197
   remote_review_user: ubuntu
@@ -319,3 +321,8 @@ tracking:
   utm_medium: organic_social
   campaign: hoje_sports
   hook_version: A
+
+youtube_analytics:
+  poll_interval_minutes: 60
+  batch_size: 50
+  backfill_rate_limit_per_minute: 6

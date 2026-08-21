@@ -144,6 +144,9 @@ FORBIDDEN_CONTENT_TAG_TERMS = (
     "onpix",
 )
 
+YOUTUBE_TITLE_MAX_CHARS = 100
+YOUTUBE_TITLE_HASHTAG_LIMIT = 3
+
 
 def compact_text(value: Any, *, limit: int = 1200) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()[:limit]
@@ -295,6 +298,44 @@ def normalize_copywriter_result(title: str, caption: str, tags: list[str]) -> di
         "caption": compact_text(caption, limit=1200) or "Esse momento chamou atenção e já virou assunto. O que você achou desse lance?",
         "tags": normalized_tags[:5],
     }
+
+
+def youtube_title_hashtag(tag: Any) -> str:
+    clean = compact_text(tag, limit=60).lstrip("#").strip()
+    if not clean or clean.lower() == "jaguar tv" or not content_tag_allowed(clean):
+        return ""
+    parts = re.findall(r"[\wÀ-ÖØ-öø-ÿ]+", clean, flags=re.UNICODE)
+    if not parts:
+        return ""
+    hashtag = "#" + "".join(part[:1].upper() + part[1:] for part in parts)
+    return hashtag[:40]
+
+
+def youtube_title_with_hashtags(
+    title: str,
+    tags: list[Any],
+    *,
+    max_length: int = YOUTUBE_TITLE_MAX_CHARS,
+    hashtag_limit: int = YOUTUBE_TITLE_HASHTAG_LIMIT,
+) -> str:
+    base = compact_text(title, limit=max_length).strip()
+    if not base:
+        base = "Jaguar TV"
+    hashtags: list[str] = []
+    seen = {item.lower() for item in re.findall(r"#[\wÀ-ÖØ-öø-ÿ]+", base, flags=re.UNICODE)}
+    for tag in tags:
+        hashtag = youtube_title_hashtag(tag)
+        marker = hashtag.lower()
+        if hashtag and marker not in seen:
+            hashtags.append(hashtag)
+            seen.add(marker)
+        if len(hashtags) >= hashtag_limit:
+            break
+    for hashtag in hashtags:
+        candidate = f"{base} {hashtag}".strip()
+        if len(candidate) <= max_length:
+            base = candidate
+    return base[:max_length].rstrip()
 
 
 def fallback_copywriter_result(source_material: dict[str, Any]) -> dict[str, Any]:

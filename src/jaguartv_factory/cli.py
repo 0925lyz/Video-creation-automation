@@ -22,6 +22,7 @@ from .core import (
 from .mediacrawler import ingest_mediacrawler_jsonl
 from .publisher import dry_run_approved_queue, enqueue_approved_publication
 from .publish_worker import publish_due_once, run_publish_worker
+from .youtube_analytics import backfill_report, run_analytics_worker, set_backfill_status
 from .reaction import REACTION_MODES
 from .server_store import save_upload
 from .strategy import AUDIO_POLICIES, CONTENT_TYPES, SEGMENT_STRATEGIES
@@ -177,6 +178,17 @@ def build_parser() -> argparse.ArgumentParser:
     publish_worker_parser.add_argument("--sleep", type=int, default=60)
     publish_worker_parser.add_argument("--limit", type=int, default=3)
 
+    analytics_worker_parser = subparsers.add_parser("youtube-analytics-worker")
+    analytics_worker_parser.add_argument("--once", action="store_true")
+    analytics_worker_parser.add_argument("--sleep", type=int, default=60)
+    analytics_worker_parser.add_argument("--limit", type=int, default=50)
+
+    analytics_backfill_parser = subparsers.add_parser("youtube-analytics-backfill")
+    analytics_backfill_parser.add_argument("--execute", action="store_true")
+    analytics_backfill_parser.add_argument("--rate-limit-per-minute", type=int, default=6)
+    analytics_backfill_parser.add_argument("--run-id", type=int)
+    analytics_backfill_parser.add_argument("--action", choices=("pause", "resume", "cancel"))
+
     publish_parser = subparsers.add_parser("publish")
     publish_parser.add_argument("--candidate")
     publish_parser.add_argument("--dry-run", action="store_true")
@@ -266,6 +278,19 @@ def main(argv: list[str] | None = None) -> int:
             print_json(publish_due_once(config, limit=args.limit, dry_run=True))
         else:
             run_publish_worker(config, once=args.once, sleep_sec=args.sleep, limit=args.limit)
+    elif args.command == "youtube-analytics-worker":
+        run_analytics_worker(config, once=args.once, sleep_sec=args.sleep, limit=args.limit)
+    elif args.command == "youtube-analytics-backfill":
+        if args.run_id or args.action:
+            if not args.run_id or not args.action:
+                raise ValueError("--run-id and --action must be provided together")
+            print_json(set_backfill_status(config, args.run_id, args.action))
+        else:
+            print_json(backfill_report(
+                config,
+                dry_run=not args.execute,
+                rate_limit_per_minute=args.rate_limit_per_minute,
+            ))
     elif args.command == "publish":
         if not args.candidate:
             raise ValueError("--candidate is required")

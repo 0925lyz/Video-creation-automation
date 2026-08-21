@@ -1,5 +1,7 @@
 from pathlib import Path
+import json
 import shutil
+import sys
 from types import SimpleNamespace
 import wave
 
@@ -20,12 +22,14 @@ from jaguartv_factory.core import (
     localization_profile_for_candidate,
     mobile_review_format_needed,
     now_iso,
+    produce_passthrough_review_package,
     produce_candidate,
     production_design_config,
     register_url_stub_candidate,
     require_binary,
     ensure_remotion_runtime,
     render_video_remotion_variant,
+    run_remotion_renderer_api,
     run_command,
     remotion_canvas_for_source,
     remotion_caption_cues,
@@ -38,10 +42,12 @@ from jaguartv_factory.core import (
     update_render_job,
     should_ocr_blur_source_subtitles,
     source_text,
+    source_text_for_interval,
     source_filename_label,
     safe_hyperframes_dir_name,
     upsert_render_job,
     write_srt,
+    write_srt_blocks,
 )
 from jaguartv_factory import cli
 from jaguartv_factory.source_outro import (
@@ -428,8 +434,9 @@ def test_remotion_generic_keeps_our_endcard_and_fb_has_none(tmp_path: Path, monk
     clean.write_bytes(b"video")
     assets = tmp_path / "assets" / "brand"
     assets.mkdir(parents=True)
-    for name in ("logo.png", "overlay_tu_yi.jpg", "overlay_tu_er.png", "endcard_portrait_green_v2.png", "endcard_landscape_blue_v2.png"):
+    for name in ("logo.png", "overlay_tu_yi.jpg", "overlay_tu_er.png", "generic_bottom_banner.jpg", "endcard_portrait_green_v2.png", "endcard_landscape_blue_v2.png"):
         (assets / name).write_bytes(b"asset")
+    Image.new("RGB", (992, 136), "white").save(assets / "generic_bottom_banner.jpg")
     runtime = tmp_path / "runtime"
     runtime.mkdir()
     captured: dict[str, dict] = {}
@@ -459,6 +466,7 @@ def test_remotion_generic_keeps_our_endcard_and_fb_has_none(tmp_path: Path, monk
                 "enabled": True,
                 "tu_yi": "assets/brand/overlay_tu_yi.jpg",
                 "tu_er": "assets/brand/overlay_tu_er.png",
+                "bottom_banner": "assets/brand/generic_bottom_banner.jpg",
                 "lv_tu": "assets/brand/endcard_portrait_green_v2.png",
                 "lan_tu": "assets/brand/endcard_landscape_blue_v2.png",
             },
@@ -474,6 +482,51 @@ def test_remotion_generic_keeps_our_endcard_and_fb_has_none(tmp_path: Path, monk
     assert "imgEndcard" not in captured["FB版"]
     assert captured["FB版"]["promoSeconds"] == 0
     assert captured["FB版"]["durationSeconds"] == 20.0
+
+
+def test_remotion_renderer_cleans_isolated_tmpdir_after_failure(tmp_path: Path, monkeypatch):
+    runtime = tmp_path / "runtime"
+    scripts = runtime / "scripts"
+    scripts.mkdir(parents=True)
+    renderer = scripts / "render.mjs"
+    renderer.write_text(
+        "\n".join([
+            "import json, os, pathlib, sys",
+            "payload = json.loads(pathlib.Path(sys.argv[1]).read_text())",
+            "tmpdir = pathlib.Path(os.environ['TMPDIR'])",
+            "(tmpdir / 'remotion-webpack-bundle-test').mkdir()",
+            "pathlib.Path(payload['outputLocation']).with_name('renderer-tmpdir.txt').write_text(str(tmpdir))",
+            "print(json.dumps({'event': 'error', 'message': 'expected failure'}), flush=True)",
+            "raise SystemExit(1)",
+        ]),
+        encoding="utf-8",
+    )
+    output = tmp_path / "output.mp4"
+    render_target = tmp_path / ".render.mp4"
+    expected_tmp = tmp_path / "renderer-tmp"
+    monkeypatch.setattr(
+        "jaguartv_factory.core.tempfile.mkdtemp",
+        lambda **kwargs: str(expected_tmp.mkdir() or expected_tmp),
+    )
+    monkeypatch.setattr("jaguartv_factory.core.require_binary", lambda name: sys.executable)
+    monkeypatch.setattr("jaguartv_factory.core.upsert_render_job", lambda *args, **kwargs: None)
+    monkeypatch.setattr("jaguartv_factory.core.update_render_job", lambda *args, **kwargs: None)
+
+    with pytest.raises(RuntimeError, match="expected failure"):
+        run_remotion_renderer_api(
+            {"run": {"timeout_sec": 10}},
+            runtime,
+            {},
+            output,
+            render_target,
+            job_id="cleanup-test",
+            candidate_id="candidate",
+            variant="通用版",
+        )
+
+    renderer_tmp = Path((tmp_path / "renderer-tmpdir.txt").read_text(encoding="utf-8"))
+    assert renderer_tmp == expected_tmp
+    assert not renderer_tmp.exists()
 
 
 def test_hyperframes_package_rejects_nested_project_dir():
@@ -822,6 +875,19 @@ def test_chinese_localization_uses_asr_transcript_before_metadata_fallback(tmp_p
     ) == "中文解说正在介绍巴西本土电商平台和 Casas Bahia 的区别。"
 
 
+def test_segment_source_text_uses_only_matching_timed_transcript(tmp_path: Path):
+    write_srt_blocks(
+        [
+            (0.0, 8.0, "第一段中文讲解 Palmeiras 的开场。"),
+            (35.0, 42.0, "第二段中文讲解 Casas Bahia 的门店。"),
+            (72.0, 82.0, "第三段中文讲解 Vargem 的现场。"),
+        ],
+        tmp_path / "source.asr.srt",
+    )
+
+    assert source_text_for_interval(tmp_path, start=30.0, duration=30.0) == "第二段中文讲解 Casas Bahia 的门店。"
+
+
 def test_localization_profile_only_localizes_chinese_audio_from_bilibili_or_douyin(tmp_path: Path, monkeypatch):
     config = {"_root": str(tmp_path), "run": {"workspace": "workspace"}, "edit": {"ocr_backend": "tesseract"}}
     connection = connect_db(config)
@@ -916,6 +982,53 @@ def test_class_two_candidate_routes_to_original_passthrough(tmp_path: Path, monk
     review = produce_candidate(config, row)
     assert review == tmp_path / "review"
     assert calls["media"] == source
+
+
+def test_passthrough_review_package_persists_production_metadata(tmp_path: Path, monkeypatch):
+    config = {
+        "_root": str(tmp_path),
+        "run": {"workspace": "workspace"},
+        "storage": {"provider": "disabled"},
+        "brand": {"default_kit": "jaguartv", "kits": {"jaguartv": {}}},
+    }
+    candidate_id = register_url_stub_candidate(config, "https://www.facebook.com/reel/short-source")
+    connection = connect_db(config)
+    row = connection.execute("SELECT * FROM candidates WHERE id=?", (candidate_id,)).fetchone()
+    (tmp_path / "workspace" / "jobs" / candidate_id).mkdir(parents=True)
+    media = tmp_path / "source.mp4"
+    media.write_bytes(b"source-video")
+    strategy = SimpleNamespace(
+        content_type="football",
+        content_type_confidence=1.0,
+        matched_rules=[],
+        operator_override=False,
+    )
+
+    monkeypatch.setattr("jaguartv_factory.core.render_cover_image", lambda *args: "video_frame")
+    monkeypatch.setattr("jaguartv_factory.core.qa_video", lambda *args: {"playable": True, "passed": False})
+    monkeypatch.setattr("jaguartv_factory.core.media_duration", lambda path: 11.0)
+    monkeypatch.setattr("jaguartv_factory.core.media_dimensions", lambda path: (540, 960))
+    monkeypatch.setattr("jaguartv_factory.core.archive_review_package", lambda *args: {"enabled": False})
+
+    produce_passthrough_review_package(
+        config,
+        row,
+        media,
+        {"keyword": "Libertadores", "category": "football"},
+        {"class": 2, "audio_mode": "preserve_source", "reason": "no_chinese_speech_or_subtitle_evidence"},
+        {"applied": False},
+        strategy,
+        {"decision": "REVIEW_REQUIRED"},
+        lambda *_args: None,
+    )
+
+    saved = connection.execute("SELECT status,metadata_json FROM candidates WHERE id=?", (candidate_id,)).fetchone()
+    payload = json.loads(saved["metadata_json"])
+    assert saved["status"] == "READY_FOR_REVIEW"
+    assert payload["output_variants"][0]["variant"] == "原视频"
+    assert payload["audio"]["mode"] == "preserve_source"
+    assert payload["qa"]["passed"] is True
+    assert payload["qa"]["passthrough_reason"] == "source_shorter_than_output_minimum"
 
 
 def test_localized_clean_render_uses_ptbr_voice_without_fixed_bgm(tmp_path: Path, monkeypatch):
