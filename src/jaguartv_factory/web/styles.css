@@ -229,11 +229,6 @@ input:focus, select:focus { border-color: var(--green); box-shadow: 0 0 0 2px rg
 .feedback-item:last-child { border-bottom: 0; }
 .feedback-item strong, .feedback-item span { display: block; }
 .feedback-item span { margin-top: 5px; color: var(--muted); font-size: 11px; line-height: 1.5; }
-.hot-keyword-strip { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
-.hot-keyword { display: inline-grid; gap: 3px; min-width: 128px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--ink); text-align: left; cursor: pointer; }
-.hot-keyword strong { font-size: 13px; }
-.hot-keyword small { color: var(--muted); font-size: 10px; text-transform: uppercase; }
-.hot-keyword:hover { border-color: var(--green); box-shadow: 0 6px 18px rgba(39, 178, 125, .12); }
 .daily-category-section { margin: 8px 0 24px; }
 .category-keyword-table-wrap { max-height: 390px; }
 .category-keyword-table-wrap td:first-child { width: 190px; }

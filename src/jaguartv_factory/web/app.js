@@ -7,7 +7,6 @@ const state = {
   feedback: [],
   downloadClaims: [],
   keywordGroups: [],
-  hotKeywords: [],
   categoryKeywords: { rows: [] },
   settings: null,
   sessions: [],
@@ -145,12 +144,12 @@ async function refreshAll(showToast = false) {
   const button = document.querySelector("#refreshButton");
   button.disabled = true;
   try {
-    const [overview, candidates, publications, xAuths, workers, feedback, downloadClaims, keywordGroups, hotKeywords, categoryKeywords, tasks, settings, sessions, health, capabilities, uploads, posterCounts] = await Promise.all([
-      api("/api/overview"), api("/api/candidates?limit=200"), api("/api/publications"), api("/api/x-auths"), api("/api/workers"), api("/api/feedback"), api("/api/download-claims"), api("/api/keywords"), api("/api/hot-keywords?date=today"), api("/api/category-keywords?date=today"), api("/api/tasks"), api("/api/settings"), api("/api/sessions"), api("/api/health"), api("/api/publish/capabilities"),
+    const [overview, candidates, publications, xAuths, workers, feedback, downloadClaims, keywordGroups, categoryKeywords, tasks, settings, sessions, health, capabilities, uploads, posterCounts] = await Promise.all([
+      api("/api/overview"), api("/api/candidates?limit=200"), api("/api/publications"), api("/api/x-auths"), api("/api/workers"), api("/api/feedback"), api("/api/download-claims"), api("/api/keywords"), api("/api/category-keywords?date=today"), api("/api/tasks"), api("/api/settings"), api("/api/sessions"), api("/api/health"), api("/api/publish/capabilities"),
       api("/api/uploads").catch(() => []),
       api("/api/posters/counts"),
     ]);
-    Object.assign(state, { overview, candidates, publications, xAuths, workers, feedback, downloadClaims, keywordGroups, hotKeywords, categoryKeywords, tasks, settings, sessions, health, publishCapabilities: capabilities, uploads, posterCounts });
+    Object.assign(state, { overview, candidates, publications, xAuths, workers, feedback, downloadClaims, keywordGroups, categoryKeywords, tasks, settings, sessions, health, publishCapabilities: capabilities, uploads, posterCounts });
     renderAll();
     if (document.querySelector("#view-posters").classList.contains("active")) await loadPosters();
     if (document.querySelector("#view-analytics").classList.contains("active")) await loadYouTubeAnalytics();
@@ -175,7 +174,6 @@ function renderAll() {
   renderPublications();
   renderAnalytics();
   renderDownloadClaims();
-  renderHotKeywords();
   renderCategoryKeywords();
   renderKeywordGroups();
   renderWorkers();
@@ -1183,19 +1181,6 @@ function openClaimMetricsDialog(claimId) {
   document.querySelector("#claimMetricsDialog").showModal();
 }
 
-function renderHotKeywords() {
-  const element = document.querySelector("#hotKeywordStrip");
-  if (!element) return;
-  element.innerHTML = state.hotKeywords.length ? state.hotKeywords.map((item) => `
-    <button class="hot-keyword" data-hot-keyword="${escapeHtml(item.keyword)}" type="button">
-      <strong>${escapeHtml(item.keyword)}</strong><small>${escapeHtml(item.source || "google_trends")}</small>
-    </button>
-  `).join("") : `<div class="empty-state">今日热词还未同步；调度器会保留最近一次成功结果</div>`;
-  element.querySelectorAll("[data-hot-keyword]").forEach((button) => {
-    button.addEventListener("click", () => discoverWithHotKeyword(button.dataset.hotKeyword));
-  });
-}
-
 function renderCategoryKeywords() {
   const table = document.querySelector("#categoryKeywordTable");
   if (!table) return;
@@ -1233,16 +1218,6 @@ async function discoverWithHotKeyword(keyword) {
     pollTask(result.task_id);
   } catch (error) {
     toast(`热词发现失败：${error.message}`, "error");
-  }
-}
-
-async function runTrendsNow() {
-  try {
-    const result = await api("/api/trends/run", { method: "POST", body: JSON.stringify({}) });
-    toast(`Google Trends 已同步 ${result.count || 0} 个热词`);
-    await refreshAll();
-  } catch (error) {
-    toast(`同步失败：${error.message}`, "error");
   }
 }
 
@@ -1866,7 +1841,6 @@ document.querySelector("#batchProduce").addEventListener("click", () => {
   openProductionDialog(ids);
 });
 document.querySelector("#batchDelete").addEventListener("click", () => deleteCandidates(selectedRows().map((item) => item.id)));
-document.querySelector("#runTrendsNow").addEventListener("click", runTrendsNow);
 document.querySelectorAll("#statusFilters button").forEach((button) => button.addEventListener("click", () => {
   document.querySelectorAll("#statusFilters button").forEach((item) => item.classList.toggle("active", item === button));
   state.status = button.dataset.status;

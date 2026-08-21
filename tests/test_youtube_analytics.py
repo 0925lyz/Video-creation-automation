@@ -899,3 +899,20 @@ def test_growth_analytics_frontend_contract_contains_complete_controls():
     assert "/api/youtube-analytics/ranking" in javascript
     assert "youtube-growth-table" in styles
     assert "@media (max-width: 760px)" in styles
+
+
+def test_growth_page_omits_brazil_daily_hot_words_widget():
+    web = Path(__file__).parents[1] / "src" / "jaguartv_factory" / "web"
+    html = (web / "index.html").read_text(encoding="utf-8")
+    javascript = (web / "app.js").read_text(encoding="utf-8")
+    styles = (web / "styles.css").read_text(encoding="utf-8")
+
+    assert "巴西今日热词" not in html
+    assert 'id="runTrendsNow"' not in html
+    assert 'id="hotKeywordStrip"' not in html
+    assert 'api("/api/hot-keywords?date=today")' not in javascript
+    assert 'api("/api/trends/run"' not in javascript
+    assert "renderHotKeywords" not in javascript
+    assert ".hot-keyword-strip" not in styles
+    assert "当日分类关键词" in html
+    assert 'api("/api/category-keywords?date=today")' in javascript
