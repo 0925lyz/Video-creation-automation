@@ -893,6 +893,8 @@ def test_growth_analytics_frontend_contract_contains_complete_controls():
     assert "可能超过 100%" in html
     assert "AbortController" in javascript
     assert "pt-BR" in javascript
+    assert "授权刷新失败" in javascript
+    assert "授权解密失败" in javascript
     assert "/api/youtube-analytics/summary" in javascript
     assert "/api/youtube-analytics/ranking" in javascript
     assert "youtube-growth-table" in styles

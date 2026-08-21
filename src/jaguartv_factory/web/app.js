@@ -914,8 +914,14 @@ function youtubeGrowthQuery() {
 function renderYouTubeGrowthAccounts(accounts) {
   const select = document.querySelector("#youtubeGrowthAccount");
   const selected = select.value;
+  const accountStatusSuffix = (status) => ({
+    ANALYTICS_SCOPE_MISSING: " · 需补分析授权",
+    NEEDS_REAUTH: " · 需重新授权",
+    AUTH_REFRESH_FAILED: " · 授权刷新失败",
+    AUTH_DECRYPT_FAILED: " · 授权解密失败",
+  }[status] || "");
   select.innerHTML = `<option value="">全部账号</option>${accounts.map((item) => `
-    <option value="${escapeHtml(item.account_id)}">${escapeHtml(item.current_channel_title || item.account_id)} · ${escapeHtml(item.account_id)}${item.status === "ANALYTICS_SCOPE_MISSING" ? " · 需补分析授权" : item.status === "NEEDS_REAUTH" ? " · 需重新授权" : ""}</option>
+    <option value="${escapeHtml(item.account_id)}">${escapeHtml(item.current_channel_title || item.account_id)} · ${escapeHtml(item.account_id)}${accountStatusSuffix(item.status)}</option>
   `).join("")}`;
   if ([...select.options].some((option) => option.value === selected)) select.value = selected;
 }
