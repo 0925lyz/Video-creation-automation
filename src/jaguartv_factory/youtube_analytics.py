@@ -23,6 +23,7 @@ COMPLETION_CALCULATION_VERSION = "end_retention_bucket_v1"
 DATA_API_SOURCE = "youtube_data_api_v3"
 ANALYTICS_API_SOURCE = "youtube_analytics_api_v2"
 RETENTION_SOURCE = "youtube_analytics_audience_retention"
+NEEDS_REAUTH_CATEGORIES = {"AUTH_REVOKED", "AUTH_DECRYPT_FAILED"}
 DATA_API_VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
 ANALYTICS_REPORTS_URL = "https://youtubeanalytics.googleapis.com/v2/reports"
 RANKING_FIELDS = {
@@ -304,8 +305,18 @@ class YouTubeAnalyticsClient:
             return str(self.token_provider(self.config, str(account["account"]))["access_token"])
         except Exception as error:
             message = _safe_error(error)
-            category = "AUTH_REVOKED" if any(term in message.lower() for term in ("invalid_grant", "revoked", "unauthorized")) else "AUTH_REFRESH_FAILED"
-            raise YouTubeApiError("YouTube authorization refresh failed", category=category, retryable=category != "AUTH_REVOKED") from error
+            lowered = message.lower()
+            if "decrypt oauth refresh token" in lowered:
+                category = "AUTH_DECRYPT_FAILED"
+            elif any(term in lowered for term in ("invalid_grant", "revoked", "unauthorized")):
+                category = "AUTH_REVOKED"
+            else:
+                category = "AUTH_REFRESH_FAILED"
+            raise YouTubeApiError(
+                "YouTube authorization refresh failed",
+                category=category,
+                retryable=category not in NEEDS_REAUTH_CATEGORIES,
+            ) from error
 
     def _get(self, url: str, account: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
         try:
@@ -413,7 +424,7 @@ def _record_sync_error(connection: Any, rows: list[dict[str, Any]], error: YouTu
     timestamp = _iso(now)
     for row in rows:
         retry_count = int(row.get("retry_count") or 0) + 1
-        if error.category == "AUTH_REVOKED":
+        if error.category in NEEDS_REAUTH_CATEGORIES:
             status = "NEEDS_REAUTH"
         elif error.retryable:
             status = "RETRY"
@@ -433,7 +444,7 @@ def _record_sync_error(connection: Any, rows: list[dict[str, Any]], error: YouTu
                 _safe_error(error), timestamp, int(error.retryable), row["publication_id"],
             ),
         )
-    if error.category == "AUTH_REVOKED" and rows:
+    if error.category in NEEDS_REAUTH_CATEGORIES and rows:
         connection.execute(
             """
             UPDATE youtube_channel_auths SET status='NEEDS_REAUTH',last_error_category=?,

@@ -470,6 +470,7 @@ def test_sync_batches_per_account_and_one_account_failure_does_not_block_another
         (YouTubeApiError("server", status_code=503, category="SERVER_ERROR", retryable=True), "RETRY", True),
         (YouTubeApiError("timeout", category="NETWORK_TIMEOUT", retryable=True), "RETRY", True),
         (YouTubeApiError("revoked", status_code=400, category="AUTH_REVOKED", retryable=False), "NEEDS_REAUTH", False),
+        (YouTubeApiError("decrypt", category="AUTH_DECRYPT_FAILED", retryable=False), "NEEDS_REAUTH", False),
         (YouTubeApiError("scope", status_code=403, category="ANALYTICS_SCOPE_MISSING", retryable=False), "BLOCKED", False),
     ],
 )

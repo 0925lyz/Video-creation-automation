@@ -36,15 +36,17 @@ def decrypt_refresh_token(encrypted: str) -> str:
             openssl, "enc", "-d", "-aes-256-cbc", "-pbkdf2", "-salt", "-base64", "-A",
             "-pass", "env:JAGUARTV_OAUTH_TOKEN_KEY",
         ],
-        input=encrypted,
-        text=True,
+        input=encrypted.encode("ascii", errors="strict"),
         capture_output=True,
         check=False,
         env={**os.environ, "JAGUARTV_OAUTH_TOKEN_KEY": key},
     )
     if result.returncode != 0:
         raise RuntimeError("openssl failed to decrypt OAuth refresh token")
-    return result.stdout.strip()
+    try:
+        return result.stdout.decode("utf-8").strip()
+    except UnicodeDecodeError as error:
+        raise RuntimeError("openssl failed to decrypt OAuth refresh token") from error
 
 
 def youtube_access_token(config: dict[str, Any], account: str) -> dict[str, str]:
@@ -73,6 +75,12 @@ def youtube_access_token(config: dict[str, Any], account: str) -> dict[str, str]
         timeout=30,
     )
     if response.status_code >= 400:
+        try:
+            oauth_error = str((response.json() or {}).get("error") or "")
+        except (ValueError, TypeError):
+            oauth_error = ""
+        if oauth_error == "invalid_grant":
+            raise RuntimeError("Google token refresh failed: invalid_grant")
         raise RuntimeError(f"Google token refresh failed: HTTP {response.status_code}")
     payload = response.json()
     access_token = str(payload.get("access_token") or "")
