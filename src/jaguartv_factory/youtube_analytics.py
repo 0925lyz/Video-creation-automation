@@ -1056,6 +1056,7 @@ def sync_due_once(
             failed += len(valid_rows)
             continue
         has_analytics_scope = ANALYTICS_SCOPE in _scope_set(str(account.get("scopes") or ""))
+        analytics_api_enabled = True
         for row, video_id in zip(valid_rows, video_ids):
             data = data_items.get(video_id) or parse_data_api_video(None)
             if data.get("channel_id") and data["channel_id"] != account["channel_id"]:
@@ -1068,13 +1069,12 @@ def sync_due_once(
             )
             analytics = {"analytics_views": None, "share_count": None, "average_view_duration": None, "average_view_percentage": None}
             completion = derive_completion_rate({"rows": []})
-            analytics_api_enabled = True
             published = _parse_datetime(str(row.get("published_at") or "")) or current
             start_date = published.astimezone(SAO_PAULO).date().isoformat()
             end_day = max(current.astimezone(SAO_PAULO).date() - timedelta(days=1), date.fromisoformat(start_date))
             end_date = end_day.isoformat()
             retention_error: YouTubeApiError | None = None
-            if api_status == "SUCCESS" and has_analytics_scope:
+            if api_status == "SUCCESS" and has_analytics_scope and analytics_api_enabled:
                 try:
                     analytics = api.fetch_analytics(account, video_id, start_date, end_date)
                     try:
@@ -1099,7 +1099,11 @@ def sync_due_once(
                         failed += 1
                         continue
             elif api_status == "SUCCESS":
-                api_status = "PARTIAL_ANALYTICS_SCOPE_MISSING"
+                api_status = (
+                    "PARTIAL_ANALYTICS_SCOPE_MISSING"
+                    if not has_analytics_scope
+                    else "PARTIAL_ANALYTICS_API_DISABLED"
+                )
             fetched_at = _iso(current)
             sync_window = current.replace(minute=0, second=0, microsecond=0).isoformat()
             previous = connection.execute(

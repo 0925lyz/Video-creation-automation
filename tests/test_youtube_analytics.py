@@ -820,7 +820,10 @@ def test_analytics_api_permission_error_degrades_to_data_api_snapshot(tmp_path: 
 
 def test_disabled_analytics_api_keeps_data_metrics_and_polling(tmp_path: Path):
     class DisabledAnalyticsApiClient(FakeClient):
+        analytics_calls = 0
+
         def fetch_analytics(self, account: dict, video_id: str, start_date: str, end_date: str) -> dict:
+            self.analytics_calls += 1
             raise YouTubeApiError(
                 "YouTube Analytics API is disabled",
                 status_code=403,
@@ -831,29 +834,34 @@ def test_disabled_analytics_api_keeps_data_metrics_and_polling(tmp_path: Path):
     config = config_for(tmp_path)
     add_account(config, "account-a", "channel-a")
     add_publication(config, 1)
+    add_publication(config, 2)
     schedule_first_sync(config, 1)
+    schedule_first_sync(config, 2)
 
+    client = DisabledAnalyticsApiClient()
     result = sync_due_once(
         config,
-        client=DisabledAnalyticsApiClient(),
+        client=client,
         now=datetime(2026, 7, 3, tzinfo=timezone.utc),
     )
 
     connection = connect_db(config)
     snapshot = connection.execute(
-        "SELECT * FROM youtube_metric_snapshots WHERE publication_id=1"
-    ).fetchone()
+        "SELECT * FROM youtube_metric_snapshots ORDER BY publication_id"
+    ).fetchall()
     state = connection.execute(
         "SELECT * FROM youtube_sync_states WHERE publication_id=1"
     ).fetchone()
     assert result["failed"] == 0
-    assert result["successful"] == 1
-    assert snapshot["view_count"] == 100
-    assert snapshot["like_count"] == 10
-    assert snapshot["comment_count"] is None
-    assert snapshot["share_count"] is None
-    assert snapshot["completion_rate"] is None
-    assert snapshot["api_response_status"] == "PARTIAL_ANALYTICS_API_DISABLED"
+    assert result["successful"] == 2
+    assert client.analytics_calls == 1
+    assert len(snapshot) == 2
+    assert all(row["view_count"] == 100 for row in snapshot)
+    assert all(row["like_count"] == 10 for row in snapshot)
+    assert all(row["comment_count"] is None for row in snapshot)
+    assert all(row["share_count"] is None for row in snapshot)
+    assert all(row["completion_rate"] is None for row in snapshot)
+    assert all(row["api_response_status"] == "PARTIAL_ANALYTICS_API_DISABLED" for row in snapshot)
     assert state["sync_status"] == "PARTIAL"
     assert state["last_error_category"] == "ANALYTICS_API_DISABLED"
     assert state["next_sync_at"] == "2026-07-03T01:00:00+00:00"
