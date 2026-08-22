@@ -1184,6 +1184,7 @@ def test_growth_analytics_frontend_contract_contains_complete_controls():
     assert "/api/youtube-analytics/summary" in javascript
     assert "/api/youtube-analytics/ranking" in javascript
     assert "youtube-growth-table" in styles
+    assert "@media (min-width: 761px) and (max-width: 900px)" in styles
     assert "@media (max-width: 760px)" in styles
 
 
