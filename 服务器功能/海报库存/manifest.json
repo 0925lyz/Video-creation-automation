@@ -1,0 +1,46 @@
+{
+  "name": "海报库存",
+  "snapshot_date": "2026-08-22",
+  "source_branch": "codex/youtube-auto-publish-package",
+  "production_url": "https://factory.jarg.top/",
+  "status": "DEPLOYED",
+  "included": {
+    "production_files": 6,
+    "test_files": 1,
+    "patch_files": 1,
+    "screenshots": 13,
+    "documentation_files": 5
+  },
+  "source_paths": [
+    "src/jaguartv_factory/core.py",
+    "src/jaguartv_factory/dashboard.py",
+    "src/jaguartv_factory/posters.py",
+    "src/jaguartv_factory/web/app.js",
+    "src/jaguartv_factory/web/index.html",
+    "src/jaguartv_factory/web/styles.css",
+    "tests/test_posters.py"
+  ],
+  "verification": {
+    "local_pytest": "264 passed",
+    "server_poster_pytest": "30 passed",
+    "build": "passed",
+    "python_compile": "passed",
+    "javascript_syntax": "passed",
+    "git_diff_check": "passed",
+    "database_integrity": "ok",
+    "browser_console_errors": 0,
+    "browser_failed_requests": 0,
+    "viewports": [1440, 768, 375]
+  },
+  "excluded": [
+    "workspace/factory.db",
+    "server media",
+    "database backups",
+    ".env",
+    "tokens",
+    "cookies",
+    "private keys",
+    "platform sessions",
+    "server logs"
+  ]
+}

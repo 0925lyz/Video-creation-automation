@@ -6,6 +6,7 @@
 
 ## 目录
 
+- `海报库存/`: 海报库存、导入海报、文案与附图管理的源码、测试、补丁、截图和部署验证交付包。
 - `server-snapshot/`: 服务器当前代码、配置、网页、脚本、测试、品牌素材和 Remotion 模板源码。
 - `server-snapshot/src/jaguartv_factory/dashboard.py`: 服务器库存界面、任务接口、文案设计接口、上传接口、下载/制作按钮接口。
 - `server-snapshot/src/jaguartv_factory/web/index.html`: 服务器内容库存主界面。
