@@ -818,6 +818,47 @@ def test_analytics_api_permission_error_degrades_to_data_api_snapshot(tmp_path: 
     assert snapshot["api_response_status"] == "PARTIAL_ANALYTICS_SCOPE_MISSING"
 
 
+def test_disabled_analytics_api_keeps_data_metrics_and_polling(tmp_path: Path):
+    class DisabledAnalyticsApiClient(FakeClient):
+        def fetch_analytics(self, account: dict, video_id: str, start_date: str, end_date: str) -> dict:
+            raise YouTubeApiError(
+                "YouTube Analytics API is disabled",
+                status_code=403,
+                category="ANALYTICS_API_DISABLED",
+                retryable=False,
+            )
+
+    config = config_for(tmp_path)
+    add_account(config, "account-a", "channel-a")
+    add_publication(config, 1)
+    schedule_first_sync(config, 1)
+
+    result = sync_due_once(
+        config,
+        client=DisabledAnalyticsApiClient(),
+        now=datetime(2026, 7, 3, tzinfo=timezone.utc),
+    )
+
+    connection = connect_db(config)
+    snapshot = connection.execute(
+        "SELECT * FROM youtube_metric_snapshots WHERE publication_id=1"
+    ).fetchone()
+    state = connection.execute(
+        "SELECT * FROM youtube_sync_states WHERE publication_id=1"
+    ).fetchone()
+    assert result["failed"] == 0
+    assert result["successful"] == 1
+    assert snapshot["view_count"] == 100
+    assert snapshot["like_count"] == 10
+    assert snapshot["comment_count"] is None
+    assert snapshot["share_count"] is None
+    assert snapshot["completion_rate"] is None
+    assert snapshot["api_response_status"] == "PARTIAL_ANALYTICS_API_DISABLED"
+    assert state["sync_status"] == "PARTIAL"
+    assert state["last_error_category"] == "ANALYTICS_API_DISABLED"
+    assert state["next_sync_at"] == "2026-07-03T01:00:00+00:00"
+
+
 def test_retention_unavailable_keeps_other_analytics_metrics(tmp_path: Path):
     class RetentionUnavailableClient(FakeClient):
         def fetch_retention(self, account: dict, video_id: str, start_date: str, end_date: str) -> dict:

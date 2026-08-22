@@ -291,6 +291,13 @@ def _api_error(response: requests.Response) -> YouTubeApiError:
         return YouTubeApiError("YouTube service unavailable", status_code=status, category="SERVER_ERROR", retryable=True)
     if status in {400, 401} and reason in {"authError", "invalidCredentials", "unauthorized"}:
         return YouTubeApiError("YouTube authorization revoked", status_code=status, category="AUTH_REVOKED", retryable=False)
+    if status == 403 and reason == "accessNotConfigured":
+        return YouTubeApiError(
+            "YouTube Analytics API is disabled",
+            status_code=status,
+            category="ANALYTICS_API_DISABLED",
+            retryable=False,
+        )
     if status == 403 and reason in {"insufficientPermissions", "forbidden"}:
         return YouTubeApiError("YouTube permission is insufficient", status_code=status, category="ANALYTICS_SCOPE_MISSING", retryable=False)
     return YouTubeApiError(f"YouTube API request failed: HTTP {status}", status_code=status, category="FORBIDDEN" if status == 403 else "API_ERROR", retryable=False)
@@ -1061,6 +1068,7 @@ def sync_due_once(
             )
             analytics = {"analytics_views": None, "share_count": None, "average_view_duration": None, "average_view_percentage": None}
             completion = derive_completion_rate({"rows": []})
+            analytics_api_enabled = True
             published = _parse_datetime(str(row.get("published_at") or "")) or current
             start_date = published.astimezone(SAO_PAULO).date().isoformat()
             end_day = max(current.astimezone(SAO_PAULO).date() - timedelta(days=1), date.fromisoformat(start_date))
@@ -1080,9 +1088,12 @@ def sync_due_once(
                         retention_error = error
                         api_status = "PARTIAL_RETENTION_UNAVAILABLE"
                 except YouTubeApiError as error:
-                    if error.category == "ANALYTICS_SCOPE_MISSING":
-                        has_analytics_scope = False
-                        api_status = "PARTIAL_ANALYTICS_SCOPE_MISSING"
+                    if error.category in {"ANALYTICS_SCOPE_MISSING", "ANALYTICS_API_DISABLED"}:
+                        if error.category == "ANALYTICS_SCOPE_MISSING":
+                            has_analytics_scope = False
+                        else:
+                            analytics_api_enabled = False
+                        api_status = f"PARTIAL_{error.category}"
                     else:
                         _record_sync_error(connection, [row], error, current)
                         failed += 1
@@ -1110,12 +1121,13 @@ def sync_due_once(
                 "fetched_at": fetched_at,
                 "data_through_date": end_date,
                 "data_api_source": DATA_API_SOURCE,
-                "analytics_api_source": ANALYTICS_API_SOURCE if has_analytics_scope else None,
-                "retention_source": RETENTION_SOURCE if has_analytics_scope else None,
+                "analytics_api_source": ANALYTICS_API_SOURCE if has_analytics_scope and analytics_api_enabled else None,
+                "retention_source": RETENTION_SOURCE if has_analytics_scope and analytics_api_enabled else None,
                 "api_response_status": api_status,
                 "sync_window": sync_window,
                 "raw_status_json": {
                     "analytics_scope": has_analytics_scope,
+                    "analytics_api_enabled": analytics_api_enabled,
                     "decreases": decreases,
                     "retention_error_category": retention_error.category if retention_error else None,
                 },
@@ -1151,6 +1163,9 @@ def sync_due_once(
             if api_status == "PARTIAL_ANALYTICS_SCOPE_MISSING":
                 error_category = "ANALYTICS_SCOPE_MISSING"
                 error_summary = "Analytics permission is missing; Data API metrics remain available"
+            elif api_status == "PARTIAL_ANALYTICS_API_DISABLED":
+                error_category = "ANALYTICS_API_DISABLED"
+                error_summary = "YouTube Analytics API is disabled; Data API metrics remain available"
             elif api_status == "PARTIAL_RETENTION_UNAVAILABLE":
                 error_category = "RETENTION_UNAVAILABLE"
                 error_summary = _safe_error(retention_error) if retention_error else "Audience retention is temporarily unavailable"
