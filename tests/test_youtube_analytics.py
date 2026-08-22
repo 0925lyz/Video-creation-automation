@@ -18,19 +18,24 @@ from jaguartv_factory.publish_worker import publish_due_once
 from jaguartv_factory.youtube_analytics import (
     ANALYTICS_SCOPE,
     COMPLETION_CALCULATION_VERSION,
+    YouTubeAnalyticsClient,
     YouTubeApiError,
     analytics_accounts,
     analytics_history,
     analytics_ranking,
     analytics_summary,
     backfill_report,
+    channel_import_status,
     date_filter_bounds,
     derive_completion_rate,
+    import_channel_publications,
     parse_analytics_metrics,
     parse_data_api_video,
     publication_latest,
     restore_sync_tasks,
     retry_publication_sync,
+    run_analytics_worker,
+    run_channel_import_due,
     schedule_first_sync,
     set_backfill_status,
     store_metric_snapshot,
@@ -39,6 +44,48 @@ from jaguartv_factory.youtube_analytics import (
 
 
 SAO_PAULO = ZoneInfo("America/Sao_Paulo")
+
+
+class FakeChannelImportClient:
+    def __init__(self, channels: dict[str, dict], pages: dict[tuple[str, str], dict], videos: dict[str, dict], failures: set[str] | None = None):
+        self.channels = channels
+        self.pages = pages
+        self.videos = videos
+        self.failures = failures or set()
+
+    def fetch_owned_channel(self, account: dict) -> dict:
+        account_id = str(account["account"])
+        if account_id in self.failures:
+            raise YouTubeApiError("temporary failure", category="SERVER_ERROR", retryable=True)
+        return self.channels[account_id]
+
+    def fetch_uploads_page(self, account: dict, playlist_id: str, page_token: str = "") -> dict:
+        return self.pages[(str(account["account"]), page_token)]
+
+    def fetch_data_videos(self, account: dict, video_ids: list[str]) -> dict[str, dict]:
+        return {video_id: self.videos[video_id] for video_id in video_ids if video_id in self.videos}
+
+
+class FakeResponse:
+    status_code = 200
+
+    def __init__(self, payload: dict):
+        self.payload = payload
+
+    def json(self) -> dict:
+        return self.payload
+
+
+class FakeSession:
+    def __init__(self, payloads: list[dict]):
+        self.payloads = list(payloads)
+        self.requests: list[tuple[str, dict]] = []
+
+    def get(self, url: str, *, params: dict, headers: dict, timeout: int) -> FakeResponse:
+        self.requests.append((url, params))
+        assert headers["Authorization"] == "Bearer fake-access-token"
+        assert timeout == 30
+        return FakeResponse(self.payloads.pop(0))
 
 
 def config_for(tmp_path: Path) -> dict:
@@ -219,10 +266,149 @@ def test_schema_is_additive_and_nullable(tmp_path: Path):
     config = config_for(tmp_path)
     connection = connect_db(config)
     tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    assert {"youtube_metric_snapshots", "youtube_sync_states", "youtube_backfill_runs"} <= tables
+    assert {
+        "youtube_metric_snapshots", "youtube_sync_states", "youtube_backfill_runs",
+        "youtube_channel_import_states", "youtube_channel_video_imports",
+    } <= tables
     snapshot_columns = {row[1]: row for row in connection.execute("PRAGMA table_info(youtube_metric_snapshots)")}
     assert snapshot_columns["view_count"][3] == 0
     assert snapshot_columns["completion_rate"][3] == 0
+    publication_columns = {row[1]: row for row in connection.execute("PRAGMA table_info(publications)")}
+    assert publication_columns["publication_origin"][4] == "'SYSTEM_AUTO_PUBLISH'"
+
+
+def test_channel_import_dry_run_filters_nonpublic_and_never_writes(tmp_path: Path):
+    config = config_for(tmp_path)
+    add_account(config, "account-a", "channel-a", title="Current A")
+    client = FakeChannelImportClient(
+        channels={"account-a": {
+            "channel_id": "channel-a", "channel_title": "Current A",
+            "uploads_playlist_id": "uploads-a", "public_video_count": 2,
+        }},
+        pages={
+            ("account-a", ""): {"video_ids": ["public-1", "private-1"], "next_page_token": "page-2"},
+            ("account-a", "page-2"): {"video_ids": ["public-2"], "next_page_token": ""},
+        },
+        videos={
+            "public-1": {"video_id": "public-1", "channel_id": "channel-a", "current_channel_title": "Current A", "title": "Public One", "description": "", "published_at": "2026-07-01T12:00:00Z", "privacy_status": "public", "thumbnail_url": "https://img.test/1.jpg"},
+            "private-1": {"video_id": "private-1", "channel_id": "channel-a", "current_channel_title": "Current A", "title": "Private", "description": "", "published_at": "2026-07-01T13:00:00Z", "privacy_status": "private", "thumbnail_url": ""},
+            "public-2": {"video_id": "public-2", "channel_id": "channel-a", "current_channel_title": "Current A", "title": "Public Two", "description": "", "published_at": "2026-07-03T12:00:00Z", "privacy_status": "public", "thumbnail_url": "https://img.test/2.jpg"},
+        },
+    )
+
+    report = import_channel_publications(
+        config, account_id="account-a", client=client, dry_run=True,
+        now=datetime(2026, 7, 5, 12, tzinfo=timezone.utc),
+    )
+
+    assert report["public_video_count"] == 2
+    assert report["skipped_nonpublic_count"] == 1
+    assert report["pages"] == 2
+    connection = connect_db(config)
+    assert connection.execute("SELECT COUNT(*) FROM publications").fetchone()[0] == 0
+    assert connection.execute("SELECT COUNT(*) FROM youtube_channel_video_imports").fetchone()[0] == 0
+    assert connection.execute("SELECT COUNT(*) FROM youtube_channel_import_states").fetchone()[0] == 0
+
+
+def test_channel_import_is_idempotent_auditable_and_schedules_after_24_hours(tmp_path: Path):
+    config = config_for(tmp_path)
+    add_account(config, "account-a", "channel-a", title="Current A")
+    client = FakeChannelImportClient(
+        channels={"account-a": {
+            "channel_id": "channel-a", "channel_title": "Current A",
+            "uploads_playlist_id": "uploads-a", "public_video_count": 2,
+        }},
+        pages={("account-a", ""): {"video_ids": ["old-video", "new-video"], "next_page_token": ""}},
+        videos={
+            "old-video": {"video_id": "old-video", "channel_id": "channel-a", "current_channel_title": "Current A", "title": "Old", "description": "", "published_at": "2026-07-01T10:00:00Z", "privacy_status": "public", "thumbnail_url": "https://img.test/old.jpg"},
+            "new-video": {"video_id": "new-video", "channel_id": "channel-a", "current_channel_title": "Current A", "title": "New", "description": "", "published_at": "2026-07-05T06:00:00Z", "privacy_status": "public", "thumbnail_url": "https://img.test/new.jpg"},
+        },
+    )
+    now = datetime(2026, 7, 5, 12, tzinfo=timezone.utc)
+
+    first = import_channel_publications(config, account_id="account-a", client=client, dry_run=False, now=now)
+    second = import_channel_publications(config, account_id="account-a", client=client, dry_run=False, now=now)
+
+    assert first["imported_count"] == 2
+    assert second["imported_count"] == 0
+    connection = connect_db(config)
+    publications = connection.execute("SELECT * FROM publications ORDER BY youtube_video_id").fetchall()
+    assert len(publications) == 2
+    assert {row["publication_origin"] for row in publications} == {"YOUTUBE_CHANNEL_IMPORT"}
+    assert {row["source_category"] for row in publications} == {"unknown"}
+    assert {row["source_keyword"] for row in publications} == {"unknown"}
+    assert {row["authorized_account_id"] for row in publications} == {"account-a"}
+    states = {row["youtube_video_id"]: connection.execute(
+        "SELECT * FROM youtube_sync_states WHERE publication_id=?", (row["id"],)
+    ).fetchone() for row in publications}
+    assert states["old-video"]["next_sync_at"] == "2026-07-02T10:00:00+00:00"
+    assert states["new-video"]["next_sync_at"] == "2026-07-06T06:00:00+00:00"
+    assert connection.execute("SELECT COUNT(*) FROM youtube_channel_video_imports").fetchone()[0] == 2
+    status = channel_import_status(config)
+    assert status[0]["sync_status"] == "SUCCESS"
+    assert status[0]["next_scan_at"] == "2026-07-05T13:00:00+00:00"
+
+
+def test_channel_import_reuses_system_publication_without_changing_origin(tmp_path: Path):
+    config = config_for(tmp_path)
+    add_account(config, "account-a", "channel-a")
+    add_publication(config, 1, video_id="system-video")
+    client = FakeChannelImportClient(
+        channels={"account-a": {"channel_id": "channel-a", "channel_title": "Current A", "uploads_playlist_id": "uploads-a", "public_video_count": 1}},
+        pages={("account-a", ""): {"video_ids": ["system-video"], "next_page_token": ""}},
+        videos={"system-video": {"video_id": "system-video", "channel_id": "channel-a", "current_channel_title": "Current A", "title": "Current title", "description": "", "published_at": "2026-07-01T12:00:00Z", "privacy_status": "public", "thumbnail_url": ""}},
+    )
+
+    report = import_channel_publications(config, account_id="account-a", client=client, dry_run=False)
+
+    connection = connect_db(config)
+    assert report["imported_count"] == 0
+    assert connection.execute("SELECT COUNT(*) FROM publications").fetchone()[0] == 1
+    assert connection.execute("SELECT publication_origin FROM publications WHERE id=1").fetchone()[0] == "SYSTEM_AUTO_PUBLISH"
+    assert connection.execute("SELECT publication_id FROM youtube_channel_video_imports").fetchone()[0] == 1
+
+
+def test_due_channel_import_isolates_account_failures_and_recovers_from_state(tmp_path: Path):
+    config = config_for(tmp_path)
+    add_account(config, "account-a", "channel-a")
+    add_account(config, "account-b", "channel-b")
+    client = FakeChannelImportClient(
+        channels={"account-b": {"channel_id": "channel-b", "channel_title": "B", "uploads_playlist_id": "uploads-b", "public_video_count": 1}},
+        pages={("account-b", ""): {"video_ids": ["video-b"], "next_page_token": ""}},
+        videos={"video-b": {"video_id": "video-b", "channel_id": "channel-b", "current_channel_title": "B", "title": "B", "description": "", "published_at": "2026-07-01T12:00:00Z", "privacy_status": "public", "thumbnail_url": ""}},
+        failures={"account-a"},
+    )
+
+    result = run_channel_import_due(
+        config, client=client, now=datetime(2026, 7, 5, 12, tzinfo=timezone.utc), limit_accounts=8,
+    )
+
+    assert result["accounts_due"] == 2
+    assert result["accounts_successful"] == 1
+    assert result["accounts_failed"] == 1
+    statuses = {row["account_id"]: row for row in channel_import_status(config)}
+    assert statuses["account-a"]["sync_status"] == "RETRY"
+    assert statuses["account-b"]["sync_status"] == "SUCCESS"
+    assert connect_db(config).execute("SELECT COUNT(*) FROM publications WHERE authorized_account_id='account-b'").fetchone()[0] == 1
+
+
+def test_analytics_worker_scans_channels_before_metric_tasks(tmp_path: Path, monkeypatch, capsys):
+    config = config_for(tmp_path)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "jaguartv_factory.youtube_analytics.run_channel_import_due",
+        lambda _config, limit_accounts=8: calls.append("channel_import") or {"accounts_due": 0},
+    )
+    monkeypatch.setattr(
+        "jaguartv_factory.youtube_analytics.sync_due_once",
+        lambda _config, limit=50: calls.append("metrics") or {"due": 0},
+    )
+
+    run_analytics_worker(config, once=True, limit=50)
+
+    assert calls == ["channel_import", "metrics"]
+    output = json.loads(capsys.readouterr().out)
+    assert output == {"channel_import": {"accounts_due": 0}, "metrics": {"due": 0}}
 
 
 def test_migration_is_idempotent_and_rollback_keeps_snapshots(tmp_path: Path):
@@ -317,6 +503,42 @@ def test_data_and_analytics_mapping_preserve_missing_values():
         "average_view_duration": 12.5,
         "average_view_percentage": 41.2,
     }
+
+
+def test_official_channel_and_upload_playlist_responses_are_mapped():
+    session = FakeSession([
+        {"items": [{
+            "id": "channel-a",
+            "snippet": {"title": "Channel A"},
+            "contentDetails": {"relatedPlaylists": {"uploads": "uploads-a"}},
+            "statistics": {"videoCount": "2"},
+        }]},
+        {
+            "items": [
+                {"contentDetails": {"videoId": "video-1"}},
+                {"contentDetails": {"videoId": "video-2"}},
+            ],
+            "nextPageToken": "next-page",
+        },
+    ])
+    client = YouTubeAnalyticsClient(
+        {}, session=session,
+        token_provider=lambda _config, _account: {"access_token": "fake-access-token"},
+    )
+    account = {"account": "account-a"}
+
+    channel = client.fetch_owned_channel(account)
+    page = client.fetch_uploads_page(account, "uploads-a")
+
+    assert channel == {
+        "channel_id": "channel-a",
+        "channel_title": "Channel A",
+        "uploads_playlist_id": "uploads-a",
+        "public_video_count": 2,
+    }
+    assert page == {"video_ids": ["video-1", "video-2"], "next_page_token": "next-page"}
+    assert session.requests[0][1]["mine"] == "true"
+    assert session.requests[1][1]["maxResults"] == "50"
 
 
 def test_completion_uses_last_retention_bucket_and_preserves_over_one():
@@ -825,6 +1047,10 @@ def test_growth_analytics_http_apis_validate_and_return_data(tmp_path: Path):
 def test_retry_and_backfill_http_apis_always_require_dashboard_auth(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("JAGUARTV_DASHBOARD_TOKEN", "admin-secret")
     monkeypatch.setenv("JAGUARTV_DASHBOARD_PUBLIC", "1")
+    monkeypatch.setattr(
+        "jaguartv_factory.dashboard.channel_import_report",
+        lambda _config, **kwargs: {"dry_run": kwargs.get("dry_run", True), "account_count": 1},
+    )
     config = config_for(tmp_path)
     add_account(config, "account-a", "channel-a")
     add_publication(config, 1)
@@ -837,6 +1063,7 @@ def test_retry_and_backfill_http_apis_always_require_dashboard_auth(tmp_path: Pa
         for path, payload in (
             ("/api/youtube-analytics/publications/1/retry", {}),
             ("/api/youtube-analytics/backfill", {"dry_run": True}),
+            ("/api/youtube-analytics/channel-import", {"dry_run": True}),
         ):
             with pytest.raises(urllib.error.HTTPError) as error:
                 _dashboard_request(base, path, method="POST", payload=payload)
@@ -857,6 +1084,14 @@ def test_retry_and_backfill_http_apis_always_require_dashboard_auth(tmp_path: Pa
             token="admin-secret",
         )
         assert status == 200 and report["dry_run"] is True
+        status, import_report = _dashboard_request(
+            base,
+            "/api/youtube-analytics/channel-import",
+            method="POST",
+            payload={"dry_run": True, "account_id": "account-a", "max_pages": 10},
+            token="admin-secret",
+        )
+        assert status == 200 and import_report == {"dry_run": True, "account_count": 1}
     finally:
         app.shutdown()
         thread.join(timeout=5)
@@ -895,6 +1130,8 @@ def test_growth_analytics_frontend_contract_contains_complete_controls():
     assert "pt-BR" in javascript
     assert "授权刷新失败" in javascript
     assert "授权解密失败" in javascript
+    assert "频道导入" in javascript
+    assert "每60分钟自动导入并更新" in html
     assert "/api/youtube-analytics/summary" in javascript
     assert "/api/youtube-analytics/ranking" in javascript
     assert "youtube-growth-table" in styles

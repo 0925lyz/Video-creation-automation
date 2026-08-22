@@ -484,6 +484,35 @@ def connect_db(config: dict[str, Any]) -> sqlite3.Connection:
           started_at TEXT,
           completed_at TEXT
         );
+        CREATE TABLE IF NOT EXISTS youtube_channel_import_states (
+          account_id TEXT PRIMARY KEY,
+          channel_id TEXT NOT NULL DEFAULT '',
+          uploads_playlist_id TEXT NOT NULL DEFAULT '',
+          last_attempted_at TEXT,
+          last_successful_at TEXT,
+          next_scan_at TEXT,
+          retry_count INTEGER NOT NULL DEFAULT 0,
+          sync_status TEXT NOT NULL DEFAULT 'PENDING',
+          imported_count INTEGER NOT NULL DEFAULT 0,
+          public_video_count INTEGER NOT NULL DEFAULT 0,
+          skipped_nonpublic_count INTEGER NOT NULL DEFAULT 0,
+          pages_scanned INTEGER NOT NULL DEFAULT 0,
+          last_error_category TEXT NOT NULL DEFAULT '',
+          last_error_summary TEXT NOT NULL DEFAULT '',
+          lease_owner TEXT NOT NULL DEFAULT '',
+          lease_expires_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS youtube_channel_video_imports (
+          account_id TEXT NOT NULL,
+          video_id TEXT NOT NULL,
+          publication_id INTEGER NOT NULL,
+          first_imported_at TEXT NOT NULL,
+          last_seen_at TEXT NOT NULL,
+          PRIMARY KEY(account_id,video_id),
+          UNIQUE(publication_id)
+        );
         CREATE TABLE IF NOT EXISTS x_oauth_states (
           state TEXT PRIMARY KEY,
           account TEXT NOT NULL,
@@ -610,6 +639,7 @@ def connect_db(config: dict[str, Any]) -> sqlite3.Connection:
         "version_id": "ALTER TABLE publications ADD COLUMN version_id TEXT NOT NULL DEFAULT ''",
         "publish_task_id": "ALTER TABLE publications ADD COLUMN publish_task_id TEXT NOT NULL DEFAULT ''",
         "thumbnail_url": "ALTER TABLE publications ADD COLUMN thumbnail_url TEXT NOT NULL DEFAULT ''",
+        "publication_origin": "ALTER TABLE publications ADD COLUMN publication_origin TEXT NOT NULL DEFAULT 'SYSTEM_AUTO_PUBLISH'",
     }
     for column, statement in publication_column_sql.items():
         if column not in publication_columns:
@@ -752,6 +782,12 @@ def connect_db(config: dict[str, Any]) -> sqlite3.Connection:
     )
     connection.execute(
         "CREATE INDEX IF NOT EXISTS youtube_sync_backfill ON youtube_sync_states(backfill_run_id,sync_status,next_sync_at)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS youtube_channel_import_due ON youtube_channel_import_states(sync_status,next_scan_at,account_id)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS youtube_channel_import_publication ON youtube_channel_video_imports(publication_id)"
     )
     connection.execute(
         """

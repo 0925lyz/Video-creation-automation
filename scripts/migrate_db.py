@@ -48,6 +48,8 @@ def migrate(db_path: Path, *, backup_path: Path | None = None) -> dict:
         "youtube_metric_snapshots",
         "youtube_sync_states",
         "youtube_backfill_runs",
+        "youtube_channel_import_states",
+        "youtube_channel_video_imports",
     }
     missing = sorted(required - tables)
     connection.close()

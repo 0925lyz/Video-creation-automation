@@ -1234,7 +1234,7 @@ function renderYouTubeRanking(payload) {
       <td><strong>${escapeHtml(item.current_channel_title || "未知")}</strong><small>发布时：${escapeHtml(item.published_channel_title || "未知")}</small></td>
       <td>${escapeHtml(item.channel_id || "未知")}</td>
       <td>${saoPauloDateTime(item.published_local_at)}</td>
-      <td>${escapeHtml(item.source_platform || "未知")}</td>
+      <td>${item.publication_origin === "YOUTUBE_CHANNEL_IMPORT" ? "频道导入 · YouTube" : escapeHtml(item.source_platform || "未知")}</td>
       <td>${escapeHtml(!item.source_category || item.source_category === "unknown" ? "未知" : item.source_category)}</td>
       <td>${escapeHtml(!item.source_keyword || item.source_keyword === "unknown" ? "未知" : item.source_keyword)}</td>
       <td>${ptBRNumber(item.view_count)}</td>

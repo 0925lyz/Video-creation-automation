@@ -77,6 +77,8 @@ from .youtube_analytics import (
     analytics_ranking,
     analytics_summary,
     backfill_report,
+    channel_import_report,
+    channel_import_status,
     publication_latest,
     retry_publication_sync,
     set_backfill_status,
@@ -3521,6 +3523,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 ))
             if parsed.path == "/api/youtube-analytics/accounts":
                 return self.send_json(analytics_accounts(self.server.config))
+            if parsed.path == "/api/youtube-analytics/channel-import/status":
+                return self.send_json(channel_import_status(self.server.config))
             analytics_parts = parsed.path.strip("/").split("/")
             if len(analytics_parts) in {4, 5} and analytics_parts[:3] == ["api", "youtube-analytics", "publications"]:
                 publication_id = validated_positive_int(analytics_parts[3], "publication_id", 0)
@@ -3649,6 +3653,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         try:
             analytics_mutation = (
                 parsed.path == "/api/youtube-analytics/backfill"
+                or parsed.path == "/api/youtube-analytics/channel-import"
                 or parsed.path.startswith("/api/youtube-analytics/backfill/")
                 or (
                     parsed.path.startswith("/api/youtube-analytics/publications/")
@@ -3786,6 +3791,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     rate_limit_per_minute=validated_positive_int(
                         payload.get("rate_limit_per_minute"), "rate_limit_per_minute", 6
                     ),
+                ), HTTPStatus.OK if dry_run_value else HTTPStatus.ACCEPTED)
+            if parsed.path == "/api/youtube-analytics/channel-import":
+                dry_run_value = payload.get("dry_run", True)
+                if not isinstance(dry_run_value, bool):
+                    raise ValueError("dry_run must be a boolean")
+                max_pages_value = payload.get("max_pages")
+                max_pages = None if max_pages_value is None or max_pages_value == "" else validated_positive_int(
+                    max_pages_value, "max_pages", 0
+                )
+                return self.send_json(channel_import_report(
+                    self.server.config,
+                    account_id=str(payload.get("account_id") or ""),
+                    dry_run=dry_run_value,
+                    max_pages=max_pages,
                 ), HTTPStatus.OK if dry_run_value else HTTPStatus.ACCEPTED)
             if len(analytics_parts) == 5 and analytics_parts[:3] == ["api", "youtube-analytics", "backfill"] and analytics_parts[4] == "status":
                 return self.send_json(set_backfill_status(
