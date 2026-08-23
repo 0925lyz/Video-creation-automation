@@ -310,7 +310,7 @@ def test_channel_import_dry_run_filters_nonpublic_and_never_writes(tmp_path: Pat
     assert connection.execute("SELECT COUNT(*) FROM youtube_channel_import_states").fetchone()[0] == 0
 
 
-def test_channel_import_is_idempotent_auditable_and_schedules_after_24_hours(tmp_path: Path):
+def test_channel_import_is_idempotent_auditable_and_schedules_immediate_data_then_analytics_after_24h(tmp_path: Path):
     config = config_for(tmp_path)
     add_account(config, "account-a", "channel-a", title="Current A")
     client = FakeChannelImportClient(
@@ -341,12 +341,14 @@ def test_channel_import_is_idempotent_auditable_and_schedules_after_24_hours(tmp
     states = {row["youtube_video_id"]: connection.execute(
         "SELECT * FROM youtube_sync_states WHERE publication_id=?", (row["id"],)
     ).fetchone() for row in publications}
-    assert states["old-video"]["next_sync_at"] == "2026-07-02T10:00:00+00:00"
-    assert states["new-video"]["next_sync_at"] == "2026-07-06T06:00:00+00:00"
+    assert states["old-video"]["first_sync_due_at"] == "2026-07-02T10:00:00+00:00"
+    assert states["old-video"]["next_sync_at"] == "2026-07-01T10:00:00+00:00"
+    assert states["new-video"]["first_sync_due_at"] == "2026-07-06T06:00:00+00:00"
+    assert states["new-video"]["next_sync_at"] == "2026-07-05T06:00:00+00:00"
     assert connection.execute("SELECT COUNT(*) FROM youtube_channel_video_imports").fetchone()[0] == 2
     status = channel_import_status(config)
     assert status[0]["sync_status"] == "SUCCESS"
-    assert status[0]["next_scan_at"] == "2026-07-05T13:00:00+00:00"
+    assert status[0]["next_scan_at"] == "2026-07-05T12:05:00+00:00"
 
 
 def test_channel_import_reuses_system_publication_without_changing_origin(tmp_path: Path):
@@ -439,19 +441,20 @@ def test_migration_is_idempotent_and_rollback_keeps_snapshots(tmp_path: Path):
     assert snapshot == (321,)
 
 
-def test_publication_waits_24_hours_and_restart_recovers_task(tmp_path: Path):
+def test_publication_data_sync_is_due_immediately_and_restart_recovers_task(tmp_path: Path):
     config = config_for(tmp_path)
     add_account(config, "account-a", "channel-a")
     add_publication(config, 1, published_at="2026-07-01T12:00:00+00:00")
     schedule_first_sync(config, 1)
 
-    before = restore_sync_tasks(config, now=datetime(2026, 7, 2, 11, 59, tzinfo=timezone.utc))
-    due = restore_sync_tasks(config, now=datetime(2026, 7, 2, 12, 0, tzinfo=timezone.utc))
+    before_analytics_due = restore_sync_tasks(config, now=datetime(2026, 7, 2, 11, 59, tzinfo=timezone.utc))
+    after_publish = restore_sync_tasks(config, now=datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc))
 
-    assert before == []
-    assert [row["publication_id"] for row in due] == [1]
+    assert [row["publication_id"] for row in before_analytics_due] == [1]
+    assert [row["publication_id"] for row in after_publish] == [1]
     state = connect_db(config).execute("SELECT * FROM youtube_sync_states WHERE publication_id=1").fetchone()
     assert state["first_sync_due_at"] == "2026-07-02T12:00:00+00:00"
+    assert state["next_sync_at"] == "2026-07-01T12:00:00+00:00"
 
 
 def test_private_publication_never_creates_sync_task(tmp_path: Path):
@@ -658,6 +661,52 @@ class FakeClient:
             "completion_bucket_ratio": 0.99,
             "completion_calculation_version": COMPLETION_CALCULATION_VERSION,
         }
+
+
+def test_under_24h_video_syncs_data_api_without_analytics_calls(tmp_path: Path):
+    class CountingClient(FakeClient):
+        analytics_calls = 0
+        retention_calls = 0
+
+        def fetch_analytics(self, account: dict, video_id: str, start_date: str, end_date: str) -> dict:
+            self.analytics_calls += 1
+            return super().fetch_analytics(account, video_id, start_date, end_date)
+
+        def fetch_retention(self, account: dict, video_id: str, start_date: str, end_date: str) -> dict:
+            self.retention_calls += 1
+            return super().fetch_retention(account, video_id, start_date, end_date)
+
+    config = config_for(tmp_path)
+    add_account(config, "account-a", "channel-a")
+    add_publication(config, 1, published_at="2026-07-05T10:00:00+00:00")
+    state = schedule_first_sync(config, 1)
+
+    assert state["first_sync_due_at"] == "2026-07-06T10:00:00+00:00"
+    assert state["next_sync_at"] == "2026-07-05T10:00:00+00:00"
+
+    client = CountingClient()
+    result = sync_due_once(
+        config,
+        client=client,
+        now=datetime(2026, 7, 5, 12, tzinfo=timezone.utc),
+    )
+
+    connection = connect_db(config)
+    snapshot = connection.execute("SELECT * FROM youtube_metric_snapshots WHERE publication_id=1").fetchone()
+    state = connection.execute("SELECT * FROM youtube_sync_states WHERE publication_id=1").fetchone()
+    assert result["successful"] == 1
+    assert client.data_calls == [("account-a", ["video-1"])]
+    assert client.analytics_calls == 0
+    assert client.retention_calls == 0
+    assert snapshot["view_count"] == 100
+    assert snapshot["like_count"] == 10
+    assert snapshot["share_count"] is None
+    assert snapshot["average_view_duration"] is None
+    assert snapshot["completion_rate"] is None
+    assert snapshot["data_through_date"] is None
+    assert snapshot["api_response_status"] == "PARTIAL_ANALYTICS_PENDING_24H"
+    assert state["sync_status"] == "PARTIAL"
+    assert state["next_sync_at"] == "2026-07-05T13:00:00+00:00"
 
 
 def test_sync_batches_per_account_and_one_account_failure_does_not_block_another(tmp_path: Path):

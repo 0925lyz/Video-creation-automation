@@ -150,7 +150,8 @@ def schedule_first_sync(config: dict[str, Any], publication_id: int) -> dict[str
     account_id = str(row["authorized_account_id"] or row["account"] or "")
     if not account_id:
         raise ValueError("publication is missing authorized account id")
-    due = published.astimezone(timezone.utc) + timedelta(hours=24)
+    first_analytics_due = published.astimezone(timezone.utc) + timedelta(hours=24)
+    first_data_due = published.astimezone(timezone.utc)
     timestamp = now_iso()
     connection.execute(
         """
@@ -159,7 +160,10 @@ def schedule_first_sync(config: dict[str, Any], publication_id: int) -> dict[str
         ) VALUES(?,?,?,?,?,?,?)
         ON CONFLICT(publication_id) DO NOTHING
         """,
-        (int(publication_id), account_id, _iso(due), _iso(due), "PENDING", timestamp, timestamp),
+        (
+            int(publication_id), account_id, _iso(first_analytics_due),
+            _iso(first_data_due), "PENDING", timestamp, timestamp,
+        ),
     )
     _publication_local_time(connection, int(publication_id), str(row["published_at"]))
     connection.commit()
@@ -443,7 +447,7 @@ class YouTubeAnalyticsClient:
 
 def _channel_import_interval_minutes(config: dict[str, Any]) -> int:
     settings = config.get("youtube_analytics", {}) or {}
-    return max(15, int(settings.get("channel_import_interval_minutes") or settings.get("poll_interval_minutes") or 60))
+    return max(1, int(settings.get("channel_import_interval_minutes") or 5))
 
 
 def _channel_import_account(config: dict[str, Any], account_id: str) -> dict[str, Any]:
@@ -1073,8 +1077,13 @@ def sync_due_once(
             start_date = published.astimezone(SAO_PAULO).date().isoformat()
             end_day = max(current.astimezone(SAO_PAULO).date() - timedelta(days=1), date.fromisoformat(start_date))
             end_date = end_day.isoformat()
+            analytics_due = _parse_datetime(str(row.get("first_sync_due_at") or "")) or (published + timedelta(hours=24))
+            analytics_ready = current >= analytics_due.astimezone(timezone.utc)
             retention_error: YouTubeApiError | None = None
-            if api_status == "SUCCESS" and has_analytics_scope and analytics_api_enabled:
+            data_through_date: str | None = end_date if analytics_ready else None
+            if api_status == "SUCCESS" and not analytics_ready:
+                api_status = "PARTIAL_ANALYTICS_PENDING_24H"
+            elif api_status == "SUCCESS" and has_analytics_scope and analytics_api_enabled:
                 try:
                     analytics = api.fetch_analytics(account, video_id, start_date, end_date)
                     try:
@@ -1123,15 +1132,17 @@ def sync_due_once(
                 **completion,
                 "completion_weight_views": analytics.get("analytics_views") if completion.get("completion_rate") is not None else None,
                 "fetched_at": fetched_at,
-                "data_through_date": end_date,
+                "data_through_date": data_through_date,
                 "data_api_source": DATA_API_SOURCE,
-                "analytics_api_source": ANALYTICS_API_SOURCE if has_analytics_scope and analytics_api_enabled else None,
-                "retention_source": RETENTION_SOURCE if has_analytics_scope and analytics_api_enabled else None,
+                "analytics_api_source": ANALYTICS_API_SOURCE if analytics_ready and has_analytics_scope and analytics_api_enabled else None,
+                "retention_source": RETENTION_SOURCE if analytics_ready and has_analytics_scope and analytics_api_enabled else None,
                 "api_response_status": api_status,
                 "sync_window": sync_window,
                 "raw_status_json": {
                     "analytics_scope": has_analytics_scope,
                     "analytics_api_enabled": analytics_api_enabled,
+                    "analytics_ready": analytics_ready,
+                    "first_analytics_due_at": _iso(analytics_due),
                     "decreases": decreases,
                     "retention_error_category": retention_error.category if retention_error else None,
                 },
