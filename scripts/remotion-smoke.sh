@@ -6,6 +6,15 @@ RUNTIME="$ROOT/src/jaguartv_factory/remotion_template"
 OUT_DIR="$ROOT/workspace/remotion_smoke"
 PUBLIC_SMOKE="$RUNTIME/public/smoke"
 
+if [[ -n "${PYTHON:-}" ]]; then
+  PYTHON_BIN="$PYTHON"
+elif [[ -x "$ROOT/.venv/bin/python" ]]; then
+  PYTHON_BIN="$ROOT/.venv/bin/python"
+else
+  PYTHON_BIN="python3"
+fi
+"$PYTHON_BIN" -c "from PIL import Image"
+
 mkdir -p "$OUT_DIR" "$PUBLIC_SMOKE"
 if [[ -x "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" ]]; then
   export REMOTION_BROWSER_EXECUTABLE="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
@@ -75,7 +84,7 @@ ffmpeg -y -v error -ss 0.8 -i "$OUT_DIR/通用版.mp4" -frames:v 1 "$OUT_DIR/gen
 ffmpeg -y -v error -ss 1.3 -i "$OUT_DIR/通用版.mp4" -frames:v 1 "$OUT_DIR/generic-endcard.png"
 ffmpeg -y -v error -ss 0.5 -i "$OUT_DIR/FB版.mp4" -frames:v 1 "$OUT_DIR/fb-middle.png"
 
-"${PYTHON:-python3}" - "$OUT_DIR" <<'PY'
+"$PYTHON_BIN" - "$OUT_DIR" <<'PY'
 from pathlib import Path
 import sys
 from PIL import Image
