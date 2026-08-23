@@ -50,6 +50,12 @@ def migrate(db_path: Path, *, backup_path: Path | None = None) -> dict:
         "youtube_backfill_runs",
         "youtube_channel_import_states",
         "youtube_channel_video_imports",
+        "source_imports",
+        "source_import_events",
+        "production_runs",
+        "production_slices",
+        "production_outputs",
+        "repair_runs",
     }
     missing = sorted(required - tables)
     connection.close()
@@ -60,7 +66,10 @@ def migrate(db_path: Path, *, backup_path: Path | None = None) -> dict:
         "backup": str(backup_path.expanduser().resolve()) if backup_path else None,
         "integrity": integrity,
         "required_tables": sorted(required),
-        "rollback": "deploy the previous code; additive analytics data is retained",
+        "rollback": (
+            "restore the --backup SQLite snapshot for a full rollback, or deploy the previous "
+            "code while retaining the additive source import tables"
+        ),
     }
 
 

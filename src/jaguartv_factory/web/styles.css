@@ -100,6 +100,10 @@ tbody tr:hover { background: #fafcfb; }
 .content-meta { display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 10px; }
 
 .toolbar { margin-bottom: 14px; display: flex; align-items: center; justify-content: space-between; }
+.inventory-source-toolbar { margin: -4px 0 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.inventory-source-toolbar .segmented button span { margin-left: 5px; font-size: 10px; opacity: .75; }
+.compact-select { margin: 0; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; font-weight: 700; white-space: nowrap; }
+.compact-select select { width: 150px; min-height: 36px; }
 .batch-toolbar { min-height: 52px; margin-bottom: 10px; padding: 8px 10px; display: flex; align-items: center; gap: 16px; border: 1px solid var(--line); background: var(--paper); border-radius: var(--radius); }
 .selection-control { display: flex; align-items: center; gap: 7px; font-weight: 700; white-space: nowrap; }
 .selection-control input, .candidate-checkbox { width: 16px; height: 16px; accent-color: var(--green); }
@@ -119,6 +123,15 @@ tbody tr:hover { background: #fafcfb; }
 .category-filter-bar button.active { border-color: var(--green); background: var(--green-soft); color: var(--green); }
 .category-pill { display: inline-flex; margin-left: 8px; padding: 2px 7px; border-radius: 4px; background: var(--green-soft); color: var(--green); font-size: 10px; font-weight: 800; vertical-align: 1px; }
 .inventory-table td:nth-child(2) { min-width: 330px; white-space: normal; }
+.import-info-cell { min-width: 160px; white-space: normal; }
+.import-info-cell strong, .import-info-cell small { display: block; }
+.import-info-cell small { margin-top: 5px; color: var(--muted); font-size: 10px; line-height: 1.35; }
+.source-import-pill { display: inline-flex; padding: 3px 7px; border: 1px solid #75b89f; border-radius: 4px; background: #ecf8f3; color: #087b58; font-size: 10px; font-weight: 800; }
+.inventory-pagination { min-height: 52px; display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
+.inventory-pagination[hidden] { display: none; }
+.inventory-pagination button { min-width: 78px; }
+.inventory-error-state { gap: 10px; align-content: center; }
+.inventory-error-state span { color: #a13b21; }
 .content-cell { display: flex; gap: 12px; align-items: center; }
 .mini-cover { width: 68px; height: 44px; flex: 0 0 auto; object-fit: cover; background: #e5e9e7; border-radius: 3px; }
 .content-cell strong, .content-cell small { display: block; }
@@ -423,10 +436,22 @@ dialog { width: min(470px, calc(100vw - 32px)); padding: 0; border: 1px solid va
 .design-dialog-actions { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
 dialog::backdrop { background: rgba(19,25,23,.46); }
 dialog form { padding: 22px; }
+#discoverDialog { max-height: calc(100vh - 24px); }
+#discoverDialog form { max-height: calc(100vh - 26px); overflow-y: auto; }
 .dialog-heading { display: flex; align-items: start; justify-content: space-between; margin-bottom: 22px; }
 dialog label { display: grid; gap: 7px; margin-top: 14px; color: var(--muted); font-size: 11px; font-weight: 700; }
 .dialog-note { margin: 14px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .dialog-actions { margin-top: 24px; display: flex; justify-content: flex-end; gap: 8px; }
+.import-target-field { min-width: 0; margin: 18px 0 0; padding: 0; border: 0; }
+.import-target-field legend { margin-bottom: 8px; color: var(--muted); font-size: 11px; font-weight: 800; }
+.target-segmented { width: 100%; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); overflow: hidden; border: 1px solid var(--line); border-radius: 5px; }
+dialog .target-segmented label { min-width: 0; min-height: 42px; margin: 0; display: block; color: var(--ink); }
+.target-segmented input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.target-segmented span { width: 100%; min-height: 42px; padding: 0 12px; display: grid; place-items: center; background: var(--paper); font-size: 12px; font-weight: 800; cursor: pointer; }
+.target-segmented label + label span { border-left: 1px solid var(--line); }
+.target-segmented input:checked + span { background: var(--green); color: #fff; }
+.target-segmented label.disabled span { background: #f1f3f2; color: #9aa19e; cursor: not-allowed; }
+.warning-note { color: #8a4b00; }
 .toast { position: fixed; right: 24px; bottom: 24px; max-width: 390px; padding: 12px 16px; border-radius: var(--radius); background: var(--ink); color: #fff; opacity: 0; transform: translateY(10px); pointer-events: none; transition: .18s ease; z-index: 20; }
 .toast.show { opacity: 1; transform: translateY(0); }
 .toast.error { background: #a33b24; }
@@ -489,6 +514,11 @@ dialog label { display: grid; gap: 7px; margin-top: 14px; color: var(--muted); f
   .connector { transform: rotate(90deg); }
   .worker-grid { grid-template-columns: 1fr; }
   .inventory-table td:nth-child(2) { min-width: 270px; }
+  .inventory-source-toolbar { align-items: stretch; flex-direction: column; }
+  .inventory-source-toolbar .segmented { width: 100%; }
+  .compact-select { width: 100%; justify-content: space-between; }
+  .compact-select select { width: min(210px, 60vw); }
+  .inventory-pagination { justify-content: space-between; }
   .poster-toolbar { align-items: flex-start; flex-direction: column; }
   .poster-toolbar-actions { width: 100%; justify-content: space-between; }
   .poster-table-wrap { margin-inline: -2px; width: calc(100% + 4px); }
@@ -524,4 +554,8 @@ dialog label { display: grid; gap: 7px; margin-top: 14px; color: var(--muted); f
   .design-canvas-shell { height: min(55vh, 470px); }
   .design-controls { overflow: visible; }
   .design-control-grid { grid-template-columns: 1fr 1fr; }
+  #discoverDialog { width: calc(100vw - 10px); max-height: calc(100vh - 10px); }
+  #discoverDialog form { max-height: calc(100vh - 12px); padding: 14px; }
+  #discoverDialog .dialog-actions { position: sticky; bottom: -14px; padding: 12px 0 2px; background: var(--paper); }
+  #discoverDialog .dialog-actions button { min-width: 0; flex: 1 1 0; }
 }

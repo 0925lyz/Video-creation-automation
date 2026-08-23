@@ -20,9 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from jaguartv_factory.core import (
-    candidate_has_review_outputs,
     connect_db,
-    download_candidate,
     load_config,
     now_iso,
     produce_top,
@@ -44,10 +42,19 @@ VIDEO_SUFFIXES = {".mp4", ".mkv", ".webm", ".mov"}
 PRODUCE_OPTIONS = {
     "content_type": "auto",
     "segment_strategy": "auto",
-    "audio_policy": "source_plus_funk",
+    "audio_policy": "auto",
     "rights_status": "MANUAL_REVIEW",
     "batch_label": "",
+    "trigger_source": "scheduled_worker",
 }
+
+
+def standard_candidate_complete(config: dict[str, Any], candidate_id: str) -> bool:
+    row = connect_db(config).execute(
+        "SELECT 1 FROM production_runs WHERE candidate_id=? AND status='SUCCEEDED' LIMIT 1",
+        (candidate_id,),
+    ).fetchone()
+    return bool(row)
 
 
 def parse_args() -> argparse.Namespace:
@@ -125,7 +132,7 @@ def candidate_rows(
             continue
         if item.get("parent_id") and not include_child_rows:
             continue
-        if candidate_has_review_outputs(config, str(item["id"])):
+        if standard_candidate_complete(config, str(item["id"])):
             continue
         plan.append(item)
         if limit and len(plan) >= limit:
@@ -225,18 +232,8 @@ def run() -> int:
                 totals["skipped"] += 1
                 write_jsonl(log_path, {"event": "skip_child_row", "candidate_id": candidate_id, "parent_id": row.get("parent_id")})
                 continue
-            if candidate_has_review_outputs(config, candidate_id):
-                totals["skipped"] += 1
-                write_jsonl(log_path, {"event": "skip_has_outputs", "candidate_id": candidate_id})
-                continue
-
             write_jsonl(log_path, {"event": "candidate_start", "candidate_id": candidate_id, "position": index, "total": len(plan)})
             try:
-                if not source_media_exists(config, candidate_id):
-                    write_jsonl(log_path, {"event": "download_start", "candidate_id": candidate_id})
-                    download_candidate(config, row)
-                    write_jsonl(log_path, {"event": "download_done", "candidate_id": candidate_id})
-
                 def progress(percent: int, message: str) -> None:
                     write_status(
                         status_path,
@@ -254,7 +251,7 @@ def run() -> int:
                     )
 
                 result = produce_top(config, 1, candidate_id, progress_callback=progress, options=PRODUCE_OPTIONS)
-                if int(result.get("produced", 0)) > 0 or candidate_has_review_outputs(config, candidate_id):
+                if int(result.get("produced", 0)) > 0:
                     totals["produced"] += 1
                     write_jsonl(log_path, {"event": "candidate_done", "candidate_id": candidate_id, "result": result})
                 else:

@@ -18,24 +18,33 @@ selection:
   duplicate_threshold: 0.90
 
 edit:
-  render_engine: ffmpeg
-  output_duration_sec: [20, 60]
+  render_engine: remotion
+  output_duration_sec: [12, 60]
+  max_segments_per_source: 3
+  segment_overlap_sec: 3
+  layout_mode: original
   aspect_ratio: "9:16"
   resolution: [1080, 1920]
-  variants_per_source: 1
+  variants_per_source: 2
   original_subtitle_strategy: [inpaint, blur, preserve_and_flag]
   source_subtitle_cleanup: ocr_blur
   ocr_backend: auto
-  ocr_blur_sigma: 28
+  ocr_use_fallback_regions: false
+  ocr_auto_lower_third_fallback: false
+  ocr_blur_sigma: 52
 
 localization:
   target: pt-BR
-  asr_enabled: false
-  whisper_model: tiny
+  asr_enabled: true
+  chinese_audio_detection_enabled: true
+  chinese_audio_detection_model: tiny
+  chinese_audio_threshold: 3
+  whisper_model: small
   voice_enabled: true
   tts_provider: auto
   edge_tts_voice: pt-BR-AntonioNeural
-  preserve_backing_track: false
+  preserve_backing_track: true
+  require_backing_track: true
   tts_voice: energetic_male
   tts_rate: 1.05
   max_subtitle_chars_per_line: 36
@@ -64,9 +73,39 @@ brand:
   end_card: assets/brand/end-card.mp4
   default_cta: https://copa.jarg.top/
 
+publishing:
+  enabled: true
+  timezone: America/Sao_Paulo
+  youtube_category_accounts:
+    足球类: jaguartv_vivo
+  accounts:
+    jaguartv_vivo:
+      platform: youtube
+      label: jaguartv vivo
+      channel_id: UC8gCZXc5wbnjuZeco7qbKug
+      channel_key: 8gCZXc5wbnjuZeco7qbKug
+      authorized_email: miirandapache@gmail.com
+      daily_limit: 3
+      schedule_times:
+        - "11:00"
+        - "15:30"
+        - "19:00"
+      allowed_source_platforms:
+        - tiktok
+        - douyin
+        - facebook
+        - bilibili
+      blocked_source_platforms:
+        - youtube
+      content_tags:
+        - 足球类
+      default_privacy_status: public
+      enabled: true
+
 storage:
   provider: factory_server
   root: workspace/server_media
+  poster_subdir: posters            # relative to storage.root; absolute/traversal paths are rejected
   public_base_url: https://factory.jarg.top/media
   max_upload_bytes: 2147483648
   upload_chunk_bytes: 8388608
@@ -86,3 +125,9 @@ workers:
   download: 3
   analysis: 2
   render: 1
+
+youtube_analytics:
+  poll_interval_minutes: 60
+  channel_import_interval_minutes: 60
+  batch_size: 50
+  backfill_rate_limit_per_minute: 6

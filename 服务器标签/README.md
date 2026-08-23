@@ -1,6 +1,6 @@
 # 服务器标签功能包
 
-这个目录是 JaguarTV 服务器“标签分类 / 增长分析 / 当日分类关键词 / 内容库存分类筛选”的完整打包快照。
+这个目录是 JaguarTV 服务器“标签分类 / 增长分析 / 当日分类关键词 / 内容库存分类筛选”的完整打包快照。本次同步时间：2026-08-23。
 
 ## 包含内容
 
@@ -10,8 +10,11 @@
 - `scripts/carry_forward_tag_keywords.py`：周二到周日如果当天没有标签关键词，自动沿用最近一次标签关键词。
 - `server-snapshot-manifest.json`：本次包内文件清单、SHA256、排除项说明。
 - `server_snapshot/`：可迁移的服务器功能源码快照，包含后端、前端、脚本、测试、示例配置、品牌资产和项目本地 agent skill。
+- `server_snapshot/src/jaguartv_factory/source_imports.py`：本次新增的“导入视频”来源标签、目标区域、媒体校验和审计实现。
 
 已排除内容：`.env`、真实 token、私钥、`workspace/factory.db`、下载/制作出来的视频、平台会话 cookie、OAuth 刷新令牌、`.venv`、`node_modules`、缓存文件，以及本机真实 `config/pipeline.yaml`。
+
+本次同步后，“导入视频”是来源标签，不是审核状态；它可以和现有 18 类标签、“未分类”、平台筛选、状态筛选一起使用。
 
 ## 服务器部署
 

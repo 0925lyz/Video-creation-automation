@@ -57,7 +57,7 @@ def test_highlight_ranking_uses_audio_motion_scene_keyword_and_replay():
         assert overlap <= 7.5
 
 
-def test_long_video_analysis_uses_uniform_guard(monkeypatch, tmp_path: Path):
+def test_long_video_analysis_requires_manual_slice_instead_of_uniform_fallback(monkeypatch, tmp_path: Path):
     media = tmp_path / "long.mp4"
     media.write_bytes(b"placeholder")
 
@@ -74,9 +74,7 @@ def test_long_video_analysis_uses_uniform_guard(monkeypatch, tmp_path: Path):
         strategy="sports_highlight",
     )
 
-    assert len(segments) == 3
-    assert all(segment["fallback"] for segment in segments)
-    assert all(segment["strategy"] == "sports_highlight_long_source_guard" for segment in segments)
+    assert segments == []
 
 
 def test_parse_srt_accepts_youtube_vtt_timing_settings(tmp_path: Path):

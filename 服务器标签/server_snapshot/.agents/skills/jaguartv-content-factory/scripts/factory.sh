@@ -33,4 +33,13 @@ if [[ ! -x "$ROOT/.venv/bin/workbuddy" ]]; then
   fi
 fi
 
+if [[ "${1:-}" == "produce" ]]; then
+  for argument in "$@"; do
+    if [[ "$argument" == "--trigger-source" ]]; then
+      exec "$ROOT/.venv/bin/workbuddy" --config "$ROOT/config/pipeline.yaml" "$@"
+    fi
+  done
+  exec "$ROOT/.venv/bin/workbuddy" --config "$ROOT/config/pipeline.yaml" "$@" --trigger-source ai_agent
+fi
+
 exec "$ROOT/.venv/bin/workbuddy" --config "$ROOT/config/pipeline.yaml" "$@"

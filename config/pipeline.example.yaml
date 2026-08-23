@@ -18,11 +18,14 @@ selection:
   duplicate_threshold: 0.90
 
 edit:
-  render_engine: ffmpeg
-  output_duration_sec: [20, 60]
+  render_engine: remotion
+  output_duration_sec: [12, 60]
+  max_segments_per_source: 3
+  segment_overlap_sec: 3
+  layout_mode: original
   aspect_ratio: "9:16"
   resolution: [1080, 1920]
-  variants_per_source: 1
+  variants_per_source: 2
   original_subtitle_strategy: [inpaint, blur, preserve_and_flag]
   source_subtitle_cleanup: ocr_blur
   ocr_backend: auto

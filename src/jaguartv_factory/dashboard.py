@@ -46,6 +46,7 @@ from .core import (
     workspace_dir,
 )
 from .publisher import auto_enqueue_approved_publication, publication_state_for_candidates
+from .production import assert_candidate_ready_for_review
 from .posters import (
     PosterError,
     add_poster_attachment,
@@ -94,6 +95,20 @@ from .server_store import (
     storage_root,
 )
 from .source_outro import review_source_outro_summary
+from .source_imports import (
+    SOURCE_TYPE,
+    TARGET_APPROVED,
+    TARGET_LABELS,
+    attach_source_import_candidate,
+    complete_source_import,
+    create_source_import,
+    create_uploaded_source_import,
+    fail_source_import,
+    normalize_import_url,
+    normalize_target_area,
+    source_import_row,
+    sync_source_import_workflow_status,
+)
 from .trends import list_hot_keywords, run_trends_job, start_trends_scheduler, trends_today
 
 
@@ -680,8 +695,11 @@ def candidate_source_media(config: dict[str, Any], candidate_id: str) -> Path | 
 
 
 def production_recovery_status(config: dict[str, Any], candidate_id: str) -> str:
-    if candidate_has_review_outputs(config, candidate_id):
+    try:
+        assert_candidate_ready_for_review(config, candidate_id)
         return "READY_FOR_REVIEW"
+    except RuntimeError:
+        pass
     if candidate_source_media(config, candidate_id):
         return "DOWNLOADED"
     return "PRODUCTION_FAILED"
@@ -1216,7 +1234,14 @@ def review_output_index(config: dict[str, Any]) -> dict[str, list[dict[str, Any]
             server_url = str(server_files.get(video.name, {}).get("url") or "")
             if not server_url and server_video.is_file():
                 server_url = public_url(config, f"review/{package_id}/{video.name}")
-            variant = "通用版" if "通用版" in video.name or video.name == "video.mp4" else ("FB版" if "FB版" in video.name else "")
+            metadata_variant = str(review_metadata.get("variant") or "").strip()
+            variant = (
+                metadata_variant
+                if video.name == "video.mp4" and metadata_variant
+                else "通用版" if "通用版" in video.name or video.name == "video.mp4"
+                else "FB版" if "FB版" in video.name
+                else ""
+            )
             file_batch_label = batch_label or ("文案设计版" if "文案设计版" in video.name else "")
             is_batch_output = bool(file_batch_label) and (
                 file_batch_label in video.name or (video.name == "video.mp4" and content_type == "design_overlay")
@@ -2221,10 +2246,24 @@ def oauth_result_html(title: str, lines: list[str], *, ok: bool) -> str:
 </html>"""
 
 
-def candidate_rows(config: dict[str, Any], status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+def candidate_rows(
+    config: dict[str, Any], status: str | None = None, limit: int | None = 100
+) -> list[dict[str, Any]]:
     rows = list_candidates(config, status, limit)
     result = []
     connection = connect_db(config)
+    imports_by_candidate = {
+        str(row["candidate_id"]): dict(row)
+        for row in connection.execute(
+            "SELECT * FROM source_imports WHERE candidate_id != ''"
+        )
+    }
+    unattached_imports = [
+        dict(row)
+        for row in connection.execute(
+            "SELECT * FROM source_imports WHERE candidate_id = '' ORDER BY created_at DESC"
+        )
+    ]
     outputs_by_candidate = review_output_index(config)
     failures = {
         row["candidate_id"]: dict(row)
@@ -2264,6 +2303,19 @@ def candidate_rows(config: dict[str, Any], status: str | None = None, limit: int
         item.pop("metadata_json", None)
         item["published_flag"] = bool(item.get("published_flag"))
         item["source_candidate_id"] = str(item.get("id") or "")
+        source_import = imports_by_candidate.get(candidate_id) or {}
+        item["source_type"] = str(source_import.get("source_type") or "")
+        item["source_import_id"] = str(source_import.get("id") or "")
+        item["import_method"] = str(source_import.get("import_method") or "")
+        item["import_source"] = "导入视频" if source_import else ""
+        item["target_area"] = str(source_import.get("target_area") or "")
+        item["target_area_label"] = TARGET_LABELS.get(item["target_area"], "")
+        item["imported_at"] = str(source_import.get("created_at") or "")
+        item["download_status"] = str(source_import.get("download_status") or "")
+        item["import_operator"] = str(source_import.get("operator_id") or "")
+        item["review_source"] = str(source_import.get("review_source") or "")
+        item["import_error_category"] = str(source_import.get("error_category") or "")
+        item["import_error_summary"] = str(source_import.get("error_summary") or "")
         item["keyword"] = source_keyword
         item["initial_category"] = initial_category_for_text(
             source_keyword,
@@ -2328,13 +2380,66 @@ def candidate_rows(config: dict[str, Any], status: str | None = None, limit: int
             item["failure_detail"] = detail[-4000:]
             item["failure_at"] = failure["created_at"]
         result.append(item)
+    for source_import in unattached_imports:
+        actual_status = str(source_import.get("actual_workflow_status") or "IMPORT_PENDING")
+        if status and actual_status != status:
+            continue
+        normalized_url = str(source_import.get("normalized_url") or "")
+        title = str(source_import.get("original_title") or normalized_url or "导入视频")
+        result.append({
+            "id": f"source-import:{source_import['id']}",
+            "source_candidate_id": "",
+            "source_import_placeholder": True,
+            "platform": str(source_import.get("source_platform") or ""),
+            "url": normalized_url,
+            "title": title,
+            "display_title": title,
+            "description": "",
+            "duration": float(source_import.get("duration_sec") or 0),
+            "score": 0,
+            "status": actual_status,
+            "created_at": str(source_import.get("created_at") or ""),
+            "updated_at": str(source_import.get("updated_at") or ""),
+            "source_type": str(source_import.get("source_type") or SOURCE_TYPE),
+            "source_import_id": str(source_import.get("id") or ""),
+            "import_method": str(source_import.get("import_method") or ""),
+            "import_source": "导入视频",
+            "target_area": str(source_import.get("target_area") or ""),
+            "target_area_label": TARGET_LABELS.get(str(source_import.get("target_area") or ""), ""),
+            "imported_at": str(source_import.get("created_at") or ""),
+            "download_status": str(source_import.get("download_status") or ""),
+            "import_operator": str(source_import.get("operator_id") or ""),
+            "review_source": str(source_import.get("review_source") or ""),
+            "import_error_category": str(source_import.get("error_category") or ""),
+            "import_error_summary": str(source_import.get("error_summary") or ""),
+            "initial_category": "未分类",
+            "initial_keyword": "",
+            "keyword": "",
+            "content_type": "external_import",
+            "segment_strategy": "",
+            "audio_policy": "",
+            "highlight_score": 0,
+            "thumbnail_url": "",
+            "cover_url": "",
+            "video_url": "",
+            "download_url": "",
+            "server_url": "",
+            "output_assets": [],
+            "output_count": 0,
+            "published_flag": False,
+            "publication_state": {},
+            "score_breakdown": {},
+            "failure_event": "",
+            "failure_detail": str(source_import.get("error_summary") or ""),
+            "failure_at": str(source_import.get("updated_at") or ""),
+        })
     existing = {str(item.get("id") or "") for item in result} | collapsed_ids
     if status in {None, "", "READY_FOR_REVIEW", "APPROVED", "REVISION_REQUIRED"}:
         for item in server_review_rows(config, exclude=existing):
             if status and item["status"] != status:
                 continue
             result.append(item)
-            if len(result) >= limit:
+            if limit is not None and len(result) >= limit:
                 break
     publication_states = publication_state_for_candidates(
         config,
@@ -2343,6 +2448,71 @@ def candidate_rows(config: dict[str, Any], status: str | None = None, limit: int
     for item in result:
         item["publication_state"] = publication_states.get(str(item.get("id") or ""), {})
     return result
+
+
+def candidate_page(
+    config: dict[str, Any],
+    *,
+    status: str | None = None,
+    source_type: str = "",
+    platform: str = "",
+    category: str = "",
+    search: str = "",
+    page: int = 1,
+    page_size: int = 50,
+) -> dict[str, Any]:
+    page = max(1, int(page or 1))
+    page_size = max(1, min(int(page_size or 50), 100))
+    source_type = str(source_type or "").strip()
+    if source_type not in {"", SOURCE_TYPE}:
+        raise ValueError("unsupported source_type filter")
+    platform = str(platform or "").strip().lower()
+    category = str(category or "").strip()
+    query = str(search or "").strip().lower()
+    rows = candidate_rows(config, status, None)
+
+    def matches(item: dict[str, Any], *, include_source: bool = True) -> bool:
+        if include_source and source_type and str(item.get("source_type") or "") != source_type:
+            return False
+        if platform and str(item.get("platform") or "").lower() != platform:
+            return False
+        if category and str(item.get("initial_category") or "未分类") != category:
+            return False
+        if query:
+            values = (
+                item.get("display_title"), item.get("title"), item.get("id"),
+                item.get("initial_category"), item.get("initial_keyword"), item.get("keyword"),
+            )
+            if query not in " ".join(str(value or "").lower() for value in values):
+                return False
+        return True
+
+    base_rows = [item for item in rows if matches(item, include_source=False)]
+    filtered = [item for item in base_rows if matches(item)]
+    filtered.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    total = len(filtered)
+    pages = (total + page_size - 1) // page_size
+    if pages and page > pages:
+        page = pages
+    start = (page - 1) * page_size
+    source_import_count = sum(
+        1 for item in base_rows if str(item.get("source_type") or "") == SOURCE_TYPE
+    )
+    return {
+        "items": filtered[start:start + page_size],
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "pages": pages,
+        "source_counts": {"all": len(base_rows), SOURCE_TYPE: source_import_count},
+        "filters": {
+            "status": status or "",
+            "source_type": source_type,
+            "platform": platform,
+            "category": category,
+            "search": query,
+        },
+    }
 
 
 def server_review_rows(config: dict[str, Any], exclude: set[str] | None = None) -> list[dict[str, Any]]:
@@ -2655,41 +2825,14 @@ def move_candidate_to_review(config: dict[str, Any], candidate: str) -> dict[str
     candidate = candidate.strip()
     if not candidate:
         raise ValueError("candidate_id is required")
-    local_root = workspace_dir(config) / "ready_for_review"
-    server_root = storage_root(config) / "review"
-    packages = [
-        path
-        for root in (local_root, server_root)
-        if root.exists()
-        for path in [root / candidate, *sorted(root.glob(f"{candidate}_part*"))]
-        if path.is_dir()
-        and any(item.is_file() and item.stat().st_size > 0 for item in path.glob("*.mp4"))
-    ]
-    if not packages:
-        raise ValueError("candidate has no verified rendered output to move into review")
+    gate = assert_candidate_ready_for_review(config, candidate)
     connection = connect_db(config)
-    connection.execute("BEGIN IMMEDIATE")
-    try:
-        row = connection.execute("SELECT status FROM candidates WHERE id=?", (candidate,)).fetchone()
-        if not row:
-            raise ValueError("candidate does not exist")
-        allowed = {"DOWNLOADED", "APPROVED", "REVISION_REQUIRED", "READY_FOR_REVIEW"}
-        if row["status"] not in allowed:
-            raise ValueError(f"candidate status {row['status']} cannot move to review")
-        timestamp = now_iso()
-        connection.execute(
-            "UPDATE candidates SET status='READY_FOR_REVIEW',updated_at=? WHERE id=?",
-            (timestamp, candidate),
-        )
-        connection.execute(
-            "INSERT INTO events(candidate_id,event_type,payload_json,created_at) VALUES(?,?,?,?)",
-            (candidate, "READY_FOR_REVIEW", json.dumps({"packages": [p.name for p in packages]}), timestamp),
-        )
-        connection.commit()
-    except Exception:
-        connection.rollback()
-        raise
-    return {"candidate_id": candidate, "status": "READY_FOR_REVIEW", "packages": [p.name for p in packages]}
+    row = connection.execute("SELECT status FROM candidates WHERE id=?", (candidate,)).fetchone()
+    if not row:
+        raise ValueError("candidate does not exist")
+    if row["status"] != "READY_FOR_REVIEW":
+        raise ValueError("standard production gate passed but candidate is not finalized")
+    return {"candidate_id": candidate, "status": row["status"], "gate": gate}
 
 
 def save_metrics(config: dict[str, Any], payload: dict[str, Any]) -> int:
@@ -2926,6 +3069,14 @@ def save_review(config: dict[str, Any], payload: dict[str, Any]) -> dict[str, An
             "note": str(payload.get("note") or ""),
             "reviewer": str(payload.get("reviewer") or ""),
         }, ensure_ascii=False), timestamp),
+    )
+    sync_source_import_workflow_status(
+        connection,
+        candidate,
+        decision,
+        event_type=f"REVIEW_{decision}",
+        actor=str(payload.get("reviewer") or "dashboard"),
+        payload={"note": str(payload.get("note") or "")},
     )
     synced_children = sync_child_slice_review_status(
         connection,
@@ -3203,7 +3354,31 @@ class DashboardApplication(ThreadingHTTPServer):
         if recovered:
             print(f"dashboard recovered {recovered} interrupted production candidate(s)")
 
-    def start_action(self, payload: dict[str, Any]) -> str:
+    def start_action(
+        self,
+        payload: dict[str, Any],
+        *,
+        actor: str = "dashboard",
+        can_direct_approve: bool = False,
+    ) -> str:
+        action = str(payload.get("action") or "")
+        source_import: dict[str, Any] | None = None
+        if action == "ingest":
+            source_import = create_source_import(
+                self.config,
+                platform=str(payload.get("platform") or ""),
+                url=str(payload.get("url") or ""),
+                target_area=payload.get("target_area"),
+                operator_id=actor,
+                can_direct_approve=can_direct_approve,
+                idempotency_key=str(payload.get("idempotency_key") or ""),
+            )
+            payload = {
+                **payload,
+                "source_import_id": source_import["id"],
+                "target_area": source_import["target_area"],
+                "url": source_import["normalized_url"],
+            }
         candidate_ids = payload.get("candidate_ids") or []
         if not isinstance(candidate_ids, list):
             raise ValueError("candidate_ids must be a list")
@@ -3212,19 +3387,41 @@ class DashboardApplication(ThreadingHTTPServer):
         if single and single not in candidate_ids:
             candidate_ids.append(single)
         candidate_ids = list(dict.fromkeys(candidate_ids))
-        task_id = uuid.uuid4().hex[:12]
+        task_id = str(source_import["download_task_id"]) if source_import else uuid.uuid4().hex[:12]
         task = {
-            "id": task_id, "action": payload.get("action"), "status": "RUNNING",
+            "id": task_id, "action": action, "status": "RUNNING",
             "started_at": now_iso(), "result": None, "error": "", "progress": 0,
             "completed": 0, "total": len(candidate_ids) or 1, "current_candidate": "",
             "message": "任务已进入队列", "candidate_ids": candidate_ids,
+            "source_import_id": str((source_import or {}).get("id") or ""),
+            "target_area": str((source_import or {}).get("target_area") or ""),
+            "target_area_label": str((source_import or {}).get("target_label") or ""),
         }
         with self.tasks_lock:
+            if task_id in self.tasks and self.tasks[task_id].get("status") == "RUNNING":
+                return task_id
             requested = set(candidate_ids)
             for active in self.tasks.values():
                 if active.get("status") == "RUNNING" and requested.intersection(active.get("candidate_ids") or []):
                     raise ValueError("selected candidate is already running in another task")
             self.tasks[task_id] = task
+        if source_import and source_import.get("actual_workflow_status") in {"DOWNLOADED", "APPROVED"}:
+            self.update_task(
+                task_id,
+                status="COMPLETED",
+                progress=100,
+                completed=1,
+                result={
+                    "candidate_id": source_import.get("candidate_id"),
+                    "source_import_id": source_import["id"],
+                    "status": source_import["actual_workflow_status"],
+                    "target_area": source_import["target_area"],
+                    "reused": True,
+                },
+                message="已有相同导入记录",
+                finished_at=now_iso(),
+            )
+            return task_id
         enriched = {**payload, "candidate_ids": candidate_ids}
         threading.Thread(target=self._run_action, args=(task_id, enriched), daemon=True).start()
         return task_id
@@ -3273,20 +3470,6 @@ class DashboardApplication(ThreadingHTTPServer):
                     items.append({"candidate_id": requested_candidate, "result": result, "failed": True})
                     self.update_task(task_id, completed=index + 1, progress=int((index + 1) / total * 95))
                     continue
-                work = workspace_dir(self.config) / "jobs" / candidate
-                source_missing = not any(
-                    path.suffix.lower() in SOURCE_MEDIA_SUFFIXES
-                    for path in work.glob("source.*")
-                )
-                if row and (row["status"] in {"DISCOVERED", "DOWNLOAD_FAILED"} or (row["status"] == "PRODUCTION_FAILED" and source_missing)):
-                    self.update_task(task_id, message=f"先下载素材 · {index + 1}/{total}")
-                    download_result = download_top(self.config, 1, candidate)
-                    if int(download_result.get("failed", 0)) or int(download_result.get("downloaded", 0) == 0):
-                        result = {"download": download_result, "produce": {"selected": 0, "produced": 0, "failed": 1}}
-                        failed += 1
-                        items.append({"candidate_id": candidate, "result": result, "failed": True})
-                        self.update_task(task_id, completed=index + 1, progress=int((index + 1) / total * 95))
-                        continue
 
                 def production_progress(percent: int, message: str) -> None:
                     base = index / total * 95
@@ -3296,19 +3479,14 @@ class DashboardApplication(ThreadingHTTPServer):
                         message=f"{message} · {index + 1}/{total}",
                     )
 
-                self.update_task(task_id, message=f"等待制作资源 · {index + 1}/{total}")
-                with self.production_lock:
-                    started = now_iso()
-                    connection = connect_db(self.config)
-                    connection.execute(
-                        "UPDATE candidates SET status=?,updated_at=? WHERE id=?",
-                        (PRODUCTION_RUNNING_STATUS, started, candidate),
-                    )
-                    append_event(connection, candidate, "PRODUCTION_STARTED", {"task_id": task_id})
-                    connection.commit()
-                    result = produce_top(
-                        self.config, 1, candidate, progress_callback=production_progress, options=item_options
-                    )
+                self.update_task(task_id, message=f"统一下载与制作 · {index + 1}/{total}")
+                result = produce_top(
+                    self.config,
+                    1,
+                    candidate,
+                    progress_callback=production_progress,
+                    options={**item_options, "trigger_source": "dashboard"},
+                )
                 item_failed = int(result.get("failed", 0)) or int(result.get("selected", 0) == 0)
             else:
                 try:
@@ -3335,15 +3513,38 @@ class DashboardApplication(ThreadingHTTPServer):
                     keyword_overrides=keywords if isinstance(keywords, list) else [],
                 )
             elif action == "ingest":
-                url = str(payload.get("url") or "").strip()
-                if not url:
-                    raise ValueError("url is required")
+                import_id = str(payload.get("source_import_id") or "").strip()
+                if not import_id:
+                    created_import = create_source_import(
+                        self.config,
+                        platform=str(payload.get("platform") or ""),
+                        url=str(payload.get("url") or ""),
+                        target_area=payload.get("target_area"),
+                        operator_id="dashboard",
+                        can_direct_approve=False,
+                    )
+                    import_id = str(created_import["id"])
+                import_record = source_import_row(self.config, import_id)
+                url = str(import_record.get("normalized_url") or "").strip()
+                url = normalize_import_url(
+                    url,
+                    str(import_record.get("source_platform") or payload.get("platform") or ""),
+                )
                 self.update_task(task_id, progress=15, message="正在读取视频信息")
                 candidate_id = inspect_url(
                     self.config,
                     url,
                     requested_platform=str(payload.get("platform") or ""),
                     allow_stub=True,
+                )
+                candidate = connect_db(self.config).execute(
+                    "SELECT title,status FROM candidates WHERE id=?", (candidate_id,)
+                ).fetchone()
+                attach_source_import_candidate(
+                    self.config,
+                    import_id,
+                    candidate_id,
+                    original_title=str(candidate["title"] or "") if candidate else "",
                 )
                 self.update_task(
                     task_id,
@@ -3353,13 +3554,21 @@ class DashboardApplication(ThreadingHTTPServer):
                     message="正在下载到服务器",
                 )
                 row = connect_db(self.config).execute(
-                    "SELECT status FROM candidates WHERE id=?", (candidate_id,)
+                    "SELECT status,title FROM candidates WHERE id=?", (candidate_id,)
                 ).fetchone()
-                if row and row["status"] == "DOWNLOADED":
+                media = candidate_source_media(self.config, candidate_id)
+                if media is not None:
                     download_result = {"selected": 1, "downloaded": 1, "failed": 0, "already_downloaded": True}
                 elif row and row["status"] == "TOO_LONG":
                     raise RuntimeError("URL 已导入，但视频超过 30 分钟，只能删除，不能进入待制作")
                 else:
+                    if row and row["status"] == "IMPORT_FAILED":
+                        connection = connect_db(self.config)
+                        connection.execute(
+                            "UPDATE candidates SET status='DOWNLOAD_FAILED',updated_at=? WHERE id=?",
+                            (now_iso(), candidate_id),
+                        )
+                        connection.commit()
                     download_result = download_top(self.config, 1, candidate_id)
                 if int(download_result.get("failed", 0)) or int(download_result.get("downloaded", 0) == 0):
                     failure = connect_db(self.config).execute(
@@ -3379,10 +3588,23 @@ class DashboardApplication(ThreadingHTTPServer):
                             detail = str(failure["payload_json"] or "").strip()
                     suffix = f"：{detail[-500:]}" if detail else ""
                     raise RuntimeError(f"URL 已导入，但服务器下载失败，请在下载失败列表重试或检查登录态{suffix}")
+                media = candidate_source_media(self.config, candidate_id)
+                if media is None:
+                    raise RuntimeError("URL 已下载，但服务器没有找到受管理的源视频文件")
+                completed_import = complete_source_import(
+                    self.config,
+                    import_id,
+                    candidate_id=candidate_id,
+                    media_path=media,
+                    original_title=str(row["title"] or "") if row else "",
+                )
                 result = {
                     "candidate_id": candidate_id,
+                    "source_import_id": import_id,
                     "download": download_result,
-                    "status": "DOWNLOADED",
+                    "status": completed_import["actual_workflow_status"],
+                    "target_area": completed_import["target_area"],
+                    "target_area_label": completed_import["target_label"],
                 }
             elif action in {"download", "produce", "skip"}:
                 result = self.run_candidate_batch(
@@ -3398,6 +3620,20 @@ class DashboardApplication(ThreadingHTTPServer):
                      "completed": self.tasks[task_id].get("total", 1), "current_candidate": "",
                      "message": message, "finished_at": now_iso()}
         except Exception as error:
+            import_id = str(payload.get("source_import_id") or "").strip()
+            if action == "ingest" and import_id:
+                try:
+                    current = source_import_row(self.config, import_id)
+                    if current["actual_workflow_status"] != "IMPORT_FAILED":
+                        fail_source_import(
+                            self.config,
+                            import_id,
+                            category="DOWNLOAD_FAILED",
+                            summary=str(error),
+                            candidate_id=str(current.get("candidate_id") or ""),
+                        )
+                except Exception:
+                    pass
             state = {"status": "FAILED", "result": None, "error": str(error), "message": str(error),
                      "progress": 100, "current_candidate": "", "finished_at": now_iso()}
         with self.tasks_lock:
@@ -3461,7 +3697,26 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/candidates":
                 status = query.get("status", [None])[0]
                 limit = int_value(query.get("limit", [100])[0], 100)
+                if str((query.get("paginated") or [""])[0]).lower() in {"1", "true", "yes"}:
+                    return self.send_json(candidate_page(
+                        self.server.config,
+                        status=status,
+                        source_type=str((query.get("source_type") or [""])[0]),
+                        platform=str((query.get("platform") or [""])[0]),
+                        category=str((query.get("category") or [""])[0]),
+                        search=str((query.get("search") or [""])[0]),
+                        page=validated_positive_int((query.get("page") or [1])[0], "page", 1),
+                        page_size=validated_positive_int(
+                            (query.get("page_size") or [50])[0], "page_size", 50
+                        ),
+                    ))
                 return self.send_json(candidate_rows(self.server.config, status, limit))
+            if parsed.path == "/api/import-capabilities":
+                return self.send_json({
+                    "default_target_area": "pending_production",
+                    "allowed_target_areas": ["pending_production", "approved"],
+                    "can_direct_approve": self.authorized_for_admin(parsed),
+                })
             if parsed.path == "/api/posters":
                 return self.send_json(list_posters(
                     self.server.config,
@@ -3614,6 +3869,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return self.send_static(parsed.path)
         except PosterError as error:
             self.send_json({"error": str(error)}, HTTPStatus(error.status))
+        except PermissionError as error:
+            self.send_json({"error": str(error)}, HTTPStatus.FORBIDDEN)
         except ValueError as error:
             self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
         except Exception as error:
@@ -3748,7 +4005,57 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     )
                 result = complete_chunked_upload(self.server.config, upload_id)
                 if result["kind"] == "source":
-                    result["candidate_id"] = ingest_uploaded_media(self.server.config, result)
+                    if bool(payload.get("source_import")):
+                        target_area = normalize_target_area(payload.get("target_area"))
+                        can_direct_approve = self.authorized_for_admin(parsed)
+                        source_import = create_uploaded_source_import(
+                            self.server.config,
+                            upload_id=upload_id,
+                            target_area=target_area,
+                            operator_id=str(
+                                "dashboard_admin"
+                                if target_area == TARGET_APPROVED and can_direct_approve
+                                else payload.get("operator_id")
+                                or self.headers.get("X-Operator", "")
+                                or "dashboard"
+                            ),
+                            can_direct_approve=can_direct_approve,
+                            idempotency_key=str(payload.get("idempotency_key") or ""),
+                        )
+                        candidate_id = ingest_uploaded_media(self.server.config, result)
+                        attach_source_import_candidate(
+                            self.server.config,
+                            source_import["id"],
+                            candidate_id,
+                            original_title=str(result.get("original_filename") or ""),
+                        )
+                        media = candidate_source_media(self.server.config, candidate_id)
+                        if media is None:
+                            fail_source_import(
+                                self.server.config,
+                                source_import["id"],
+                                category="UPLOAD_INCOMPLETE",
+                                summary="uploaded source candidate has no managed media file",
+                                candidate_id=candidate_id,
+                            )
+                            raise ValueError("uploaded source candidate has no managed media file")
+                        completed_import = complete_source_import(
+                            self.server.config,
+                            source_import["id"],
+                            candidate_id=candidate_id,
+                            media_path=media,
+                            original_title=str(result.get("original_filename") or ""),
+                        )
+                        result.update({
+                            "candidate_id": candidate_id,
+                            "source_import_id": source_import["id"],
+                            "target_area": completed_import["target_area"],
+                            "target_area_label": completed_import["target_label"],
+                            "actual_workflow_status": completed_import["actual_workflow_status"],
+                        })
+                        result.pop("path", None)
+                    else:
+                        result["candidate_id"] = ingest_uploaded_media(self.server.config, result)
                 result["download_url"] = signed_upload_url(result["id"])
                 return self.send_json(result, HTTPStatus.CREATED)
             if parsed.path == "/api/uploads":
@@ -3813,8 +4120,33 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     str(payload.get("action") or ""),
                 ), HTTPStatus.OK)
             if parsed.path == "/api/actions":
-                task_id = self.server.start_action(payload)
-                return self.send_json({"task_id": task_id, "status": "RUNNING"}, HTTPStatus.ACCEPTED)
+                payload["idempotency_key"] = str(
+                    payload.get("idempotency_key")
+                    or self.headers.get("X-Idempotency-Key", "")
+                )
+                can_direct_approve = self.authorized_for_admin(parsed)
+                requested_target = (
+                    normalize_target_area(payload.get("target_area"))
+                    if str(payload.get("action") or "") == "ingest"
+                    else ""
+                )
+                task_id = self.server.start_action(
+                    payload,
+                    actor=str(
+                        "dashboard_admin"
+                        if requested_target == TARGET_APPROVED and can_direct_approve
+                        else payload.get("operator_id")
+                        or self.headers.get("X-Operator", "")
+                        or "dashboard"
+                    ),
+                    can_direct_approve=can_direct_approve,
+                )
+                with self.server.tasks_lock:
+                    task_status = str(self.server.tasks.get(task_id, {}).get("status") or "RUNNING")
+                return self.send_json(
+                    {"task_id": task_id, "status": task_status},
+                    HTTPStatus.OK if task_status == "COMPLETED" else HTTPStatus.ACCEPTED,
+                )
             if parsed.path == "/api/copywriter/generate":
                 try:
                     return self.send_json(
@@ -3959,6 +4291,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
         except PosterError as error:
             self.send_json({"error": str(error)}, HTTPStatus(error.status))
+        except PermissionError as error:
+            self.send_json({"error": str(error)}, HTTPStatus.FORBIDDEN)
         except ValueError as error:
             self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
         except Exception as error:

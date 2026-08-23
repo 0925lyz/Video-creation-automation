@@ -43,6 +43,7 @@ from jaguartv_factory.server_store import (
     list_uploads,
     save_upload_chunk,
 )
+from jaguartv_factory.source_imports import create_source_import
 from jaguartv_factory.sources import SourceError, XhsApiAdapter, YtDlpAdapter, get_adapter, yt_dlp_binary
 
 
@@ -61,6 +62,34 @@ def insert_candidate(config: dict, candidate_id: str = "c1", status: str = "DISC
                              "score_breakdown": {"velocity": 0.5, "total": 70}}), timestamp, timestamp),
     )
     connection.commit()
+
+
+def create_test_source_import(config: dict, url: str = "https://youtu.be/demo") -> dict:
+    return create_source_import(
+        config,
+        platform="youtube",
+        url=url,
+        operator_id="test-operator",
+        resolver=lambda host, port, *args: [(2, 1, 6, "", ("142.250.72.206", port))],
+    )
+
+
+def validated_test_media(path: Path) -> dict:
+    return {
+        "path": str(path.resolve()),
+        "relative_path": f"jobs/{path.parent.name}/{path.name}",
+        "sha256": "d" * 64,
+        "mime_type": "video/mp4",
+        "format_name": "mp4",
+        "size_bytes": path.stat().st_size,
+        "duration_sec": 30.0,
+        "width": 1080,
+        "height": 1920,
+        "fps": 30.0,
+        "has_video": True,
+        "has_audio": True,
+        "decode_valid": True,
+    }
 
 
 def test_scoring_v2_prefers_fresh_engaging_content():
@@ -575,17 +604,20 @@ def test_review_output_label_prefers_design_batch_name_for_part_assets(tmp_path:
     assert design_asset["batch_label"] == "文案设计版"
 
 
-def test_produce_keeps_ready_status_when_partial_outputs_exist(tmp_path: Path, monkeypatch):
+def test_produce_never_keeps_ready_status_when_partial_outputs_exist(tmp_path: Path, monkeypatch):
     config = make_config(tmp_path)
     insert_candidate(config, "partial-candidate", "DOWNLOADED")
     review = tmp_path / "workspace" / "ready_for_review" / "partial-candidate_part01"
     review.mkdir(parents=True)
     (review / "video.mp4").write_bytes(b"already-rendered")
+    work = tmp_path / "workspace" / "jobs" / "partial-candidate"
+    work.mkdir(parents=True)
+    (work / "source.mp4").write_bytes(b"source")
 
     def fail_after_partial(*_args, **_kwargs):
         raise RuntimeError("later segment failed")
 
-    monkeypatch.setattr("jaguartv_factory.core.produce_candidate", fail_after_partial)
+    monkeypatch.setattr("jaguartv_factory.production.produce_candidate", fail_after_partial)
     result = produce_top(config, 1, "partial-candidate")
 
     assert result == {"selected": 1, "produced": 0, "failed": 1}
@@ -594,8 +626,8 @@ def test_produce_keeps_ready_status_when_partial_outputs_exist(tmp_path: Path, m
     event = connection.execute(
         "SELECT event_type,payload_json FROM events WHERE candidate_id='partial-candidate' ORDER BY id DESC LIMIT 1"
     ).fetchone()
-    assert row["status"] == "READY_FOR_REVIEW"
-    assert event["event_type"] == "PRODUCTION_PARTIAL_FAILED"
+    assert row["status"] == "PRODUCTION_FAILED"
+    assert event["event_type"] == "PRODUCTION_FAILED"
     assert "later segment failed" in event["payload_json"]
 
 
@@ -943,7 +975,7 @@ def test_retry_production_redownloads_when_failed_source_is_missing(tmp_path: Pa
         app.server_close()
 
     assert result["failed"] == 0
-    assert calls == [("download", "c1"), ("produce", "c1")]
+    assert calls == [("produce", "c1")]
 
 
 def test_interrupted_production_recovers_to_downloaded_when_source_exists(tmp_path: Path):
@@ -960,7 +992,7 @@ def test_interrupted_production_recovers_to_downloaded_when_source_exists(tmp_pa
     assert row["status"] == "DOWNLOADED"
 
 
-def test_produce_marks_candidate_running_before_render(tmp_path: Path, monkeypatch):
+def test_dashboard_delegates_status_transition_to_production_service(tmp_path: Path, monkeypatch):
     config = make_config(tmp_path)
     insert_candidate(config, "to-produce", "DOWNLOADED")
     work = tmp_path / "workspace" / "jobs" / "to-produce"
@@ -970,7 +1002,7 @@ def test_produce_marks_candidate_running_before_render(tmp_path: Path, monkeypat
 
     def fake_produce(config_arg, limit, candidate, progress_callback=None, options=None):
         row = connect_db(config).execute("SELECT status FROM candidates WHERE id=?", ("to-produce",)).fetchone()
-        observed.append(row["status"])
+        observed.append((row["status"], options.get("trigger_source")))
         connection = connect_db(config)
         connection.execute(
             "UPDATE candidates SET status='READY_FOR_REVIEW',updated_at=? WHERE id=?",
@@ -988,7 +1020,7 @@ def test_produce_marks_candidate_running_before_render(tmp_path: Path, monkeypat
         app.server_close()
 
     assert result["failed"] == 0
-    assert observed == ["PRODUCTION_RUNNING"]
+    assert observed == [("DOWNLOADED", "dashboard")]
 
 
 def test_source_outro_trim_is_upstream_of_analysis_and_review_metadata(tmp_path: Path, monkeypatch):
@@ -1053,7 +1085,26 @@ def test_source_outro_trim_is_upstream_of_analysis_and_review_metadata(tmp_path:
     def fake_variant(config_arg, clean_media, output, *, variant, subtitles=None, job_id=None, candidate_id=None, **kwargs):
         variant_inputs.append((variant, Path(clean_media).name))
         output.write_bytes(f"{variant}-render".encode())
-        return {"variant": variant, "path": str(output), "filename": output.name, "duration": 13.5 if variant == "通用版" else 12.0, "size": output.stat().st_size, "mobile_format": {"applied": False}, "endcard_class": "9:16" if variant == "通用版" else ""}
+        render_job_id = f"{job_id}:{variant}"
+        timestamp = now_iso()
+        render_connection = connect_db(config_arg)
+        render_connection.execute(
+            "INSERT INTO render_jobs(id,candidate_id,variant,engine,status,output_path,metadata_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            (render_job_id, candidate_id, variant, "remotion", "COMPLETED", str(output), "{}", timestamp, timestamp),
+        )
+        render_connection.commit()
+        return {
+            "variant": variant,
+            "path": str(output),
+            "filename": output.name,
+            "duration": 13.5 if variant == "通用版" else 12.0,
+            "size": output.stat().st_size,
+            "mobile_format": {"applied": False},
+            "endcard_class": "9:16" if variant == "通用版" else "",
+            "endcard_count": 1 if variant == "通用版" else 0,
+            "layout": {"mode": "external_bottom_banner" if variant == "通用版" else "existing_fb_layout"},
+            "render_job_id": render_job_id,
+        }
 
     monkeypatch.setattr("jaguartv_factory.core.detect_source_outro", fake_detect)
     monkeypatch.setattr("jaguartv_factory.core.media_duration", lambda path: 36.0 if Path(path).name == "source.mp4" else 32.0 if Path(path).name == "source_outro_trimmed.mp4" else 12.0)
@@ -1062,13 +1113,12 @@ def test_source_outro_trim_is_upstream_of_analysis_and_review_metadata(tmp_path:
     monkeypatch.setattr("jaguartv_factory.core.media_has_audio", lambda path: True)
     monkeypatch.setattr("jaguartv_factory.core.require_binary", lambda name: name)
     monkeypatch.setattr("jaguartv_factory.core.enforce_dual_variant_remotion", lambda config_arg: None)
-    monkeypatch.setattr("jaguartv_factory.core.short_video_threshold", lambda config_arg: 10.0)
     monkeypatch.setattr("jaguartv_factory.core.analyze_video", fake_analyze)
     monkeypatch.setattr("jaguartv_factory.core.render_clean_segment", fake_clean)
     monkeypatch.setattr("jaguartv_factory.core.remotion_output_variants", lambda config_arg: ["通用版", "FB版"])
     monkeypatch.setattr("jaguartv_factory.core.render_video_remotion_variant", fake_variant)
     monkeypatch.setattr("jaguartv_factory.core.normalize_mobile_review_video", lambda path, config_arg: {"applied": False})
-    monkeypatch.setattr("jaguartv_factory.core.qa_video", lambda path, config_arg=None: {"passed": True, "duration": 12.0, "width": 1080, "height": 1920, "codec": "h264", "playable": True})
+    monkeypatch.setattr("jaguartv_factory.core.qa_video", lambda path, config_arg=None: {"passed": True, "duration": 12.0, "width": 1080, "height": 1920, "codec": "h264", "fps": 30.0, "playable": True, "has_video": True, "has_audio": True})
     monkeypatch.setattr("jaguartv_factory.core.render_cover_image", lambda config_arg, kit, source_video, destination: destination.write_bytes(b"cover") or "fake_cover")
     monkeypatch.setattr("jaguartv_factory.core.archive_review_package", lambda config_arg, package_id, review=None: {"archived": False})
 
@@ -1099,24 +1149,37 @@ def test_source_outro_trim_is_upstream_of_analysis_and_review_metadata(tmp_path:
 def test_url_ingest_downloads_to_waiting_for_production(tmp_path: Path, monkeypatch):
     config = make_config(tmp_path)
     calls = []
+    source_import = create_test_source_import(config)
+    monkeypatch.setattr(
+        "jaguartv_factory.dashboard.normalize_import_url",
+        lambda url, platform: url,
+    )
 
     def fake_inspect(config_arg, url, requested_platform="", allow_stub=False):
         calls.append(("inspect", url, requested_platform, allow_stub))
+        insert_candidate(config_arg, "url-candidate", "DISCOVERED")
         return "url-candidate"
 
     def fake_download(config_arg, limit, candidate):
         calls.append(("download", candidate))
+        media = tmp_path / "workspace" / "jobs" / candidate / "source.mp4"
+        media.parent.mkdir(parents=True, exist_ok=True)
+        media.write_bytes(b"source")
         return {"selected": 1, "downloaded": 1, "failed": 0}
 
     monkeypatch.setattr("jaguartv_factory.dashboard.inspect_url", fake_inspect)
     monkeypatch.setattr("jaguartv_factory.dashboard.download_top", fake_download)
+    monkeypatch.setattr(
+        "jaguartv_factory.source_imports.validate_imported_media",
+        lambda config_arg, candidate_id, path: validated_test_media(path),
+    )
     app = DashboardApplication(("127.0.0.1", 0), config)
     try:
         app.tasks["ingest-task"] = {"status": "RUNNING", "total": 1}
         app._run_action("ingest-task", {
             "action": "ingest",
             "platform": "youtube",
-            "url": "https://youtu.be/demo",
+            "source_import_id": source_import["id"],
         })
         task = app.tasks["ingest-task"]
     finally:
@@ -1135,6 +1198,14 @@ def test_url_ingest_downloads_to_waiting_for_production(tmp_path: Path, monkeypa
 def test_url_ingest_is_successful_when_candidate_is_already_downloaded(tmp_path: Path, monkeypatch):
     config = make_config(tmp_path)
     insert_candidate(config, "already-downloaded", "DOWNLOADED")
+    source_import = create_test_source_import(config)
+    monkeypatch.setattr(
+        "jaguartv_factory.dashboard.normalize_import_url",
+        lambda url, platform: url,
+    )
+    media = tmp_path / "workspace" / "jobs" / "already-downloaded" / "source.mp4"
+    media.parent.mkdir(parents=True, exist_ok=True)
+    media.write_bytes(b"source")
     monkeypatch.setattr(
         "jaguartv_factory.dashboard.inspect_url",
         lambda config_arg, url, requested_platform="", allow_stub=False: "already-downloaded",
@@ -1144,13 +1215,17 @@ def test_url_ingest_is_successful_when_candidate_is_already_downloaded(tmp_path:
         raise AssertionError("already-downloaded URL should not be downloaded again")
 
     monkeypatch.setattr("jaguartv_factory.dashboard.download_top", fail_download)
+    monkeypatch.setattr(
+        "jaguartv_factory.source_imports.validate_imported_media",
+        lambda config_arg, candidate_id, path: validated_test_media(path),
+    )
     app = DashboardApplication(("127.0.0.1", 0), config)
     try:
         app.tasks["ingest-task"] = {"status": "RUNNING", "total": 1}
         app._run_action("ingest-task", {
             "action": "ingest",
             "platform": "youtube",
-            "url": "https://youtu.be/demo",
+            "source_import_id": source_import["id"],
         })
         task = app.tasks["ingest-task"]
     finally:
@@ -1165,6 +1240,11 @@ def test_url_ingest_is_successful_when_candidate_is_already_downloaded(tmp_path:
 def test_url_ingest_failure_reports_download_reason(tmp_path: Path, monkeypatch):
     config = make_config(tmp_path)
     insert_candidate(config, "download-failed", "DOWNLOAD_FAILED")
+    source_import = create_test_source_import(config)
+    monkeypatch.setattr(
+        "jaguartv_factory.dashboard.normalize_import_url",
+        lambda url, platform: url,
+    )
     connection = connect_db(config)
     connection.execute(
         "INSERT INTO events(candidate_id,event_type,payload_json,created_at) VALUES(?,?,?,?)",
@@ -1185,7 +1265,7 @@ def test_url_ingest_failure_reports_download_reason(tmp_path: Path, monkeypatch)
         app._run_action("ingest-task", {
             "action": "ingest",
             "platform": "youtube",
-            "url": "https://youtu.be/demo",
+            "source_import_id": source_import["id"],
         })
         task = app.tasks["ingest-task"]
     finally:

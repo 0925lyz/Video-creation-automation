@@ -96,7 +96,6 @@ source_outro_trim:
 edit:
   render_engine: remotion           # dual-variant overlays/endcards require Remotion
   output_duration_sec: [12, 60]
-  short_video_threshold_sec: 75       # <= about 1 minute: keep full video, no smart slicing
   max_segments_per_source: 3
   segment_overlap_sec: 3
   layout_mode: original            # original | vertical

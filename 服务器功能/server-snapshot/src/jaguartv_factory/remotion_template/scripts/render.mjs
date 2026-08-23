@@ -26,6 +26,7 @@ const entryPoint = path.resolve(runtimeDir, String(payload.entryPoint || "src/in
 const publicDir = path.resolve(runtimeDir, "public");
 const compositionId = String(payload.compositionId || "JaguarTVVariant");
 const timeoutInMilliseconds = Math.max(30_000, Number(payload.timeoutMs || 360_000));
+const browserExecutable = String(process.env.REMOTION_BROWSER_EXECUTABLE || payload.browserExecutable || "").trim() || undefined;
 const {cancelSignal, cancel} = makeCancelSignal();
 
 let cancelTimer = null;
@@ -54,6 +55,7 @@ try {
     inputProps: props,
     logLevel: "error",
     timeoutInMilliseconds,
+    browserExecutable,
   });
   emit({
     event: "composition_selected",
@@ -75,6 +77,7 @@ try {
     crf: Number.isFinite(Number(payload.crf)) ? Number(payload.crf) : 22,
     logLevel: "error",
     timeoutInMilliseconds,
+    browserExecutable,
     cancelSignal,
     onProgress: (progress) => emit({event: "render_progress", ...progress}),
   });

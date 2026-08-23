@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import re
 import shutil
@@ -96,6 +97,12 @@ def _sample_frames(media: Path, destination: Path, count: int = 8, fps: float = 
     return sorted(destination.glob("frame-*.png"))
 
 
+def _sample_frame_times(media: Path, destination: Path, count: int, fps: float) -> list[tuple[Path, float]]:
+    frames = _sample_frames(media, destination, count=count, fps=fps)
+    step = 1.0 / max(0.1, fps)
+    return [(frame, index * step) for index, frame in enumerate(frames)]
+
+
 def _is_protected_corner(x: float, y: float, w: float, h: float, ratio: float = 0.12) -> bool:
     return (x <= ratio or x + w >= 1 - ratio) and (y <= ratio or y + h >= 1 - ratio)
 
@@ -125,9 +132,9 @@ def _subtitle_band_regions(regions: Sequence[Sequence[float]]) -> list[list[floa
         width = x1 - x0
         height = y1 - y0
         center_y = (y0 + y1) / 2
-        if center_y < 0.48:
+        if center_y < 0.10 or center_y > 0.92:
             continue
-        if width < 0.18 or height < 0.015 or height > 0.18:
+        if width < 0.08 or height < 0.012 or height > 0.16:
             continue
         bands.append([
             max(0.0, x0 - 0.015),
@@ -135,13 +142,42 @@ def _subtitle_band_regions(regions: Sequence[Sequence[float]]) -> list[list[floa
             min(1.0, x1 + 0.015),
             min(1.0, y1 + 0.008),
         ])
-    lower_ticker_regions = [region for region in regions if (region[1] + region[3]) / 2 >= 0.84]
-    if len(lower_ticker_regions) >= 2:
-        span_left = min(region[0] for region in lower_ticker_regions)
-        span_right = max(region[2] for region in lower_ticker_regions)
-        if span_right - span_left >= 0.20:
-            bands.append([0.18, 0.70, 0.98, 0.97])
     return sorted(bands, key=lambda item: (item[1], item[0]))[:3]
+
+
+def _timed_subtitle_region_events(
+    frame_regions: Sequence[tuple[float, list[list[float]]]],
+    *,
+    duration: float,
+    sample_fps: float,
+) -> list[dict[str, Any]]:
+    step = 1.0 / max(0.1, sample_fps)
+    padding = min(0.35, step * 0.55)
+    events: list[dict[str, Any]] = []
+    for timestamp, regions in frame_regions:
+        if not regions:
+            continue
+        start = max(0.0, timestamp - padding)
+        end = min(max(duration, start + step), timestamp + step + padding)
+        events.append({
+            "start": round(start, 3),
+            "end": round(end, 3),
+            "regions": regions,
+        })
+    return events
+
+
+def _unique_regions(events: Sequence[dict[str, Any]]) -> list[list[float]]:
+    seen: set[tuple[int, int, int, int]] = set()
+    unique: list[list[float]] = []
+    for event in events:
+        for region in event.get("regions") or []:
+            key = tuple(int(round(float(value) * 1000)) for value in region)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append([float(value) for value in region])
+    return unique
 
 
 def _paddleocr_frame_regions(
@@ -242,6 +278,48 @@ def _detect_chinese_text_regions_tesseract(
     return _subtitle_band_regions(_merge_regions(regions))
 
 
+def _detect_chinese_text_region_events_tesseract(
+    media: Path, *, confidence: float, sample_count: int | None, sample_fps: float
+) -> list[dict[str, Any]]:
+    if not shutil.which("tesseract"):
+        raise RuntimeError("tesseract is not installed")
+    duration = _probe_duration(media)
+    if sample_count is None:
+        sample_count = max(8, min(180, int(max(duration, 4.0) * sample_fps)))
+    frame_regions: list[tuple[float, list[list[float]]]] = []
+    with tempfile.TemporaryDirectory(prefix="jaguartv-ocr-") as temporary:
+        for frame, timestamp in _sample_frame_times(media, Path(temporary), sample_count, sample_fps):
+            with Image.open(frame) as image:
+                width, height = image.size
+            output_base = frame.with_suffix("")
+            result = _run([
+                "tesseract", str(frame), str(output_base), "-l", "chi_sim+chi_tra+eng",
+                "--psm", "11", "--oem", "1", "tsv",
+            ])
+            tsv_path = output_base.with_suffix(".tsv")
+            regions: list[tuple[float, float, float, float]] = []
+            if result.returncode == 0 and tsv_path.is_file():
+                for line in tsv_path.read_text(encoding="utf-8", errors="replace").splitlines()[1:]:
+                    columns = line.split("\t", 11)
+                    if len(columns) != 12:
+                        continue
+                    try:
+                        left, top, box_width, box_height = map(int, columns[6:10])
+                        box_confidence = float(columns[10])
+                    except ValueError:
+                        continue
+                    text = columns[11].strip()
+                    if box_confidence < confidence or not re.search(r"[\u4e00-\u9fff]", text):
+                        continue
+                    normalized = (left / width, top / height, box_width / width, box_height / height)
+                    if _is_protected_corner(*normalized):
+                        continue
+                    x, y, w, h = normalized
+                    regions.append((x, y, x + w, y + h))
+            frame_regions.append((timestamp, _subtitle_band_regions(_merge_regions(regions))))
+    return _timed_subtitle_region_events(frame_regions, duration=duration, sample_fps=sample_fps)
+
+
 def _detect_chinese_text_regions_paddleocr(
     media: Path, *, confidence: float, sample_count: int | None, sample_fps: float
 ) -> list[list[float]]:
@@ -253,6 +331,20 @@ def _detect_chinese_text_regions_paddleocr(
         for frame in _sample_frames(media, Path(temporary), sample_count, fps=sample_fps):
             regions.extend(_paddleocr_frame_regions(frame, confidence=confidence / 100.0))
     return _subtitle_band_regions(_merge_regions(regions))
+
+
+def _detect_chinese_text_region_events_paddleocr(
+    media: Path, *, confidence: float, sample_count: int | None, sample_fps: float
+) -> list[dict[str, Any]]:
+    duration = _probe_duration(media)
+    if sample_count is None:
+        sample_count = max(8, min(180, int(max(duration, 4.0) * sample_fps)))
+    frame_regions: list[tuple[float, list[list[float]]]] = []
+    with tempfile.TemporaryDirectory(prefix="jaguartv-paddleocr-") as temporary:
+        for frame, timestamp in _sample_frame_times(media, Path(temporary), sample_count, sample_fps):
+            regions = _subtitle_band_regions(_merge_regions(_paddleocr_frame_regions(frame, confidence=confidence / 100.0)))
+            frame_regions.append((timestamp, regions))
+    return _timed_subtitle_region_events(frame_regions, duration=duration, sample_fps=sample_fps)
 
 
 def detect_chinese_text_regions(
@@ -276,6 +368,33 @@ def detect_chinese_text_regions(
         except RuntimeError:
             if backend == "auto":
                 return _detect_chinese_text_regions_paddleocr(
+                    media, confidence=confidence, sample_count=sample_count, sample_fps=sample_fps
+                )
+            raise
+    raise RuntimeError("edit.ocr_backend must be tesseract, paddleocr, or auto")
+
+
+def detect_chinese_text_region_events(
+    media: Path,
+    *,
+    confidence: float = 40.0,
+    sample_count: int | None = None,
+    sample_fps: float = 2.0,
+    backend: str = "tesseract",
+) -> list[dict[str, Any]]:
+    backend = backend.strip().lower()
+    if backend in {"paddleocr", "paddle"}:
+        return _detect_chinese_text_region_events_paddleocr(
+            media, confidence=confidence, sample_count=sample_count, sample_fps=sample_fps
+        )
+    if backend in {"tesseract", "auto"}:
+        try:
+            return _detect_chinese_text_region_events_tesseract(
+                media, confidence=confidence, sample_count=sample_count, sample_fps=sample_fps
+            )
+        except RuntimeError:
+            if backend == "auto":
+                return _detect_chinese_text_region_events_paddleocr(
                     media, confidence=confidence, sample_count=sample_count, sample_fps=sample_fps
                 )
             raise
@@ -313,6 +432,56 @@ def blur_static_regions(
     return output
 
 
+def blur_timed_regions(
+    media: Path,
+    output: Path,
+    events: Sequence[dict[str, Any]],
+    *,
+    sigma: int = 48,
+) -> Path:
+    normalized_events = [
+        event for event in events
+        if float(event.get("end") or 0) > float(event.get("start") or 0) and event.get("regions")
+    ]
+    if not normalized_events:
+        shutil.copy2(media, output)
+        return output
+    width, height = _probe_dimensions(media)
+    overlays: list[tuple[int, int, int, int, float, float]] = []
+    for event in normalized_events:
+        start = max(0.0, float(event.get("start") or 0.0))
+        end = max(start + 0.05, float(event.get("end") or start))
+        for x0, y0, x1, y1 in event.get("regions") or []:
+            x = max(0, min(width - 2, int(width * float(x0))))
+            y = max(0, min(height - 2, int(height * float(y0))))
+            box_width = max(2, min(width - x, int(math.ceil(width * (float(x1) - float(x0))))))
+            box_height = max(2, min(height - y, int(math.ceil(height * (float(y1) - float(y0))))))
+            overlays.append((x, y, box_width, box_height, start, end))
+    if not overlays:
+        shutil.copy2(media, output)
+        return output
+    labels = "".join(f"[crop{index}]" for index in range(len(overlays)))
+    filters = [f"[0:v]split={len(overlays) + 1}[base]{labels}"]
+    current = "base"
+    for index, (x, y, box_width, box_height, start, end) in enumerate(overlays):
+        filters.append(f"[crop{index}]crop={box_width}:{box_height}:{x}:{y},gblur=sigma={sigma}[blur{index}]")
+        next_label = f"merged{index}"
+        filters.append(
+            f"[{current}][blur{index}]overlay={x}:{y}:enable='between(t,{start:.3f},{end:.3f})'[{next_label}]"
+        )
+        current = next_label
+    output.parent.mkdir(parents=True, exist_ok=True)
+    result = _run([
+        "ffmpeg", "-y", "-i", str(media), "-filter_complex", ";".join(filters),
+        "-map", f"[{current}]", "-map", "0:a?", "-c:v", "libx264", "-crf", "18", "-preset", "medium",
+        "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(output),
+    ])
+    if result.returncode != 0 or not output.exists() or output.stat().st_size <= 0:
+        output.unlink(missing_ok=True)
+        raise RuntimeError("timed OCR blur render failed:\n" + result.stderr[-4000:])
+    return output
+
+
 def prepare_ocr_blurred_segment(
     media: Path,
     output: Path,
@@ -333,7 +502,7 @@ def prepare_ocr_blurred_segment(
     if result.returncode != 0:
         raise RuntimeError("segment extraction failed:\n" + result.stderr[-4000:])
     try:
-        regions = detect_chinese_text_regions(extracted, backend=backend)
+        events = detect_chinese_text_region_events(extracted, backend=backend)
     except RuntimeError as error:
         regions = [list(region) for region in (fallback_regions or [])]
         if regions:
@@ -346,7 +515,8 @@ def prepare_ocr_blurred_segment(
             }
         shutil.copy2(extracted, output)
         return {"used": False, "regions": [], "reason": str(error), "media": str(output)}
-    if not regions and fallback_regions:
+    if not events and fallback_regions:
+        # Explicit operator fallback only; auto broad fallback is disabled in production.
         regions = [list(region) for region in fallback_regions]
         blur_static_regions(extracted, output, regions, sigma=sigma)
         return {
@@ -355,10 +525,12 @@ def prepare_ocr_blurred_segment(
             "reason": "fallback_regions_blurred_no_chinese_regions_detected",
             "media": str(output),
         }
-    blur_static_regions(extracted, output, regions, sigma=sigma)
+    regions = _unique_regions(events)
+    blur_timed_regions(extracted, output, events, sigma=sigma)
     return {
         "used": bool(regions),
         "regions": regions,
+        "timed_regions": events,
         "reason": "chinese_regions_blurred" if regions else "no_chinese_regions_detected",
         "media": str(output),
     }

@@ -2,31 +2,72 @@ const state = {
   overview: null,
   candidates: [],
   publications: [],
+  xAuths: [],
   workers: [],
   feedback: [],
   downloadClaims: [],
   keywordGroups: [],
-  hotKeywords: [],
   categoryKeywords: { rows: [] },
   settings: null,
   sessions: [],
   uploads: [],
   health: null,
+  publishCapabilities: {},
+  publishAccounts: [],
   tasks: [],
   selectedCandidates: new Set(),
   status: "",
+  sourceFilter: "",
+  platformFilter: "",
   categoryFilter: "",
   search: "",
+  inventoryLoading: false,
+  inventoryError: "",
+  inventoryRequestSerial: 0,
+  inventoryPagination: { page: 1, page_size: 50, total: 0, pages: 0 },
+  inventorySourceCounts: { all: 0, source_import: 0 },
+  importCapabilities: { default_target_area: "pending_production", can_direct_approve: false },
+  discoverIdempotencyKey: "",
   pendingProductionIds: [],
-  pendingDownloadAsset: null,
+  pendingPublishAsset: null,
+  pendingPublishItem: null,
+  posters: [],
+  posterCounts: { ALL: 0, PENDING_SCREENING: 0, PENDING_REVIEW: 0, APPROVED: 0 },
+  posterStatus: "",
+  posterCategory: "",
+  posterPagination: { page: 1, page_size: 24, total: 0, pages: 0 },
+  posterLoading: false,
+  posterError: "",
+  posterRequestSerial: 0,
+  posterAbortController: null,
+  posterPendingActions: new Set(),
+  posterPreviewIndex: -1,
+  posterZoom: 1,
+  posterImportItems: [],
+  posterImportRunning: false,
+  posterImportLimits: { max_bytes: 15 * 1024 * 1024, max_pixels: 40000000, max_dimension: 12000, max_batch: 20 },
+  posterContentDetail: null,
+  posterContentBusy: false,
+  posterAttachmentReplaceId: "",
+  pendingPosterDelete: null,
   designCandidate: null,
   designLayers: [],
   selectedDesignLayerId: "design-text",
+  youtubeGrowth: {
+    page: 1,
+    pageSize: 20,
+    pages: 0,
+    total: 0,
+    requestSerial: 0,
+    abortController: null,
+    loaded: false,
+  },
 };
 
 const views = {
   overview: ["OPERATIONS", "内容生产总览"],
   inventory: ["INVENTORY", "内容库存"],
+  posters: ["POSTER INVENTORY", "海报库存"],
   publishing: ["DISTRIBUTION", "发布队列"],
   analytics: ["GROWTH", "增长分析"],
   nodes: ["INFRASTRUCTURE", "运行节点"],
@@ -49,6 +90,7 @@ const statusLabels = {
   SCHEDULED: "已计划",
   PUBLISHED: "已发布",
   FAILED: "失败",
+  IMPORT_FAILED: "导入失败",
 };
 
 const scoreDimensionLabels = {
@@ -61,6 +103,25 @@ const initialCategoryLabels = [
   "肥皂剧（电视剧、电影）", "少儿剧", "成人频道", "纪录片（美食、动物、地区发展）",
   "综艺", "社交挑战", "舞蹈", "教程及优点展示类", "官方性质类",
   "合作类", "运营教学类", "教程及答疑类", "未分类",
+];
+
+const posterCategoryLabels = [
+  ["time_location", "时间地点"],
+  ["factor_analysis", "因素分析"],
+  ["match_prediction", "预测比赛"],
+  ["multi_schedule", "多赛程"],
+  ["star_fans", "球星球迷"],
+];
+
+const matrixAccounts = [
+  ["consumer_main", "JaguarTV Hoje"],
+  ["consumer_football", "JaguarTV Futebol"],
+  ["consumer_guide", "JaguarTV Guia"],
+  ["consumer_entertainment", "JaguarTV Entretenimento"],
+  ["partner_main", "JaguarTV Parceiros"],
+  ["partner_embaixador", "JaguarTV Embaixador"],
+  ["partner_revendedor", "JaguarTV Revendedor"],
+  ["partner_academia", "Academia JaguarTV"],
 ];
 
 function scoreTooltip(breakdown) {
@@ -99,12 +160,29 @@ async function refreshAll(showToast = false) {
   const button = document.querySelector("#refreshButton");
   button.disabled = true;
   try {
-    const [overview, candidates, publications, workers, feedback, downloadClaims, keywordGroups, hotKeywords, categoryKeywords, tasks, settings, sessions, health, uploads] = await Promise.all([
-      api("/api/overview"), api("/api/candidates?limit=200"), api("/api/publications"), api("/api/workers"), api("/api/feedback"), api("/api/download-claims"), api("/api/keywords"), api("/api/hot-keywords?date=today"), api("/api/category-keywords?date=today"), api("/api/tasks"), api("/api/settings"), api("/api/sessions"), api("/api/health"),
+    const [overview, candidatePage, publications, xAuths, workers, feedback, downloadClaims, keywordGroups, categoryKeywords, tasks, settings, sessions, health, capabilities, uploads, posterCounts, importCapabilities] = await Promise.all([
+      api("/api/overview"), api(inventoryApiPath()), api("/api/publications"), api("/api/x-auths"), api("/api/workers"), api("/api/feedback"), api("/api/download-claims"), api("/api/keywords"), api("/api/category-keywords?date=today"), api("/api/tasks"), api("/api/settings"), api("/api/sessions"), api("/api/health"), api("/api/publish/capabilities"),
       api("/api/uploads").catch(() => []),
+      api("/api/posters/counts"),
+      api("/api/import-capabilities").catch(() => ({ default_target_area: "pending_production", can_direct_approve: false })),
     ]);
-    Object.assign(state, { overview, candidates, publications, workers, feedback, downloadClaims, keywordGroups, hotKeywords, categoryKeywords, tasks, settings, sessions, health, uploads });
+    Object.assign(state, {
+      overview,
+      candidates: candidatePage.items || [],
+      inventoryPagination: {
+        page: candidatePage.page || 1,
+        page_size: candidatePage.page_size || 50,
+        total: candidatePage.total || 0,
+        pages: candidatePage.pages || 0,
+      },
+      inventorySourceCounts: candidatePage.source_counts || { all: 0, source_import: 0 },
+      importCapabilities,
+      publications, xAuths, workers, feedback, downloadClaims, keywordGroups, categoryKeywords,
+      tasks, settings, sessions, health, publishCapabilities: capabilities, uploads, posterCounts,
+    });
     renderAll();
+    if (document.querySelector("#view-posters").classList.contains("active")) await loadPosters();
+    if (document.querySelector("#view-analytics").classList.contains("active")) await loadYouTubeAnalytics();
     document.querySelector("#serviceTime").textContent = `更新于 ${dateText(overview.generated_at)}`;
     if (showToast) toast("数据已刷新");
   } catch (error) {
@@ -114,17 +192,61 @@ async function refreshAll(showToast = false) {
   }
 }
 
+function inventoryApiPath() {
+  const params = new URLSearchParams({
+    paginated: "1",
+    page: String(state.inventoryPagination.page || 1),
+    page_size: String(state.inventoryPagination.page_size || 50),
+  });
+  if (state.status) params.set("status", state.status);
+  if (state.sourceFilter) params.set("source_type", state.sourceFilter);
+  if (state.platformFilter) params.set("platform", state.platformFilter);
+  if (state.categoryFilter) params.set("category", state.categoryFilter);
+  if (state.search) params.set("search", state.search);
+  return `/api/candidates?${params}`;
+}
+
+async function loadInventory({ resetPage = false } = {}) {
+  if (resetPage) state.inventoryPagination.page = 1;
+  const serial = ++state.inventoryRequestSerial;
+  state.inventoryLoading = true;
+  state.inventoryError = "";
+  renderInventory();
+  try {
+    const payload = await api(inventoryApiPath());
+    if (serial !== state.inventoryRequestSerial) return;
+    state.candidates = payload.items || [];
+    state.inventoryPagination = {
+      page: payload.page || 1,
+      page_size: payload.page_size || 50,
+      total: payload.total || 0,
+      pages: payload.pages || 0,
+    };
+    state.inventorySourceCounts = payload.source_counts || { all: 0, source_import: 0 };
+  } catch (error) {
+    if (serial !== state.inventoryRequestSerial) return;
+    state.inventoryError = error.message;
+  } finally {
+    if (serial === state.inventoryRequestSerial) {
+      state.inventoryLoading = false;
+      renderInventory();
+      fillCandidateSelects();
+    }
+  }
+}
+
 function renderAll() {
   renderKpis();
   renderFunnel();
   renderPlatforms();
   renderKeywords();
   renderRecent();
+  renderXAuths();
   renderInventory();
+  renderPosterCounts();
   renderPublications();
   renderAnalytics();
   renderDownloadClaims();
-  renderHotKeywords();
   renderCategoryKeywords();
   renderKeywordGroups();
   renderWorkers();
@@ -135,6 +257,7 @@ function renderAll() {
   renderTasks();
   fillCandidateSelects();
   document.querySelector("#navInventory").textContent = state.overview.kpis.inventory;
+  document.querySelector("#navPosters").textContent = state.posterCounts.ALL || 0;
   document.querySelector("#navQueue").textContent = state.overview.kpis.scheduled;
   document.querySelector("#navNodes").textContent = state.workers.length;
 }
@@ -221,8 +344,12 @@ function filteredCandidates() {
 function inventoryRows() {
   const parents = [];
   const childrenMap = {};
+  const candidateById = new Map();
+  const candidateIds = new Set();
 
   state.candidates.forEach(item => {
+    candidateIds.add(item.id);
+    candidateById.set(item.id, item);
     if (item.parent_id) {
       if (!childrenMap[item.parent_id]) childrenMap[item.parent_id] = [];
       childrenMap[item.parent_id].push(item);
@@ -231,39 +358,90 @@ function inventoryRows() {
     }
   });
 
-  return parents.flatMap((item) => {
+  const rows = parents.flatMap((item) => {
     const children = childrenMap[item.id] || [];
 
     item.is_parent = true;
     item.children = children.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
     return [item];
   });
+  Object.entries(childrenMap).forEach(([parentId, children]) => {
+    const parent = candidateById.get(parentId);
+    const parentMatchesStatus = parent && (
+      !state.status ||
+      parent.status === state.status ||
+      (state.status === "DOWNLOADED" && parent.status === "PRODUCTION_RUNNING")
+    );
+    if (candidateIds.has(parentId) && parentMatchesStatus) return;
+    children.forEach((child) => {
+      child.is_parent = false;
+      child.is_child = false;
+      child.is_orphan_part = true;
+      rows.push(child);
+    });
+  });
+  return rows;
 }
 
 function renderInventory() {
   const rows = filteredCandidates();
   renderCategoryFilters();
-  document.querySelector("#inventoryCount").textContent = `${rows.length} 条内容`;
+  document.querySelector("#inventoryCount").textContent = `${state.inventoryPagination.total || 0} 条内容`;
+  document.querySelector("#allSourceCount").textContent = number(state.inventorySourceCounts.all || 0);
+  document.querySelector("#sourceImportCount").textContent = number(state.inventorySourceCounts.source_import || 0);
+  document.querySelectorAll("#statusFilters [data-status]").forEach((button) => {
+    button.classList.toggle("active", (button.dataset.status || "") === state.status);
+  });
+  document.querySelectorAll("#sourceFilters [data-source-type]").forEach((button) => {
+    button.classList.toggle("active", (button.dataset.sourceType || "") === state.sourceFilter);
+  });
+  document.querySelector("#inventoryPlatformFilter").value = state.platformFilter;
+  const pagination = document.querySelector("#inventoryPagination");
+  pagination.hidden = state.inventoryLoading || !!state.inventoryError || state.inventoryPagination.pages <= 1;
+  document.querySelector("#inventoryPageSummary").textContent = state.inventoryPagination.pages
+    ? `第 ${state.inventoryPagination.page} / ${state.inventoryPagination.pages} 页 · 共 ${state.inventoryPagination.total} 条`
+    : "暂无内容";
+  document.querySelector("#inventoryPreviousPage").disabled = state.inventoryPagination.page <= 1;
+  document.querySelector("#inventoryNextPage").disabled = state.inventoryPagination.page >= state.inventoryPagination.pages;
+  if (state.inventoryLoading) {
+    document.querySelector("#inventoryTable").innerHTML = `<tr><td colspan="10"><div class="empty-state">正在加载内容库存</div></td></tr>`;
+    updateBatchToolbar();
+    return;
+  }
+  if (state.inventoryError) {
+    document.querySelector("#inventoryTable").innerHTML = `<tr><td colspan="10"><div class="empty-state inventory-error-state"><span>加载失败：${escapeHtml(state.inventoryError)}</span><button class="secondary-button" id="retryInventory" type="button">重试</button></div></td></tr>`;
+    document.querySelector("#retryInventory").addEventListener("click", () => loadInventory());
+    updateBatchToolbar();
+    return;
+  }
   document.querySelector("#inventoryTable").innerHTML = rows.length ? rows.map((item) => {
     const thumb = item.cover_url || item.thumbnail_url;
     const task = activeTaskFor(item.id);
     const status = task ? `${task.action === "download" ? "下载" : task.action === "produce" ? "制作" : "处理"}中` : (statusLabels[item.status] || item.status);
-    const failure = item.failure_detail ? `<small class="failure-reason" title="${escapeHtml(item.failure_detail)}">${escapeHtml(failureReason(item.failure_detail))}</small>` : "";
+    const failureDetail = item.import_error_summary || item.failure_detail || "";
+    const failure = failureDetail ? `<small class="failure-reason" title="${escapeHtml(failureDetail)}">${escapeHtml(failureReason(failureDetail))}</small>` : "";
     const outro = sourceOutroText(item.source_outro_trim);
+    const publicationNote = publicationStateText(item.publication_state);
     const isChild = !!item.is_child;
     const isParent = !!item.is_parent;
+    const importInfo = item.source_type === "source_import" ? `
+      <strong><span class="source-import-pill">导入视频</span></strong>
+      <small>目标区域：${escapeHtml(item.target_area_label || "待制作")}</small>
+      <small>下载：${escapeHtml(item.download_status || "未知")} · ${escapeHtml(item.import_operator || item.review_source || "dashboard")}</small>
+    ` : `<span class="muted">非导入</span>`;
     return `
     <tr class="${isChild ? 'child-slice-row' : ''}" style="${isChild ? 'background-color: var(--surface-hover);' : ''}">
       <td class="check-column"><input class="candidate-checkbox" type="checkbox" data-candidate-select="${item.id}" ${state.selectedCandidates.has(item.id) ? "checked" : ""} aria-label="选择 ${escapeHtml(item.display_title || item.title || item.id)}"></td>
-      <td style="${isChild ? 'padding-left: 2rem;' : ''}"><div class="content-cell">${thumb ? `<img class="mini-cover" src="${thumb}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<div class="mini-cover"></div>`}<div><strong title="${escapeHtml(item.display_title || item.title)}">${escapeHtml(item.display_title || item.title || "未命名内容")}${item.published_flag ? `<span class="badge-published">Published</span>` : ""}<span class="category-pill">${escapeHtml(item.initial_category || "未分类")}</span></strong><small>${escapeHtml(item.platform)} · ${item.id}${item.initial_keyword ? ` · ${escapeHtml(item.initial_keyword)}` : item.keyword ? ` · ${escapeHtml(item.keyword)}` : ""}</small></div></div></td>
+      <td style="${isChild ? 'padding-left: 2rem;' : ''}"><div class="content-cell">${thumb ? `<img class="mini-cover" src="${thumb}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<div class="mini-cover"></div>`}<div><strong title="${escapeHtml(item.display_title || item.title)}">${escapeHtml(item.display_title || item.title || "未命名内容")}${item.published_flag ? `<span class="badge-published">Published</span>` : ""}<span class="category-pill">${escapeHtml(item.initial_category || "未分类")}</span></strong><small>${escapeHtml(item.platform)} · ${item.id}${item.initial_keyword ? ` · ${escapeHtml(item.initial_keyword)}` : item.keyword ? ` · ${escapeHtml(item.keyword)}` : ""}</small>${item.source_type === "source_import" ? `<small>导入时间：${dateText(item.imported_at)}</small>` : ""}</div></div></td>
       <td>${escapeHtml(item.platform)}</td>
       <td><strong>${escapeHtml(item.content_type || "unknown")}</strong><small>${escapeHtml(item.segment_strategy || "未分析")} · ${escapeHtml(item.audio_policy || "自动")}</small>${outro}</td>
+      <td class="import-info-cell">${importInfo}</td>
       <td>${Number(item.highlight_score || 0).toFixed(1)}</td>
       <td><span title="${escapeHtml(scoreTooltip(item.score_breakdown))}">${Number(item.score || 0).toFixed(1)}</span></td>
-      <td><span class="status-pill ${task ? "running" : statusClass(item.status)}">${status}</span>${failure}</td><td>${dateText(item.updated_at)}</td>
+      <td><span class="status-pill ${task ? "running" : statusClass(item.status)}">${status}</span>${publicationNote}${failure}</td><td>${dateText(item.updated_at)}</td>
       <td>${task ? `<span class="row-progress">${task.progress || 0}%</span>` : candidateAction(item) + (isParent && item.status !== 'DOWNLOAD_FAILED' ? ` <button class="secondary-button" style="margin-top: 4px;" onclick="openProductionDialog('${item.id}')">手动切片</button>` : '')}</td>
     </tr>`;
-  }).join("") : `<tr><td colspan="9"><div class="empty-state">没有符合条件的内容</div></td></tr>`;
+  }).join("") : `<tr><td colspan="10"><div class="empty-state">${state.sourceFilter === "source_import" ? "还没有导入视频" : "没有符合条件的内容"}</div></td></tr>`;
   document.querySelectorAll("[data-candidate-select]").forEach((checkbox) => checkbox.addEventListener("change", () => {
     if (checkbox.checked) state.selectedCandidates.add(checkbox.dataset.candidateSelect);
     else state.selectedCandidates.delete(checkbox.dataset.candidateSelect);
@@ -272,9 +450,503 @@ function renderInventory() {
   document.querySelectorAll("[data-candidate-action]").forEach((button) => button.addEventListener("click", () => runCandidateAction(button.dataset.candidateAction, button.dataset.candidateId)));
   document.querySelectorAll("[data-delete-id]").forEach((button) => button.addEventListener("click", () => deleteCandidates([button.dataset.deleteId])));
   document.querySelectorAll("[data-review-decision]").forEach((button) => button.addEventListener("click", () => submitReview(button.dataset.reviewDecision, button.dataset.candidateId)));
-  document.querySelectorAll("[data-download-asset]").forEach((button) => button.addEventListener("click", () => openDownloadClaimDialog(button.dataset.downloadAsset)));
+  document.querySelectorAll("[data-publish-asset]").forEach((button) => button.addEventListener("click", () => openPublishDialog(button.dataset.publishAsset, button.dataset.publishCandidate || "")));
   document.querySelectorAll("[data-design-id]").forEach((button) => button.addEventListener("click", () => openDesignDialog(button.dataset.designId, button.dataset.designAssets || "")));
+  document.querySelectorAll("[data-import-retry]").forEach((button) => button.addEventListener("click", () => retrySourceImport(button.dataset.importRetry)));
   updateBatchToolbar();
+}
+
+function posterRequestId(action, posterId) {
+  const suffix = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${action}-${posterId}-${suffix}`.slice(0, 160);
+}
+
+function renderPosterCounts() {
+  document.querySelectorAll("[data-poster-count]").forEach((element) => {
+    element.textContent = number(state.posterCounts[element.dataset.posterCount] || 0);
+  });
+  const nav = document.querySelector("#navPosters");
+  if (nav) nav.textContent = number(state.posterCounts.ALL || 0);
+}
+
+function renderPosterCategoryFilters() {
+  const container = document.querySelector("#posterCategoryFilters");
+  container.innerHTML = [
+    `<button class="${state.posterCategory ? "" : "active"}" data-poster-category="" type="button">全部分类</button>`,
+    ...posterCategoryLabels.map(([id, label]) => `<button class="${state.posterCategory === id ? "active" : ""}" data-poster-category="${id}" type="button">${label}</button>`),
+  ].join("");
+  container.querySelectorAll("[data-poster-category]").forEach((button) => button.addEventListener("click", () => {
+    if (state.posterLoading || state.posterCategory === button.dataset.posterCategory) return;
+    state.posterCategory = button.dataset.posterCategory || "";
+    state.posterPagination.page = 1;
+    loadPosters();
+  }));
+}
+
+function posterActionButtons(item) {
+  const pending = (action) => state.posterPendingActions.has(`${action}:${item.id}`);
+  const deleteButton = `<button class="table-action danger-action" data-poster-delete="${escapeHtml(item.id)}" type="button" ${pending("delete") ? "disabled" : ""}>${pending("delete") ? "删除中" : "删除"}</button>`;
+  const previewButton = `<button class="table-action" data-poster-preview="${escapeHtml(item.id)}" type="button">预览</button>`;
+  const contentButton = `<button class="table-action" data-poster-content="${escapeHtml(item.id)}" type="button">文案设计</button>`;
+  const approveButton = ["PENDING_SCREENING", "PENDING_REVIEW"].includes(item.status_id)
+    ? `<button class="table-action" data-poster-approve="${escapeHtml(item.id)}" type="button" ${pending("approve") ? "disabled" : ""}>${pending("approve") ? "处理中" : "通过"}</button>`
+    : "";
+  const downloadButton = item.status_id === "APPROVED"
+    ? `<a class="table-action" data-poster-download="${escapeHtml(item.id)}" href="${escapeHtml(item.download_url)}" download>下载</a>`
+    : "";
+  return `<div class="row-actions poster-row-actions">${deleteButton}${previewButton}${contentButton}${approveButton}${downloadButton}</div>`;
+}
+
+function renderPosterInventory() {
+  renderPosterCounts();
+  renderPosterCategoryFilters();
+  const table = document.querySelector("#posterInventoryTable");
+  const pagination = document.querySelector("#posterPagination");
+  const posterTableEmpty = state.posterLoading || Boolean(state.posterError) || state.posters.length === 0;
+  table.closest(".poster-table-wrap").classList.toggle("poster-table-empty", posterTableEmpty);
+  document.querySelector("#posterInventoryCount").textContent = `${number(state.posterPagination.total || 0)} 张海报`;
+  if (state.posterLoading) {
+    table.innerHTML = `<tr><td colspan="6"><div class="empty-state poster-loading-state"><span class="loading-spinner"></span>正在加载海报</div></td></tr>`;
+    pagination.hidden = true;
+    return;
+  }
+  if (state.posterError) {
+    table.innerHTML = `<tr><td colspan="6"><div class="empty-state poster-error-state"><span>${escapeHtml(state.posterError)}</span><button class="secondary-button" id="retryPosters" type="button">重试</button></div></td></tr>`;
+    document.querySelector("#retryPosters").addEventListener("click", loadPosters);
+    pagination.hidden = true;
+    return;
+  }
+  table.innerHTML = state.posters.length ? state.posters.map((item) => {
+    const reviewedAt = item.approved_at || item.screened_at;
+    const statusClassName = item.status_id === "APPROVED" ? "ready" : item.status_id === "PENDING_REVIEW" ? "running" : "";
+    const unknownClass = item.category_known ? "" : " unknown";
+    return `<tr>
+      <td><div class="content-cell poster-content-cell"><div class="poster-thumb-shell"><img class="poster-thumbnail" src="${escapeHtml(item.thumbnail_url)}" alt="${escapeHtml(item.name)}" loading="lazy"><span class="poster-thumb-error" hidden>图片失效</span></div><div><strong title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</strong><small>${escapeHtml(item.id)}</small></div></div></td>
+      <td><span class="category-pill${unknownClass}" title="${escapeHtml(item.category_id)}">${escapeHtml(item.category_label)}</span></td>
+      <td><span class="status-pill ${statusClassName}">${escapeHtml(item.status_label)}</span></td>
+      <td>${dateText(item.created_at)}</td>
+      <td>${dateText(reviewedAt)}</td>
+      <td>${posterActionButtons(item)}</td>
+    </tr>`;
+  }).join("") : `<tr><td colspan="6"><div class="empty-state">当前筛选条件下没有海报</div></td></tr>`;
+
+  table.querySelectorAll(".poster-thumbnail").forEach((image) => image.addEventListener("error", () => {
+    image.hidden = true;
+    image.nextElementSibling.hidden = false;
+  }, { once: true }));
+  table.querySelectorAll("[data-poster-preview]").forEach((button) => button.addEventListener("click", () => openPosterPreview(button.dataset.posterPreview)));
+  table.querySelectorAll("[data-poster-content]").forEach((button) => button.addEventListener("click", () => openPosterContentDialog(button.dataset.posterContent)));
+  table.querySelectorAll("[data-poster-approve]").forEach((button) => button.addEventListener("click", () => approvePoster(button.dataset.posterApprove)));
+  table.querySelectorAll("[data-poster-delete]").forEach((button) => button.addEventListener("click", () => openPosterDelete(button.dataset.posterDelete)));
+  table.querySelectorAll("[data-poster-download]").forEach((link) => link.addEventListener("click", () => toast("正在下载审核通过的海报")));
+
+  const { page, pages, total } = state.posterPagination;
+  pagination.hidden = total === 0;
+  document.querySelector("#posterPageSummary").textContent = pages ? `第 ${page} / ${pages} 页 · 共 ${number(total)} 张` : "";
+  document.querySelector("#posterPreviousPage").disabled = page <= 1;
+  document.querySelector("#posterNextPage").disabled = !pages || page >= pages;
+}
+
+async function loadPosters() {
+  state.posterAbortController?.abort();
+  const controller = new AbortController();
+  state.posterAbortController = controller;
+  const serial = ++state.posterRequestSerial;
+  state.posterLoading = true;
+  state.posterError = "";
+  renderPosterInventory();
+  const query = new URLSearchParams({
+    page: String(state.posterPagination.page || 1),
+    page_size: String(state.posterPagination.page_size || 24),
+  });
+  if (state.posterStatus) query.set("status", state.posterStatus);
+  if (state.posterCategory) query.set("category", state.posterCategory);
+  try {
+    const payload = await api(`/api/posters?${query}`, { signal: controller.signal });
+    if (serial !== state.posterRequestSerial) return;
+    state.posters = payload.items || [];
+    state.posterCounts = payload.counts || state.posterCounts;
+    state.posterPagination = payload.pagination || state.posterPagination;
+  } catch (error) {
+    if (error.name === "AbortError" || serial !== state.posterRequestSerial) return;
+    state.posterError = `海报列表加载失败：${error.message}`;
+  } finally {
+    if (serial === state.posterRequestSerial) {
+      state.posterLoading = false;
+      renderPosterInventory();
+    }
+  }
+}
+
+async function approvePoster(posterId) {
+  const item = state.posters.find((poster) => poster.id === posterId);
+  if (!item || !["PENDING_SCREENING", "PENDING_REVIEW"].includes(item.status_id)) return;
+  const target = item.status_id === "PENDING_SCREENING" ? "待审核" : "审核通过";
+  if (!confirm(`确认通过“${item.name}”并进入${target}？`)) return;
+  const pendingKey = `approve:${posterId}`;
+  if (state.posterPendingActions.has(pendingKey)) return;
+  state.posterPendingActions.add(pendingKey);
+  renderPosterInventory();
+  try {
+    const result = await api(`/api/posters/${encodeURIComponent(posterId)}/approve`, {
+      method: "POST",
+      headers: { "X-Request-ID": posterRequestId("approve", posterId) },
+      body: JSON.stringify({
+        actor: localStorage.getItem("jaguartvOperatorName") || "dashboard",
+        expected_status: item.status_id,
+      }),
+    });
+    toast(`海报已进入${result.status_label}`);
+    await loadPosters();
+  } catch (error) {
+    toast(`通过失败：${error.message}`, "error");
+  } finally {
+    state.posterPendingActions.delete(pendingKey);
+    if (!state.posterLoading) renderPosterInventory();
+  }
+}
+
+function openPosterDelete(posterId) {
+  const item = state.posters.find((poster) => poster.id === posterId);
+  if (!item || state.posterPendingActions.has(`delete:${posterId}`)) return;
+  state.pendingPosterDelete = item;
+  document.querySelector("#posterDeleteName").textContent = item.name;
+  const thumbnail = document.querySelector("#posterDeleteThumbnail");
+  thumbnail.hidden = false;
+  thumbnail.src = item.thumbnail_url;
+  thumbnail.alt = item.name;
+  thumbnail.onerror = () => { thumbnail.hidden = true; };
+  document.querySelector("#confirmPosterDelete").disabled = false;
+  document.querySelector("#posterDeleteDialog").showModal();
+}
+
+function applyPosterZoom(value) {
+  state.posterZoom = Math.min(4, Math.max(0.25, value));
+  document.querySelector("#posterPreviewImage").style.transform = `scale(${state.posterZoom})`;
+  document.querySelector("#posterZoomValue").textContent = `${Math.round(state.posterZoom * 100)}%`;
+}
+
+function showPosterPreview(index) {
+  if (!state.posters.length || index < 0 || index >= state.posters.length) return;
+  state.posterPreviewIndex = index;
+  const item = state.posters[index];
+  document.querySelector("#posterPreviewTitle").textContent = item.name;
+  document.querySelector("#posterPreviewMeta").textContent = `${item.category_label} · ${item.status_label} · 创建于 ${dateText(item.created_at)}`;
+  document.querySelector("#posterPreviewPrevious").disabled = index <= 0;
+  document.querySelector("#posterPreviewNext").disabled = index >= state.posters.length - 1;
+  const image = document.querySelector("#posterPreviewImage");
+  const message = document.querySelector("#posterPreviewMessage");
+  applyPosterZoom(1);
+  image.hidden = true;
+  message.hidden = false;
+  message.textContent = "正在加载图片";
+  message.classList.remove("error");
+  image.onload = () => {
+    image.hidden = false;
+    message.hidden = true;
+  };
+  image.onerror = () => {
+    image.hidden = true;
+    message.hidden = false;
+    message.textContent = "图片不存在、格式错误或加载失败";
+    message.classList.add("error");
+  };
+  image.alt = item.name;
+  image.src = item.preview_url;
+}
+
+function openPosterPreview(posterId) {
+  const index = state.posters.findIndex((item) => item.id === posterId);
+  if (index < 0) return;
+  showPosterPreview(index);
+  const dialog = document.querySelector("#posterPreviewDialog");
+  if (!dialog.open) dialog.showModal();
+}
+
+function formatFileSize(bytes) {
+  const value = Number(bytes || 0);
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function imageDimensions(file) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => { URL.revokeObjectURL(url); resolve({ width: image.naturalWidth, height: image.naturalHeight, error: "" }); };
+    image.onerror = () => { URL.revokeObjectURL(url); resolve({ width: 0, height: 0, error: "图片无法在浏览器中解码" }); };
+    image.src = url;
+  });
+}
+
+function rawImageRequest(path, file, onProgress = () => {}, extraHeaders = {}) {
+  let xhr;
+  const promise = new Promise((resolve, reject) => {
+    xhr = new XMLHttpRequest();
+    xhr.open("POST", path);
+    const extension = (file.name.split(".").pop() || "").toLowerCase();
+    const inferredMime = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp" }[extension] || "application/octet-stream";
+    xhr.setRequestHeader("Content-Type", file.type || inferredMime);
+    xhr.setRequestHeader("X-Operator", localStorage.getItem("jaguartvOperatorName") || "dashboard");
+    Object.entries(extraHeaders).forEach(([name, value]) => xhr.setRequestHeader(name, String(value)));
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100));
+    };
+    xhr.onload = () => {
+      let payload = {};
+      try { payload = xhr.responseText ? JSON.parse(xhr.responseText) : {}; }
+      catch { payload = { error: `服务器返回了无效响应（HTTP ${xhr.status}）` }; }
+      if (xhr.status >= 200 && xhr.status < 300) resolve(payload);
+      else reject(new Error(payload.error || `上传失败（HTTP ${xhr.status}）`));
+    };
+    xhr.onerror = () => reject(new Error("网络连接中断，请重试"));
+    xhr.onabort = () => reject(Object.assign(new Error("已取消上传"), { name: "AbortError" }));
+    xhr.send(file);
+  });
+  return { promise, abort: () => xhr?.abort() };
+}
+
+function uploadPosterFile(file, category, batchSize, onProgress = () => {}) {
+  const query = new URLSearchParams({ filename: file.name, category });
+  return rawImageRequest(`/api/posters/import?${query}`, file, onProgress, { "X-Poster-Batch-Size": batchSize });
+}
+
+function renderPosterImportList() {
+  const container = document.querySelector("#posterImportList");
+  const items = state.posterImportItems;
+  container.innerHTML = items.length ? items.map((item) => {
+    const format = (item.file.name.split(".").pop() || "").toUpperCase();
+    const dimensions = item.width && item.height ? `${item.width} × ${item.height}` : "尺寸读取中";
+    const stateText = item.status === "uploading" ? `上传中 ${item.progress}%` : item.status === "success" ? "导入成功 · 待审核" : item.status === "error" ? `失败：${item.error}` : item.status === "canceled" ? "已取消" : item.error ? `不可上传：${item.error}` : "准备上传";
+    return `<div class="poster-import-item ${item.status}">
+      <div class="poster-media-frame poster-import-thumb"><img src="${escapeHtml(item.url)}" alt="${escapeHtml(item.file.name)}"><span hidden>图片失效</span></div>
+      <div class="poster-import-info"><strong title="${escapeHtml(item.file.name)}">${escapeHtml(item.file.name)}</strong><small>${escapeHtml(format)} · ${dimensions} · ${formatFileSize(item.file.size)}</small><span>${escapeHtml(stateText)}</span><div class="progress-track"><span style="width:${item.progress || 0}%"></span></div></div>
+      <button class="icon-button" data-poster-import-remove="${escapeHtml(item.id)}" type="button" title="${item.status === "uploading" ? "取消上传" : "移除"}" aria-label="${item.status === "uploading" ? "取消上传" : "移除"}" ${item.status === "success" ? "disabled" : ""}>×</button>
+    </div>`;
+  }).join("") : `<div class="design-empty-list">尚未选择图片</div>`;
+  container.querySelectorAll(".poster-import-thumb img").forEach((image) => image.addEventListener("error", () => {
+    image.hidden = true;
+    image.nextElementSibling.hidden = false;
+  }, { once: true }));
+  container.querySelectorAll("[data-poster-import-remove]").forEach((button) => button.addEventListener("click", () => {
+    const item = state.posterImportItems.find((candidate) => candidate.id === button.dataset.posterImportRemove);
+    if (!item) return;
+    if (item.status === "uploading") {
+      item.abort?.();
+      item.status = "canceled";
+      item.error = "已取消上传";
+    } else {
+      URL.revokeObjectURL(item.url);
+      state.posterImportItems = state.posterImportItems.filter((candidate) => candidate !== item);
+    }
+    renderPosterImportList();
+  }));
+  const ready = items.filter((item) => item.status === "ready" && !item.error).length;
+  const success = items.filter((item) => item.status === "success").length;
+  const failed = items.filter((item) => ["error", "canceled"].includes(item.status) || item.error).length;
+  document.querySelector("#posterImportSummary").textContent = items.length ? `共 ${items.length} 张 · 待上传 ${ready} · 成功 ${success} · 失败 ${failed}` : "";
+  document.querySelector("#submitPosterImport").disabled = state.posterImportRunning || !ready || !document.querySelector("#posterImportCategory").value;
+}
+
+async function addPosterImportFiles(fileList) {
+  const files = [...fileList];
+  const available = state.posterImportLimits.max_batch - state.posterImportItems.filter((item) => item.status !== "success").length;
+  if (files.length > available) toast(`单批最多 ${state.posterImportLimits.max_batch} 张，本次只加入前 ${Math.max(0, available)} 张`, "error");
+  for (const file of files.slice(0, Math.max(0, available))) {
+    const item = {
+      id: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`,
+      file,
+      url: URL.createObjectURL(file),
+      status: "processing",
+      progress: 0,
+      width: 0,
+      height: 0,
+      error: "",
+    };
+    state.posterImportItems.push(item);
+    renderPosterImportList();
+    const dimensions = await imageDimensions(file);
+    Object.assign(item, dimensions);
+    if (!file.size) item.error = "文件为空";
+    else if (file.size > state.posterImportLimits.max_bytes) item.error = `超过 ${formatFileSize(state.posterImportLimits.max_bytes)} 限制`;
+    else if (!dimensions.width || !dimensions.height) item.error = dimensions.error;
+    else if (Math.max(dimensions.width, dimensions.height) > state.posterImportLimits.max_dimension || dimensions.width * dimensions.height > state.posterImportLimits.max_pixels) item.error = "图片尺寸超过服务器限制";
+    item.status = item.error ? "error" : "ready";
+    renderPosterImportList();
+  }
+}
+
+async function openPosterImportDialog() {
+  if (!state.posterImportItems.length) {
+    try {
+      state.posterImportLimits = await api("/api/posters/import/limits");
+      document.querySelector("#posterImportLimits").textContent = `单批最多 ${state.posterImportLimits.max_batch} 张 · 单张最多 ${formatFileSize(state.posterImportLimits.max_bytes)} · 最长边 ${number(state.posterImportLimits.max_dimension)} px · 最大 ${number(state.posterImportLimits.max_pixels)} 像素`;
+    } catch (error) {
+      document.querySelector("#posterImportLimits").textContent = `上传限制读取失败：${error.message}`;
+    }
+  }
+  renderPosterImportList();
+  document.querySelector("#posterImportDialog").showModal();
+}
+
+function closePosterImportDialog() {
+  if (state.posterImportRunning) return toast("正在上传，请先取消当前文件或等待完成", "error");
+  document.querySelector("#posterImportDialog").close();
+}
+
+function renderPosterAttachments() {
+  const detail = state.posterContentDetail;
+  const container = document.querySelector("#posterAttachmentList");
+  const items = detail?.attachments || [];
+  container.innerHTML = items.length ? items.map((item, index) => `<div class="poster-attachment-item">
+    <button class="poster-media-frame poster-attachment-thumb" data-poster-attachment-preview="${escapeHtml(item.id)}" type="button" title="查看大图"><img src="${escapeHtml(item.preview_url)}" alt="${escapeHtml(item.name)}"><span hidden>图片失效</span></button>
+    <div><strong title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</strong><small>${item.width} × ${item.height} · ${formatFileSize(item.size_bytes)}</small></div>
+    <div class="poster-attachment-actions"><button class="icon-button" data-poster-attachment-up="${escapeHtml(item.id)}" type="button" title="上移" aria-label="上移" ${index === 0 ? "disabled" : ""}>↑</button><button class="icon-button" data-poster-attachment-down="${escapeHtml(item.id)}" type="button" title="下移" aria-label="下移" ${index === items.length - 1 ? "disabled" : ""}>↓</button><button class="table-action" data-poster-attachment-replace="${escapeHtml(item.id)}" type="button">替换</button><button class="table-action danger-action" data-poster-attachment-delete="${escapeHtml(item.id)}" type="button">删除</button></div>
+  </div>`).join("") : `<div class="design-empty-list">尚未添加相关图片</div>`;
+  container.querySelectorAll(".poster-attachment-thumb img").forEach((image) => image.addEventListener("error", () => { image.hidden = true; image.nextElementSibling.hidden = false; }, { once: true }));
+  container.querySelectorAll("[data-poster-attachment-preview]").forEach((button) => button.addEventListener("click", () => previewPosterAttachment(button.dataset.posterAttachmentPreview)));
+  container.querySelectorAll("[data-poster-attachment-up], [data-poster-attachment-down]").forEach((button) => button.addEventListener("click", () => {
+    const id = button.dataset.posterAttachmentUp || button.dataset.posterAttachmentDown;
+    const index = items.findIndex((item) => item.id === id);
+    const target = button.dataset.posterAttachmentUp ? index - 1 : index + 1;
+    if (index < 0 || target < 0 || target >= items.length) return;
+    [items[index], items[target]] = [items[target], items[index]];
+    renderPosterAttachments();
+  }));
+  container.querySelectorAll("[data-poster-attachment-replace]").forEach((button) => button.addEventListener("click", () => {
+    state.posterAttachmentReplaceId = button.dataset.posterAttachmentReplace;
+    document.querySelector("#posterAttachmentReplaceFile").click();
+  }));
+  container.querySelectorAll("[data-poster-attachment-delete]").forEach((button) => button.addEventListener("click", () => deletePosterAttachment(button.dataset.posterAttachmentDelete)));
+}
+
+async function openPosterContentDialog(posterId) {
+  const dialog = document.querySelector("#posterContentDialog");
+  document.querySelector("#posterContentStatus").textContent = "正在加载海报文案";
+  if (!dialog.open) dialog.showModal();
+  try {
+    const detail = await api(`/api/posters/${encodeURIComponent(posterId)}`);
+    state.posterContentDetail = detail;
+    document.querySelector("#posterContentTitle").textContent = `文案设计 · ${detail.name}`;
+    document.querySelector("#posterContentMeta").textContent = `${detail.category_label} · ${detail.status_label}`;
+    document.querySelector("#posterContentTitleInput").value = detail.content?.title || "";
+    document.querySelector("#posterContentCopy").value = detail.content?.copy || "";
+    document.querySelector("#posterContentTags").value = (detail.content?.tags || []).join("，");
+    const image = document.querySelector("#posterContentMainImage");
+    const loading = image.previousElementSibling;
+    image.hidden = true;
+    loading.hidden = false;
+    loading.textContent = "正在加载主海报";
+    image.onload = () => { image.hidden = false; loading.hidden = true; };
+    image.onerror = () => { image.hidden = true; loading.hidden = false; loading.textContent = "主海报加载失败"; };
+    image.src = detail.preview_url;
+    image.alt = detail.name;
+    document.querySelector("#posterContentStatus").textContent = "";
+    renderPosterAttachments();
+  } catch (error) {
+    document.querySelector("#posterContentStatus").textContent = `加载失败：${error.message}`;
+  }
+}
+
+function previewPosterAttachment(attachmentId) {
+  const item = state.posterContentDetail?.attachments?.find((attachment) => attachment.id === attachmentId);
+  if (!item) return;
+  const dialog = document.querySelector("#posterAssetDialog");
+  const image = document.querySelector("#posterAssetImage");
+  const message = document.querySelector("#posterAssetMessage");
+  image.hidden = true;
+  message.hidden = false;
+  message.textContent = "正在加载图片";
+  image.onload = () => { image.hidden = false; message.hidden = true; };
+  image.onerror = () => { image.hidden = true; message.hidden = false; message.textContent = "图片加载失败"; };
+  image.src = item.preview_url;
+  image.alt = item.name;
+  dialog.showModal();
+}
+
+async function addPosterAttachments(files) {
+  const detail = state.posterContentDetail;
+  if (!detail || state.posterContentBusy) return;
+  state.posterContentBusy = true;
+  try {
+    for (const file of [...files]) {
+      document.querySelector("#posterContentStatus").textContent = `正在上传 ${file.name}`;
+      const query = new URLSearchParams({ filename: file.name });
+      const request = rawImageRequest(`/api/posters/${encodeURIComponent(detail.id)}/attachments?${query}`, file, (progress) => {
+        document.querySelector("#posterContentStatus").textContent = `正在上传 ${file.name} · ${progress}%`;
+      });
+      detail.attachments.push(await request.promise);
+      renderPosterAttachments();
+    }
+    document.querySelector("#posterContentStatus").textContent = "相关图片上传完成";
+  } catch (error) {
+    document.querySelector("#posterContentStatus").textContent = `图片上传失败：${error.message}`;
+  } finally { state.posterContentBusy = false; }
+}
+
+async function replacePosterAttachment(file) {
+  const detail = state.posterContentDetail;
+  const attachmentId = state.posterAttachmentReplaceId;
+  if (!detail || !attachmentId || !file || state.posterContentBusy) return;
+  state.posterContentBusy = true;
+  try {
+    const query = new URLSearchParams({ filename: file.name });
+    const request = rawImageRequest(`/api/posters/${encodeURIComponent(detail.id)}/attachments/${encodeURIComponent(attachmentId)}/replace?${query}`, file, (progress) => {
+      document.querySelector("#posterContentStatus").textContent = `正在替换图片 · ${progress}%`;
+    });
+    const replacement = await request.promise;
+    const index = detail.attachments.findIndex((item) => item.id === attachmentId);
+    detail.attachments[index] = replacement;
+    renderPosterAttachments();
+    document.querySelector("#posterContentStatus").textContent = "图片替换成功";
+  } catch (error) {
+    document.querySelector("#posterContentStatus").textContent = `替换失败：${error.message}`;
+  } finally {
+    state.posterContentBusy = false;
+    state.posterAttachmentReplaceId = "";
+    document.querySelector("#posterAttachmentReplaceFile").value = "";
+  }
+}
+
+async function deletePosterAttachment(attachmentId) {
+  const detail = state.posterContentDetail;
+  const item = detail?.attachments?.find((attachment) => attachment.id === attachmentId);
+  if (!item || state.posterContentBusy || !confirm(`确认删除相关图片“${item.name}”？`)) return;
+  state.posterContentBusy = true;
+  try {
+    await api(`/api/posters/${encodeURIComponent(detail.id)}/attachments/${encodeURIComponent(attachmentId)}/delete`, {
+      method: "POST", body: JSON.stringify({ actor: localStorage.getItem("jaguartvOperatorName") || "dashboard" }),
+    });
+    detail.attachments = detail.attachments.filter((attachment) => attachment.id !== attachmentId);
+    renderPosterAttachments();
+    document.querySelector("#posterContentStatus").textContent = "相关图片已删除";
+  } catch (error) {
+    document.querySelector("#posterContentStatus").textContent = `删除失败：${error.message}`;
+  } finally { state.posterContentBusy = false; }
+}
+
+function publicationStateText(state) {
+  if (!state || !Object.keys(state).length) return "";
+  const account = escapeHtml(state.account_label || state.account || "jaguartv vivo");
+  if (state.status === "PUBLISHED") {
+    const link = state.youtube_url ? ` · <a href="${escapeHtml(state.youtube_url)}" target="_blank" rel="noopener">YouTube 链接</a>` : "";
+    const videoId = state.youtube_video_id ? ` · ${escapeHtml(state.youtube_video_id)}` : "";
+    return `<small class="publication-note ready">已发布至 YouTube 账号：${account}${link}${videoId}</small>`;
+  }
+  if (["QUEUED", "SCHEDULED", "PUBLISHING"].includes(state.status)) {
+    return `<small class="publication-note ready">已排队发布至 YouTube 账号：${account} · 计划发布时间：${dateText(state.scheduled_at)} ${escapeHtml(state.timezone || "")}</small>`;
+  }
+  if (state.event_type === "PUBLISH_BLOCKED_SOURCE_PLATFORM") {
+    return `<small class="publication-note blocked">审核通过，但 YouTube 发布被来源门禁拦截：源素材来自 ${escapeHtml(state.source_platform || "YouTube")}</small>`;
+  }
+  if (state.event_type === "PUBLISH_BLOCKED_NO_ROUTE") {
+    return `<small class="publication-note blocked">审核通过，但未匹配发布账号</small>`;
+  }
+  if (state.event_type === "PUBLISH_BLOCKED_NO_ASSET") {
+    return `<small class="publication-note blocked">审核通过，但没有可发布的通用版成片</small>`;
+  }
+  return "";
 }
 
 function renderCategoryFilters() {
@@ -293,7 +965,7 @@ function renderCategoryFilters() {
   container.querySelectorAll("[data-category-filter]").forEach((button) => button.addEventListener("click", () => {
     state.categoryFilter = button.dataset.categoryFilter || "";
     state.selectedCandidates.clear();
-    renderInventory();
+    loadInventory({ resetPage: true });
   }));
 }
 
@@ -349,7 +1021,7 @@ function renderTasks() {
   const tasks = state.tasks.filter((task) => task.status === "RUNNING" || Date.now() - new Date(task.finished_at || 0).getTime() < 120000);
   panel.hidden = tasks.length === 0;
   panel.innerHTML = tasks.map((task) => `<div class="task-progress-item">
-    <div><strong>${escapeHtml({discover:"发现素材",ingest:"导入素材",download:"下载素材",produce:"制作成片"}[task.action] || task.action)}</strong><span>${escapeHtml(task.message || "处理中")}${task.total > 1 ? ` · ${task.completed || 0}/${task.total}` : ""}</span></div>
+    <div><strong>${escapeHtml({discover:"发现素材",ingest:"导入素材",download:"下载素材",produce:"制作成片"}[task.action] || task.action)}</strong><span>${escapeHtml(task.message || "处理中")}${task.target_area_label ? ` · 目标：${escapeHtml(task.target_area_label)}` : ""}${task.total > 1 ? ` · ${task.completed || 0}/${task.total}` : ""}</span></div>
     <div class="progress-track"><span style="width:${Math.max(2, Number(task.progress || 0))}%"></span></div><b>${Number(task.progress || 0)}%</b>
   </div>`).join("");
 }
@@ -375,14 +1047,32 @@ function outputAssetsFor(item) {
   }];
 }
 
-function outputActionLinks(asset) {
+function isDesignOutput(asset) {
+  const text = `${asset.label || ""} ${asset.batch_label || ""} ${asset.content_type || ""} ${asset.filename || ""}`;
+  return text.includes("文案设计版") || text.includes("design_overlay");
+}
+
+function outputDesignButton(item, asset) {
+  if (!asset?.id || isDesignOutput(asset)) return "";
+  const payload = escapeHtml(JSON.stringify([{
+    id: asset.id,
+    label: asset.label || "",
+    variant: asset.variant || "",
+    video_url: asset.video_url || "",
+    filename: asset.filename || "",
+  }]));
+  return `<button class="table-action" data-design-id="${escapeHtml(item.id)}" data-design-assets='${payload}' type="button">文案设计</button>`;
+}
+
+function outputActionLinks(asset, item = null) {
   const videoUrl = String(asset.video_url || "");
   if (!videoUrl) return "";
   const downloadUrl = String(asset.download_url || `${videoUrl}${videoUrl.includes("?") ? "&" : "?"}download=1`);
   const serverUrl = String(asset.server_url || videoUrl);
   const filename = String(asset.filename || `${asset.id || "jaguartv-video"}.mp4`).replace(/[^0-9A-Za-z_.-]+/g, "_");
   const payload = escapeHtml(JSON.stringify({ ...asset, download_url: downloadUrl, server_url: serverUrl, filename }));
-  return `<button class="table-action" data-download-asset='${payload}' type="button">登记下载</button><a class="table-action" href="${escapeHtml(serverUrl)}" target="_blank" rel="noopener">服务器成片</a>`;
+  const publishButton = item?.status === "APPROVED" ? `<button class="table-action" data-publish-candidate="${escapeHtml(item.id)}" data-publish-asset='${payload}' type="button">发布</button>` : "";
+  return `${publishButton}<a class="table-action" href="${escapeHtml(serverUrl)}" target="_blank" rel="noopener">服务器成片</a>${item ? outputDesignButton(item, asset) : ""}`;
 }
 
 function approvedOutputActions(item) {
@@ -391,31 +1081,47 @@ function approvedOutputActions(item) {
     return `<button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">生成成片</button>`;
   }
   if (assets.length > 1) {
-    return `<div class="row-actions"><details class="output-menu"><summary class="table-action">查看全部 ${assets.length} 条</summary><div class="output-menu-panel">${assets.map((asset) => `<div class="output-menu-row"><strong title="${escapeHtml(asset.label || asset.id || "成片")}">${escapeHtml(asset.label || asset.id || "成片")}</strong><div class="row-actions output-menu-actions">${outputActionLinks(asset)}</div></div>`).join("")}</div></details></div>`;
+    return `<div class="row-actions"><details class="output-menu"><summary class="table-action">查看全部 ${assets.length} 条</summary><div class="output-menu-panel">${assets.map((asset) => `<div class="output-menu-row"><strong title="${escapeHtml(asset.label || asset.id || "成片")}">${escapeHtml(asset.label || asset.id || "成片")}</strong><div class="row-actions output-menu-actions">${outputActionLinks(asset, item)}</div></div>`).join("")}</div></details></div>`;
   }
   const allOutputs = "";
-  return `<div class="row-actions">${outputActionLinks(assets[0])}${allOutputs}</div>`;
+  return `<div class="row-actions">${outputActionLinks(assets[0], item)}${allOutputs}</div>`;
 }
 
 function candidateAction(item) {
   const sourceLink = item.url ? `<button class="table-action" onclick="window.open('${escapeHtml(item.url)}','_blank')">源页</button>` : "";
-  const designAssets = escapeHtml(JSON.stringify(outputAssetsFor(item).map((asset) => ({
-    id: asset.id,
-    variant: asset.variant || "",
-    video_url: asset.video_url || "",
-    filename: asset.filename || "",
-  }))));
-  const designButton = `<button class="table-action" data-design-id="${item.id}" data-design-assets='${designAssets}'>文案设计</button>`;
   const deleteButton = `<button class="table-action danger-action" data-delete-id="${item.id}">删除</button>`;
-  if (item.status === "DISCOVERED") return `${sourceLink}<button class="table-action" data-candidate-action="download" data-candidate-id="${item.id}">下载</button><button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">制作</button>${designButton}${deleteButton}`;
-  if (item.status === "DOWNLOAD_FAILED") return `${sourceLink}<button class="table-action" data-candidate-action="download" data-candidate-id="${item.id}">重新下载</button><button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">下载并制作</button>${designButton}${deleteButton}`;
-  if (item.status === "PRODUCTION_FAILED") return `${sourceLink}<button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">重新制作</button>${designButton}${deleteButton}`;
-  if (["DOWNLOADED", "REVISION_REQUIRED", "BLOCKED_RIGHTS"].includes(item.status)) return `<button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">制作</button>${designButton}${deleteButton}`;
+  if (item.source_import_placeholder) return item.status === "IMPORT_FAILED" ? `${sourceLink}<button class="table-action" data-import-retry="${escapeHtml(item.source_import_id)}" type="button">重试导入</button>` : sourceLink;
+  if (item.status === "DISCOVERED") return `${sourceLink}<button class="table-action" data-candidate-action="download" data-candidate-id="${item.id}">下载</button><button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">制作</button>${deleteButton}`;
+  if (item.status === "DOWNLOAD_FAILED") return `${sourceLink}<button class="table-action" data-candidate-action="download" data-candidate-id="${item.id}">重新下载</button><button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">下载并制作</button>${deleteButton}`;
+  if (item.status === "IMPORT_FAILED" && item.source_import_id) return `${sourceLink}<button class="table-action" data-import-retry="${escapeHtml(item.source_import_id)}" type="button">重试导入</button>${deleteButton}`;
+  if (item.status === "PRODUCTION_FAILED") return `${sourceLink}<button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">重新制作</button>${deleteButton}`;
+  if (["DOWNLOADED", "REVISION_REQUIRED", "BLOCKED_RIGHTS"].includes(item.status)) return `<button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">制作</button>${deleteButton}`;
   if (item.status === "READY_FOR_REVIEW") {
-    return `${approvedOutputActions(item)}${designButton}<button class="table-action" data-review-decision="APPROVED" data-candidate-id="${item.id}">通过</button><button class="table-action" data-review-decision="REVISION_REQUIRED" data-candidate-id="${item.id}">返工</button>${deleteButton}`;
+    return `${approvedOutputActions(item)}<button class="table-action" data-review-decision="APPROVED" data-candidate-id="${item.id}">通过</button><button class="table-action" data-review-decision="REVISION_REQUIRED" data-candidate-id="${item.id}">返工</button>${deleteButton}`;
   }
-  if (item.status === "APPROVED") return `${approvedOutputActions(item)}${designButton}${deleteButton}`;
-  return `${designButton}${deleteButton}`;
+  if (item.status === "APPROVED") return `${approvedOutputActions(item)}${deleteButton}`;
+  return `${deleteButton}`;
+}
+
+async function retrySourceImport(importId) {
+  const item = state.candidates.find((candidate) => candidate.source_import_id === importId);
+  if (!item) return toast("找不到导入记录", "error");
+  try {
+    const result = await api("/api/actions", {
+      method: "POST",
+      headers: { "X-Idempotency-Key": item.source_import_id },
+      body: JSON.stringify({
+        action: "ingest",
+        platform: item.platform,
+        url: item.url,
+        target_area: item.target_area || "pending_production",
+      }),
+    });
+    toast(`导入重试任务 ${result.task_id} 已启动`);
+    pollTask(result.task_id);
+  } catch (error) {
+    toast(`重试失败：${error.message}`, "error");
+  }
 }
 
 async function submitReview(decision, candidateId) {
@@ -482,9 +1188,10 @@ async function pollTask(taskId) {
     }
     else {
       if (task.action === "ingest") {
-        state.status = "DOWNLOAD_FAILED";
+        state.status = "IMPORT_FAILED";
+        state.sourceFilter = "source_import";
         await refreshAll();
-        toast("导入失败，已放入下载失败列表；请查看该行失败原因", "error");
+        toast("导入失败，已放入导入失败列表；请查看原因并重试", "error");
         return;
       }
       toast(`任务失败：${task.error}`, "error");
@@ -500,12 +1207,235 @@ function renderPublications() {
   `).join("") : `<tr><td colspan="5"><div class="empty-state">尚无发布任务<br>先选择审核通过的成片加入队列</div></td></tr>`;
 }
 
+function authStatusLabel(status) {
+  return {
+    PENDING_CONFIRMATION: "待确认",
+    AUTHORIZED: "可发布",
+    REVOKED: "已撤销",
+    NEEDS_REAUTH: "需重授",
+  }[status] || status || "未授权";
+}
+
+function renderXAuths() {
+  const accountSelect = document.querySelector("#xAuthAccount");
+  if (accountSelect && !accountSelect.options.length) {
+    accountSelect.innerHTML = matrixAccounts.map(([id, label]) => `<option value="${id}">${label} · ${id}</option>`).join("");
+  }
+  const byAccount = new Map(state.xAuths.map((item) => [item.account, item]));
+  const rows = matrixAccounts.map(([id, label]) => {
+    const item = byAccount.get(id) || { account: id, status: "", username: "", x_user_id: "", scopes: "", updated_at: "" };
+    const isPending = item.status === "PENDING_CONFIRMATION";
+    const canRevoke = item.status === "AUTHORIZED" || item.status === "PENDING_CONFIRMATION" || item.status === "NEEDS_REAUTH";
+    return `
+      <tr>
+        <td><strong>${escapeHtml(label)}</strong><small>${escapeHtml(id)}</small></td>
+        <td>${item.username ? `@${escapeHtml(item.username)}` : "未授权"}<small>${escapeHtml(item.display_name || "")}</small></td>
+        <td>${escapeHtml(item.x_user_id || "")}</td>
+        <td title="${escapeHtml(item.scopes || "")}">${escapeHtml((item.scopes || "").slice(0, 48))}</td>
+        <td><span class="status-pill ${statusClass(item.status || "FAILED")}">${escapeHtml(authStatusLabel(item.status))}</span></td>
+        <td>${dateText(item.updated_at || item.authorized_at)}</td>
+        <td class="table-actions">
+          ${isPending ? `<button class="secondary-button tiny-button" data-x-auth-action="confirm" data-account="${id}" type="button">确认</button>` : ""}
+          ${canRevoke ? `<button class="secondary-button danger-button tiny-button" data-x-auth-action="revoke" data-account="${id}" type="button">撤销</button>` : ""}
+        </td>
+      </tr>
+    `;
+  });
+  document.querySelector("#xAuthTable").innerHTML = rows.join("");
+}
+
 function renderAnalytics() {
   const k = state.overview.kpis;
   const cards = [["播放", k.views], ["点击", k.clicks], ["注册", k.registrations], ["首次观看", k.first_watch || 0]];
   document.querySelector("#analyticsSummary").innerHTML = cards.map((item, index) => `<article class="kpi-card ${index === 3 ? "highlight" : ""}"><span>${item[0]}</span><strong>${number(item[1])}</strong><small>${index ? `上一阶段转化见总览` : "平台最新快照"}</small></article>`).join("");
   document.querySelector("#keywordTable").innerHTML = state.overview.keywords.length ? state.overview.keywords.map((row) => `<tr><td>${escapeHtml(row.keyword)}</td><td>${row.candidates}</td><td>${number(row.views)}</td><td>${number(row.clicks)}</td><td>${number(row.registrations)}</td><td>${number(row.first_watch || 0)}</td><td>${row.score}</td></tr>`).join("") : `<tr><td colspan="7"><div class="empty-state">暂无关键词数据</div></td></tr>`;
   document.querySelector("#feedbackList").innerHTML = state.feedback.length ? state.feedback.map((item) => `<div class="feedback-item"><strong>${escapeHtml(item.action_type)} · ${escapeHtml(item.keyword || item.candidate_id || "内容")}</strong><span>${escapeHtml(item.reason)} · 信号分 ${Number(item.score).toFixed(2)}</span></div>`).join("") : `<div class="empty-state">当视频达到最低播放量且注册率或分享率突出时，系统会在这里提出关键词增强建议。<br>建议先审核，再应用到发现配置。</div>`;
+}
+
+const ptBRNumber = (value, options = {}) => value === null || value === undefined
+  ? "暂无数据"
+  : new Intl.NumberFormat("pt-BR", { maximumFractionDigits: 2, ...options }).format(Number(value));
+
+function youtubeDuration(value) {
+  if (value === null || value === undefined) return "暂无数据";
+  const seconds = Number(value);
+  const rounded = Math.max(0, Math.round(seconds));
+  const minutes = Math.floor(rounded / 60);
+  const remainder = rounded % 60;
+  return `${ptBRNumber(seconds)} s · ${minutes}:${String(remainder).padStart(2, "0")}`;
+}
+
+function youtubePercentage(value, unavailable = false) {
+  if (value === null || value === undefined) return unavailable ? "暂不可用" : "暂无数据";
+  return `${ptBRNumber(value)}%`;
+}
+
+function saoPauloDateTime(value) {
+  if (!value) return "暂无数据";
+  return new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
+function youtubeSyncStatus(value) {
+  return {
+    PENDING: "等待同步",
+    IN_PROGRESS: "同步中",
+    SUCCESS: "同步成功",
+    PARTIAL: "部分数据",
+    RETRY: "等待重试",
+    BLOCKED: "暂不可用",
+    NEEDS_REAUTH: "需要重新授权",
+  }[value] || value || "尚未调度";
+}
+
+function youtubeGrowthQuery() {
+  const params = new URLSearchParams({
+    range: document.querySelector("#youtubeGrowthRange").value,
+    account_id: document.querySelector("#youtubeGrowthAccount").value,
+  });
+  if (params.get("range") === "custom") {
+    params.set("start_date", document.querySelector("#youtubeGrowthStart").value);
+    params.set("end_date", document.querySelector("#youtubeGrowthEnd").value);
+  }
+  return params;
+}
+
+function renderYouTubeGrowthAccounts(accounts) {
+  const select = document.querySelector("#youtubeGrowthAccount");
+  const selected = select.value;
+  const accountStatusSuffix = (status) => ({
+    ANALYTICS_SCOPE_MISSING: " · 需补分析授权",
+    NEEDS_REAUTH: " · 需重新授权",
+    AUTH_REFRESH_FAILED: " · 授权刷新失败",
+    AUTH_DECRYPT_FAILED: " · 授权解密失败",
+  }[status] || "");
+  select.innerHTML = `<option value="">全部账号</option>${accounts.map((item) => `
+    <option value="${escapeHtml(item.account_id)}">${escapeHtml(item.current_channel_title || item.account_id)} · ${escapeHtml(item.account_id)}${accountStatusSuffix(item.status)}</option>
+  `).join("")}`;
+  if ([...select.options].some((option) => option.value === selected)) select.value = selected;
+}
+
+function renderYouTubeGrowthSummary(summary) {
+  const cards = [
+    ["视频数量", ptBRNumber(summary.video_count)],
+    ["YouTube账号", ptBRNumber(summary.account_count)],
+    ["观看次数", ptBRNumber(summary.view_count)],
+    ["评论数", ptBRNumber(summary.comment_count)],
+    ["点赞量", ptBRNumber(summary.like_count)],
+    ["分享数量", ptBRNumber(summary.share_count)],
+    ["加权平均观看", youtubeDuration(summary.average_view_duration)],
+    ["加权完播率", youtubePercentage(summary.completion_rate, true)],
+    ["最后成功更新", summary.last_successful_update ? saoPauloDateTime(summary.last_successful_update) : "暂无数据"],
+    ["延迟或缺失视频", ptBRNumber(summary.missing_video_count)],
+  ];
+  document.querySelector("#youtubeGrowthSummary").innerHTML = cards.map(([label, value]) => `
+    <article class="youtube-growth-kpi"><span>${label}</span><strong>${value}</strong></article>
+  `).join("");
+  document.querySelector("#youtubeGrowthFreshness").textContent = summary.last_successful_update
+    ? `最后成功更新 ${saoPauloDateTime(summary.last_successful_update)}`
+    : "当前筛选范围尚无成功快照";
+}
+
+function renderYouTubeRanking(payload) {
+  const body = document.querySelector("#youtubeRankingBody");
+  body.innerHTML = payload.items.map((item) => {
+    const thumbnail = item.thumbnail_url
+      ? `<img class="youtube-video-thumbnail" src="${escapeHtml(item.thumbnail_url)}" alt="" loading="lazy" referrerpolicy="no-referrer">`
+      : `<div class="youtube-video-thumbnail placeholder">YT</div>`;
+    const title = escapeHtml(item.title || item.youtube_video_id || "未命名视频");
+    const link = item.public_url
+      ? `<a href="${escapeHtml(item.public_url)}" target="_blank" rel="noopener noreferrer">${title}</a>`
+      : title;
+    const error = item.last_error_summary
+      ? `<small class="youtube-sync-error" title="${escapeHtml(item.last_error_summary)}">${escapeHtml(item.last_error_category || item.last_error_summary)}</small>`
+      : "";
+    return `<tr>
+      <td><div class="youtube-video-cell">${thumbnail}<div><strong>${link}</strong><small>${escapeHtml(item.youtube_video_id || "")}</small></div></div></td>
+      <td><strong>${escapeHtml(item.current_channel_title || "未知")}</strong><small>发布时：${escapeHtml(item.published_channel_title || "未知")}</small></td>
+      <td>${escapeHtml(item.channel_id || "未知")}</td>
+      <td>${saoPauloDateTime(item.published_local_at)}</td>
+      <td>${item.publication_origin === "YOUTUBE_CHANNEL_IMPORT" ? "频道导入 · YouTube" : escapeHtml(item.source_platform || "未知")}</td>
+      <td>${escapeHtml(!item.source_category || item.source_category === "unknown" ? "未知" : item.source_category)}</td>
+      <td>${escapeHtml(!item.source_keyword || item.source_keyword === "unknown" ? "未知" : item.source_keyword)}</td>
+      <td>${ptBRNumber(item.view_count)}</td>
+      <td>${ptBRNumber(item.comment_count)}</td>
+      <td>${ptBRNumber(item.like_count)}</td>
+      <td title="原始秒数：${item.average_view_duration ?? "暂无数据"}">${youtubeDuration(item.average_view_duration)}</td>
+      <td title="末段桶 ${item.completion_bucket_ratio ?? "暂不可用"} · 原始比例 ${item.completion_raw_ratio ?? "暂不可用"}">${youtubePercentage(item.completion_rate, true)}</td>
+      <td>${ptBRNumber(item.share_count)}</td>
+      <td><span>最后请求：${saoPauloDateTime(item.last_attempted_at)}</span><small>Analytics 截至：${escapeHtml(item.data_through_date || "暂无数据")} · 下次：${saoPauloDateTime(item.next_sync_at)}</small></td>
+      <td><span class="status-pill ${statusClass(item.sync_status)}">${escapeHtml(youtubeSyncStatus(item.sync_status))}</span>${error}</td>
+    </tr>`;
+  }).join("");
+  state.youtubeGrowth.pages = payload.pages;
+  state.youtubeGrowth.total = payload.total;
+  document.querySelector("#youtubeGrowthPageStatus").textContent = payload.total
+    ? `第 ${payload.page} / ${payload.pages} 页 · ${ptBRNumber(payload.total)} 个视频`
+    : "";
+  document.querySelector("#youtubeGrowthPrevious").disabled = payload.page <= 1;
+  document.querySelector("#youtubeGrowthNext").disabled = payload.page >= payload.pages;
+  document.querySelector("#youtubeGrowthPagination").hidden = payload.pages <= 1;
+}
+
+function setYouTubeGrowthState(name, message = "") {
+  document.querySelector("#youtubeGrowthLoading").hidden = name !== "loading";
+  document.querySelector("#youtubeGrowthError").hidden = name !== "error";
+  document.querySelector("#youtubeGrowthEmpty").hidden = name !== "empty";
+  document.querySelector("#youtubeGrowthTable").hidden = name !== "ready";
+  if (message) document.querySelector("#youtubeGrowthError span").textContent = message;
+}
+
+async function loadYouTubeAnalytics({ resetPage = false } = {}) {
+  if (resetPage) state.youtubeGrowth.page = 1;
+  if (state.youtubeGrowth.abortController) state.youtubeGrowth.abortController.abort();
+  const controller = new AbortController();
+  const serial = ++state.youtubeGrowth.requestSerial;
+  state.youtubeGrowth.abortController = controller;
+  setYouTubeGrowthState("loading");
+  try {
+    const query = youtubeGrowthQuery();
+    const rankingQuery = new URLSearchParams(query);
+    rankingQuery.set("metric", document.querySelector("#youtubeGrowthMetric").value);
+    rankingQuery.set("page", String(state.youtubeGrowth.page));
+    rankingQuery.set("page_size", String(state.youtubeGrowth.pageSize));
+    const [accounts, summary, ranking] = await Promise.all([
+      api("/api/youtube-analytics/accounts", { signal: controller.signal }),
+      api(`/api/youtube-analytics/summary?${query}`, { signal: controller.signal }),
+      api(`/api/youtube-analytics/ranking?${rankingQuery}`, { signal: controller.signal }),
+    ]);
+    if (serial !== state.youtubeGrowth.requestSerial) return;
+    renderYouTubeGrowthAccounts(accounts);
+    renderYouTubeGrowthSummary(summary);
+    renderYouTubeRanking(ranking);
+    setYouTubeGrowthState(ranking.items.length ? "ready" : "empty");
+    state.youtubeGrowth.loaded = true;
+  } catch (error) {
+    if (error.name === "AbortError" || serial !== state.youtubeGrowth.requestSerial) return;
+    setYouTubeGrowthState("error", `数据加载失败：${error.message}`);
+  }
+}
+
+function updateYouTubeCustomDates() {
+  const custom = document.querySelector("#youtubeGrowthRange").value === "custom";
+  document.querySelectorAll(".youtube-custom-date").forEach((label) => { label.hidden = !custom; });
+  document.querySelector("#youtubeGrowthStart").required = custom;
+  document.querySelector("#youtubeGrowthEnd").required = custom;
+  if (custom && !document.querySelector("#youtubeGrowthEnd").value) {
+    const formatter = new Intl.DateTimeFormat("sv-SE", {
+      timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit",
+    });
+    const end = formatter.format(new Date());
+    const startDate = new Date(`${end}T12:00:00-03:00`);
+    startDate.setDate(startDate.getDate() - 29);
+    document.querySelector("#youtubeGrowthStart").value = formatter.format(startDate);
+    document.querySelector("#youtubeGrowthEnd").value = end;
+  }
 }
 
 function renderDownloadClaims() {
@@ -521,22 +1451,120 @@ function renderDownloadClaims() {
       <td>${number(item.registrations)}</td>
       <td><button class="table-action" data-claim-metrics="${item.id}" type="button">回传数据</button></td>
     </tr>
-  `).join("") : `<tr><td colspan="7"><div class="empty-state">还没有下载登记。审核通过的视频点击“登记下载”后会出现在这里。</div></td></tr>`;
+  `).join("") : `<tr><td colspan="7"><div class="empty-state">还没有下载记录。审核通过的视频通过“发布”向导选择未配置自动发布的平台后会出现在这里。</div></td></tr>`;
   table.querySelectorAll("[data-claim-metrics]").forEach((button) => button.addEventListener("click", () => openClaimMetricsDialog(button.dataset.claimMetrics)));
 }
 
-function openDownloadClaimDialog(rawAsset) {
-  try {
-    state.pendingDownloadAsset = JSON.parse(rawAsset || "{}");
-  } catch {
-    state.pendingDownloadAsset = null;
+function saoPauloNowForInput() {
+  const parts = new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date()).reduce((acc, part) => ({ ...acc, [part.type]: part.value }), {});
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
+}
+
+function tagsFromInput(value) {
+  return String(value || "").split(/[,，#\n]+/).map((item) => item.trim()).filter(Boolean);
+}
+
+function selectedPublishCapability() {
+  return state.publishCapabilities[document.querySelector("#publishPlatform").value] || {};
+}
+
+function renderPublishPreview() {
+  const capability = selectedPublishCapability();
+  const accountSelect = document.querySelector("#publishAccount");
+  const accountLabel = accountSelect.selectedOptions[0]?.textContent || "未选择账号";
+  const mode = document.querySelector("#publishScheduleMode").value;
+  const localTime = mode === "scheduled" ? document.querySelector("#publishScheduledLocal").value : "立即发布";
+  const operation = capability.operation_type === "PUBLICATION" ? "公开发布" : "仅下载到本地";
+  document.querySelector("#publishPreview").innerHTML = `
+    <div><strong>发布平台</strong><span>${escapeHtml(capability.label || document.querySelector("#publishPlatform").value)}</span></div>
+    <div><strong>平台授权账号</strong><span>${escapeHtml(accountLabel)}</span></div>
+    <div><strong>发布时间</strong><span>${escapeHtml(localTime)} · America/Sao_Paulo</span></div>
+    <div><strong>公开范围</strong><span>public</span></div>
+    <div><strong>当前操作</strong><span>${escapeHtml(operation)}</span></div>
+    <div><strong>标题</strong><span>${escapeHtml(document.querySelector("#publishTitle").value)}</span></div>
+    <div><strong>标签</strong><span>${escapeHtml(tagsFromInput(document.querySelector("#publishTags").value).join(", "))}</span></div>
+  `;
+}
+
+async function loadPublishAccounts(platform) {
+  const accounts = await api(`/api/publish/accounts?platform=${encodeURIComponent(platform)}`);
+  state.publishAccounts = accounts;
+  const capability = state.publishCapabilities[platform] || {};
+  const usable = accounts.filter((item) => item.status === "AVAILABLE");
+  const select = document.querySelector("#publishAccount");
+  if (!accounts.length && capability.operation_type !== "PUBLICATION") {
+    select.innerHTML = `<option value="">无需平台账号（仅下载）</option>`;
+    select.disabled = true;
+  } else {
+    select.innerHTML = accounts.length
+      ? accounts.map((item) => `<option value="${escapeHtml(item.id)}" ${item.status === "AVAILABLE" ? "" : "disabled"}>${escapeHtml(item.username || item.id)} · ${escapeHtml(item.status === "AVAILABLE" ? "可用" : item.status_reason || "不可用")}</option>`).join("")
+      : `<option value="">没有可用账号</option>`;
+    select.disabled = !accounts.length;
   }
-  if (!state.pendingDownloadAsset?.download_url) return toast("这个成片没有可下载链接", "error");
-  document.querySelector("#downloadClaimAsset").textContent = state.pendingDownloadAsset.label || state.pendingDownloadAsset.filename || "成片";
-  document.querySelector("#downloadClaimPublisher").value = localStorage.getItem("jaguartvPublisherName") || "";
-  document.querySelector("#downloadClaimPlatform").value = "facebook";
-  document.querySelector("#downloadClaimNote").value = "";
-  document.querySelector("#downloadClaimDialog").showModal();
+  if (capability.requires_account && !usable.length) {
+    document.querySelector("#publishCapabilityNotice").textContent = "YouTube 必须选择一个可用授权账号；当前没有可用账号，不能创建真实发布任务。";
+  } else {
+    document.querySelector("#publishCapabilityNotice").textContent = capability.notice || "";
+  }
+  renderPublishPreview();
+}
+
+async function generatePublishCopy() {
+  const asset = state.pendingPublishAsset;
+  if (!asset?.id) return toast("请先选择成片", "error");
+  const button = document.querySelector("#regeneratePublishCopy");
+  button.disabled = true;
+  try {
+    const result = await api("/api/publish/copy", {
+      method: "POST",
+      body: JSON.stringify({
+        candidate_id: String(asset.id).split(":", 1)[0],
+        asset_id: asset.id,
+        filename: asset.filename,
+        variant: asset.variant || "",
+        platform: document.querySelector("#publishPlatform").value,
+      }),
+    });
+    document.querySelector("#publishTitle").value = result.title || "";
+    document.querySelector("#publishDescription").value = result.description || "";
+    document.querySelector("#publishTags").value = (result.tags || []).join(", ");
+    renderPublishPreview();
+  } catch (error) {
+    toast(`AI 文案生成失败：${error.message}`, "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function openPublishDialog(rawAsset, candidateId = "") {
+  try {
+    state.pendingPublishAsset = JSON.parse(rawAsset || "{}");
+  } catch {
+    state.pendingPublishAsset = null;
+  }
+  state.pendingPublishItem = state.candidates.find((item) => item.id === candidateId) || null;
+  if (state.pendingPublishItem?.status !== "APPROVED") return toast("只有审核通过的视频才能发布", "error");
+  if (!state.pendingPublishAsset?.download_url) return toast("这个成片没有可下载链接", "error");
+  const asset = state.pendingPublishAsset;
+  document.querySelector("#publishAssetSummary").textContent = `${state.pendingPublishItem.display_title || state.pendingPublishItem.title || candidateId} · ${asset.label || asset.filename || "成片"} · ${asset.variant || "版本"}`;
+  document.querySelector("#publishPlatform").value = "youtube";
+  document.querySelector("#publishScheduleMode").value = "now";
+  document.querySelector("#publishScheduledLocal").value = saoPauloNowForInput();
+  document.querySelector("#publishScheduleField").hidden = true;
+  document.querySelector("#publishTitle").value = "";
+  document.querySelector("#publishDescription").value = "";
+  document.querySelector("#publishTags").value = "";
+  document.querySelector("#publishDialog").showModal();
+  await loadPublishAccounts("youtube");
+  await generatePublishCopy();
 }
 
 function openClaimMetricsDialog(claimId) {
@@ -548,19 +1576,6 @@ function openClaimMetricsDialog(claimId) {
   document.querySelector("#claimMetricsClicks").value = claim.clicks || "";
   document.querySelector("#claimMetricsRegistrations").value = claim.registrations || "";
   document.querySelector("#claimMetricsDialog").showModal();
-}
-
-function renderHotKeywords() {
-  const element = document.querySelector("#hotKeywordStrip");
-  if (!element) return;
-  element.innerHTML = state.hotKeywords.length ? state.hotKeywords.map((item) => `
-    <button class="hot-keyword" data-hot-keyword="${escapeHtml(item.keyword)}" type="button">
-      <strong>${escapeHtml(item.keyword)}</strong><small>${escapeHtml(item.source || "google_trends")}</small>
-    </button>
-  `).join("") : `<div class="empty-state">今日热词还未同步；调度器会保留最近一次成功结果</div>`;
-  element.querySelectorAll("[data-hot-keyword]").forEach((button) => {
-    button.addEventListener("click", () => discoverWithHotKeyword(button.dataset.hotKeyword));
-  });
 }
 
 function renderCategoryKeywords() {
@@ -600,16 +1615,6 @@ async function discoverWithHotKeyword(keyword) {
     pollTask(result.task_id);
   } catch (error) {
     toast(`热词发现失败：${error.message}`, "error");
-  }
-}
-
-async function runTrendsNow() {
-  try {
-    const result = await api("/api/trends/run", { method: "POST", body: JSON.stringify({}) });
-    toast(`Google Trends 已同步 ${result.count || 0} 个热词`);
-    await refreshAll();
-  } catch (error) {
-    toast(`同步失败：${error.message}`, "error");
   }
 }
 
@@ -766,7 +1771,7 @@ async function parseUploadResponse(response) {
   return payload;
 }
 
-async function uploadServerFile(file, kind, token, onProgress = () => {}) {
+async function uploadServerFile(file, kind, token, onProgress = () => {}, completeOptions = {}) {
   const init = await api("/api/uploads/init", {
     method: "POST",
     body: JSON.stringify({ filename: file.name, kind, size: file.size }),
@@ -787,9 +1792,11 @@ async function uploadServerFile(file, kind, token, onProgress = () => {}) {
   onProgress(97, "服务器正在合并文件");
   const completed = await api("/api/uploads/complete", {
     method: "POST",
-    body: JSON.stringify({ upload_id: init.id }),
+    headers: completeOptions.idempotency_key ? { "X-Idempotency-Key": completeOptions.idempotency_key } : {},
+    body: JSON.stringify({ upload_id: init.id, ...completeOptions }),
   });
-  onProgress(100, kind === "source" ? "上传完成，已进入待制作库存" : kind === "design_image" ? "图片上传完成" : "Reaction 上传完成");
+  const targetLabel = completed.target_area_label || (completeOptions.target_area === "approved" ? "审核通过" : "待制作");
+  onProgress(100, kind === "source" ? `上传完成，目标区域：${targetLabel}` : kind === "design_image" ? "图片上传完成" : "Reaction 上传完成");
   return completed;
 }
 
@@ -842,10 +1849,15 @@ function fillCandidateSelects() {
 }
 
 function openView(name) {
+  if (!views[name]) return;
   document.querySelectorAll(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.view === name));
   document.querySelectorAll(".view").forEach((item) => item.classList.toggle("active", item.id === `view-${name}`));
   document.querySelector("#viewEyebrow").textContent = views[name][0];
   document.querySelector("#viewTitle").textContent = views[name][1];
+  document.querySelector(".top-actions .search").hidden = name === "posters";
+  document.querySelector("#discoverButton").hidden = name === "posters";
+  if (name === "posters") loadPosters();
+  if (name === "analytics" && !state.youtubeGrowth.loaded) loadYouTubeAnalytics();
 }
 
 function openProductionDialog(candidateIds) {
@@ -866,31 +1878,35 @@ function parseDesignAssets(raw) {
 function designAssetMap(assets) {
   const generic = assets.find((asset) => asset.variant === "通用版") || assets[0] || null;
   const fb = assets.find((asset) => asset.variant === "FB版") || generic;
+  const selected = assets[0] || null;
+  const selectedVariant = selected?.variant || generic?.variant || "通用版";
   return {
     generic,
     fb,
-    ids: {
-      "通用版": generic?.id || "",
-      "FB版": fb?.id || generic?.id || "",
-    },
+    selected,
+    selectedVariant,
+    ids: { [selectedVariant]: selected?.id || generic?.id || "" },
   };
 }
 
 async function openDesignDialog(candidateId, encodedAssets = "") {
   const item = state.candidates.find((candidate) => candidate.id === candidateId);
   if (!item) return toast("找不到这条内容", "error");
+  const productionCandidateId = item.source_candidate_id || candidateId;
   const assetMap = designAssetMap(parseDesignAssets(encodedAssets));
-  const baseAssetId = assetMap.generic?.id || assetMap.fb?.id || "";
+  const baseAssetId = assetMap.selected?.id || assetMap.generic?.id || assetMap.fb?.id || "";
   if (!baseAssetId) return toast("请先生成服务器成片，再打开文案设计", "error");
   let designInfo = {};
   try {
-    designInfo = await api(`/api/candidates/${encodeURIComponent(`${candidateId}::asset::${baseAssetId}`)}/design`);
+    designInfo = await api(`/api/candidates/${encodeURIComponent(`${productionCandidateId}::asset::${baseAssetId}`)}/design`);
   } catch (error) {
     toast(`服务器成片画布信息读取失败：${error.message}`, "error");
   }
   Object.assign(item, designInfo);
   item.design_base_asset_ids = assetMap.ids;
-  state.pendingProductionIds = [candidateId];
+  item.design_variants = [assetMap.selectedVariant];
+  item.design_base_label = `${assetMap.selected?.label || item.display_title || item.title || candidateId}`;
+  state.pendingProductionIds = [item.source_candidate_id || productionCandidateId];
   state.designCandidate = item;
   clearDesignImages();
   state.designLayers = [{
@@ -905,12 +1921,11 @@ async function openDesignDialog(candidateId, encodedAssets = "") {
     y: 0.10,
   }];
   state.selectedDesignLayerId = "design-text";
-  document.querySelector("#designCandidateLabel").textContent = item.display_title || item.title || candidateId;
+  document.querySelector("#designCandidateLabel").textContent = `${item.display_title || item.title || candidateId} · ${assetMap.selectedVariant}`;
   document.querySelector("#designText").value = "";
   document.querySelector("#designTextColor").value = "#ffffff";
   document.querySelector("#designTextSize").value = 64;
   document.querySelector("#designTextWidth").value = 84;
-  document.querySelector("#designVariant").value = "both";
   document.querySelector("#designUploadProgress").hidden = true;
   setDesignSource(item);
   renderDesignEditor();
@@ -1204,16 +2219,23 @@ document.querySelectorAll("[data-open-view]").forEach((button) => button.addEven
 document.querySelector("#refreshButton").addEventListener("click", () => refreshAll(true));
 document.querySelector("#discoverButton").addEventListener("click", () => {
   document.querySelector("#discoverUploadProgress").hidden = true;
+  document.querySelector('input[name="discoverTarget"][value="pending_production"]').checked = true;
+  state.discoverIdempotencyKey = globalThis.crypto?.randomUUID?.() || `source-import-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   updateDiscoverMode();
+  updateDiscoverTarget();
   document.querySelector("#discoverDialog").showModal();
 });
 document.querySelector("#closeDiscoverDialog").addEventListener("click", () => document.querySelector("#discoverDialog").close());
 document.querySelector("#cancelDiscoverDialog").addEventListener("click", () => document.querySelector("#discoverDialog").close());
-document.querySelector("#closeDownloadClaimDialog").addEventListener("click", () => document.querySelector("#downloadClaimDialog").close());
-document.querySelector("#cancelDownloadClaimDialog").addEventListener("click", () => document.querySelector("#downloadClaimDialog").close());
+document.querySelector("#closePublishDialog").addEventListener("click", () => document.querySelector("#publishDialog").close());
+document.querySelector("#cancelPublishDialog").addEventListener("click", () => document.querySelector("#publishDialog").close());
 document.querySelector("#closeClaimMetricsDialog").addEventListener("click", () => document.querySelector("#claimMetricsDialog").close());
 document.querySelector("#cancelClaimMetricsDialog").addEventListener("click", () => document.querySelector("#claimMetricsDialog").close());
-document.querySelector("#globalSearch").addEventListener("input", (event) => { state.search = event.target.value; renderInventory(); });
+document.querySelector("#globalSearch").addEventListener("input", (event) => {
+  state.search = event.target.value;
+  clearTimeout(state.inventorySearchTimer);
+  state.inventorySearchTimer = setTimeout(() => loadInventory({ resetPage: true }), 250);
+});
 document.querySelector("#selectVisible").addEventListener("change", (event) => {
   filteredCandidates().forEach((item) => event.target.checked ? state.selectedCandidates.add(item.id) : state.selectedCandidates.delete(item.id));
   renderInventory();
@@ -1225,44 +2247,263 @@ document.querySelector("#batchProduce").addEventListener("click", () => {
   openProductionDialog(ids);
 });
 document.querySelector("#batchDelete").addEventListener("click", () => deleteCandidates(selectedRows().map((item) => item.id)));
-document.querySelector("#runTrendsNow").addEventListener("click", runTrendsNow);
 document.querySelectorAll("#statusFilters button").forEach((button) => button.addEventListener("click", () => {
   document.querySelectorAll("#statusFilters button").forEach((item) => item.classList.toggle("active", item === button));
   state.status = button.dataset.status;
-  renderInventory();
+  state.selectedCandidates.clear();
+  loadInventory({ resetPage: true });
 }));
-
-document.querySelector("#downloadClaimForm").addEventListener("submit", async (event) => {
+document.querySelectorAll("#sourceFilters [data-source-type]").forEach((button) => button.addEventListener("click", () => {
+  state.sourceFilter = button.dataset.sourceType || "";
+  state.selectedCandidates.clear();
+  loadInventory({ resetPage: true });
+}));
+document.querySelector("#inventoryPlatformFilter").addEventListener("change", (event) => {
+  state.platformFilter = event.target.value || "";
+  state.selectedCandidates.clear();
+  loadInventory({ resetPage: true });
+});
+document.querySelector("#inventoryPreviousPage").addEventListener("click", () => {
+  if (state.inventoryLoading || state.inventoryPagination.page <= 1) return;
+  state.inventoryPagination.page -= 1;
+  loadInventory();
+});
+document.querySelector("#inventoryNextPage").addEventListener("click", () => {
+  if (state.inventoryLoading || state.inventoryPagination.page >= state.inventoryPagination.pages) return;
+  state.inventoryPagination.page += 1;
+  loadInventory();
+});
+document.querySelectorAll("#posterStatusFilters button").forEach((button) => button.addEventListener("click", () => {
+  if (state.posterLoading || state.posterStatus === (button.dataset.posterStatus || "")) return;
+  document.querySelectorAll("#posterStatusFilters button").forEach((item) => item.classList.toggle("active", item === button));
+  state.posterStatus = button.dataset.posterStatus || "";
+  state.posterPagination.page = 1;
+  loadPosters();
+}));
+document.querySelector("#posterPreviousPage").addEventListener("click", () => {
+  if (state.posterLoading || state.posterPagination.page <= 1) return;
+  state.posterPagination.page -= 1;
+  loadPosters();
+});
+document.querySelector("#posterNextPage").addEventListener("click", () => {
+  if (state.posterLoading || state.posterPagination.page >= state.posterPagination.pages) return;
+  state.posterPagination.page += 1;
+  loadPosters();
+});
+document.querySelector("#openPosterImport").addEventListener("click", openPosterImportDialog);
+document.querySelector("#closePosterImport").addEventListener("click", closePosterImportDialog);
+document.querySelector("#cancelPosterImport").addEventListener("click", closePosterImportDialog);
+document.querySelector("#posterImportCategory").addEventListener("change", renderPosterImportList);
+document.querySelector("#posterDropzone").addEventListener("click", () => document.querySelector("#posterImportFiles").click());
+document.querySelector("#posterDropzone").addEventListener("keydown", (event) => {
+  if (["Enter", " "].includes(event.key)) { event.preventDefault(); document.querySelector("#posterImportFiles").click(); }
+});
+document.querySelector("#posterDropzone").addEventListener("dragover", (event) => { event.preventDefault(); event.currentTarget.classList.add("dragging"); });
+document.querySelector("#posterDropzone").addEventListener("dragleave", (event) => event.currentTarget.classList.remove("dragging"));
+document.querySelector("#posterDropzone").addEventListener("drop", (event) => {
   event.preventDefault();
-  const asset = state.pendingDownloadAsset;
-  if (!asset?.download_url) return toast("这个成片没有可下载链接", "error");
-  const publisher = document.querySelector("#downloadClaimPublisher").value.trim();
-  const publishPlatform = document.querySelector("#downloadClaimPlatform").value;
-  if (!publisher) return toast("请先填写下载人/发布人", "error");
+  event.currentTarget.classList.remove("dragging");
+  addPosterImportFiles(event.dataTransfer.files);
+});
+document.querySelector("#posterImportFiles").addEventListener("change", (event) => {
+  addPosterImportFiles(event.target.files);
+  event.target.value = "";
+});
+document.querySelector("#posterImportDialog").addEventListener("cancel", (event) => {
+  if (state.posterImportRunning) { event.preventDefault(); toast("上传进行中，请先取消当前文件", "error"); }
+});
+document.querySelector("#posterImportDialog").addEventListener("close", () => {
+  if (state.posterImportRunning) return;
+  state.posterImportItems.forEach((item) => URL.revokeObjectURL(item.url));
+  state.posterImportItems = [];
+  document.querySelector("#posterImportCategory").value = "";
+  renderPosterImportList();
+});
+document.querySelector("#posterImportForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (state.posterImportRunning) return;
+  const category = document.querySelector("#posterImportCategory").value;
+  const ready = state.posterImportItems.filter((item) => item.status === "ready" && !item.error);
+  if (!category || !ready.length) return toast("请选择分类并添加可上传图片", "error");
+  state.posterImportRunning = true;
+  renderPosterImportList();
+  for (const item of ready) {
+    if (!state.posterImportItems.includes(item) || item.status !== "ready") continue;
+    item.status = "uploading";
+    item.progress = 0;
+    renderPosterImportList();
+    const request = uploadPosterFile(item.file, category, ready.length, (progress) => { item.progress = progress; renderPosterImportList(); });
+    item.abort = request.abort;
+    try {
+      item.result = await request.promise;
+      item.status = "success";
+      item.progress = 100;
+    } catch (error) {
+      item.status = error.name === "AbortError" ? "canceled" : "error";
+      item.error = error.message;
+    } finally {
+      item.abort = null;
+      renderPosterImportList();
+    }
+  }
+  state.posterImportRunning = false;
+  renderPosterImportList();
+  const successCount = ready.filter((item) => item.status === "success").length;
+  const failedCount = ready.length - successCount;
+  if (successCount) {
+    state.posterStatus = "PENDING_REVIEW";
+    state.posterPagination.page = 1;
+    document.querySelectorAll("#posterStatusFilters button").forEach((button) => button.classList.toggle("active", button.dataset.posterStatus === "PENDING_REVIEW"));
+    await loadPosters();
+  }
+  toast(failedCount ? `导入完成：成功 ${successCount} 张，失败 ${failedCount} 张` : `已导入 ${successCount} 张，均进入待审核`, failedCount ? "error" : "");
+});
+document.querySelector("#closePosterContent").addEventListener("click", () => document.querySelector("#posterContentDialog").close());
+document.querySelector("#cancelPosterContent").addEventListener("click", () => document.querySelector("#posterContentDialog").close());
+document.querySelector("#posterAttachmentFiles").addEventListener("change", (event) => {
+  addPosterAttachments(event.target.files);
+  event.target.value = "";
+});
+document.querySelector("#posterAttachmentReplaceFile").addEventListener("change", (event) => replacePosterAttachment(event.target.files[0]));
+document.querySelector("#closePosterAsset").addEventListener("click", () => document.querySelector("#posterAssetDialog").close());
+document.querySelector("#posterContentForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const detail = state.posterContentDetail;
+  if (!detail || state.posterContentBusy) return;
+  state.posterContentBusy = true;
+  const button = document.querySelector("#submitPosterContent");
+  button.disabled = true;
+  button.textContent = "保存中";
+  document.querySelector("#posterContentStatus").textContent = "正在保存文案与图片顺序";
   try {
-    localStorage.setItem("jaguartvPublisherName", publisher);
-    await api("/api/download-claims", { method: "POST", body: JSON.stringify({
-      candidate_id: asset.id,
+    const tags = document.querySelector("#posterContentTags").value.split(/[，,]/).map((value) => value.trim()).filter(Boolean);
+    const saved = await api(`/api/posters/${encodeURIComponent(detail.id)}/content`, {
+      method: "POST",
+      body: JSON.stringify({
+        title: document.querySelector("#posterContentTitleInput").value,
+        copy: document.querySelector("#posterContentCopy").value,
+        tags,
+        actor: localStorage.getItem("jaguartvOperatorName") || "dashboard",
+      }),
+    });
+    const reordered = await api(`/api/posters/${encodeURIComponent(detail.id)}/attachments/reorder`, {
+      method: "POST",
+      body: JSON.stringify({ attachment_ids: detail.attachments.map((item) => item.id), actor: localStorage.getItem("jaguartvOperatorName") || "dashboard" }),
+    });
+    state.posterContentDetail = { ...saved, attachments: reordered.attachments };
+    renderPosterAttachments();
+    document.querySelector("#posterContentStatus").textContent = "保存成功，刷新后仍会保留";
+    toast("海报文案与相关图片已保存");
+  } catch (error) {
+    document.querySelector("#posterContentStatus").textContent = `保存失败：${error.message}`;
+    toast(`保存失败：${error.message}`, "error");
+  } finally {
+    state.posterContentBusy = false;
+    button.disabled = false;
+    button.textContent = "保存文案与顺序";
+  }
+});
+document.querySelector("#closePosterPreview").addEventListener("click", () => document.querySelector("#posterPreviewDialog").close());
+document.querySelector("#posterPreviewPrevious").addEventListener("click", () => showPosterPreview(state.posterPreviewIndex - 1));
+document.querySelector("#posterPreviewNext").addEventListener("click", () => showPosterPreview(state.posterPreviewIndex + 1));
+document.querySelector("#posterZoomOut").addEventListener("click", () => applyPosterZoom(state.posterZoom - 0.25));
+document.querySelector("#posterZoomIn").addEventListener("click", () => applyPosterZoom(state.posterZoom + 0.25));
+document.querySelector("#posterZoomReset").addEventListener("click", () => applyPosterZoom(1));
+document.querySelector("#posterPreviewStage").addEventListener("wheel", (event) => {
+  event.preventDefault();
+  applyPosterZoom(state.posterZoom + (event.deltaY < 0 ? 0.15 : -0.15));
+}, { passive: false });
+document.querySelector("#closePosterDelete").addEventListener("click", () => document.querySelector("#posterDeleteDialog").close());
+document.querySelector("#cancelPosterDelete").addEventListener("click", () => document.querySelector("#posterDeleteDialog").close());
+document.querySelector("#posterDeleteForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const item = state.pendingPosterDelete;
+  if (!item) return;
+  const pendingKey = `delete:${item.id}`;
+  if (state.posterPendingActions.has(pendingKey)) return;
+  state.posterPendingActions.add(pendingKey);
+  const button = document.querySelector("#confirmPosterDelete");
+  button.disabled = true;
+  button.textContent = "删除中";
+  try {
+    await api(`/api/posters/${encodeURIComponent(item.id)}/delete`, {
+      method: "POST",
+      headers: { "X-Request-ID": posterRequestId("delete", item.id) },
+      body: JSON.stringify({ actor: localStorage.getItem("jaguartvOperatorName") || "dashboard" }),
+    });
+    document.querySelector("#posterDeleteDialog").close();
+    state.pendingPosterDelete = null;
+    toast(`已删除海报“${item.name}”`);
+    const remainingOnPage = Math.max(0, state.posters.length - 1);
+    if (!remainingOnPage && state.posterPagination.page > 1) state.posterPagination.page -= 1;
+    await loadPosters();
+  } catch (error) {
+    toast(`删除失败：${error.message}`, "error");
+  } finally {
+    state.posterPendingActions.delete(pendingKey);
+    button.disabled = false;
+    button.textContent = "确认删除";
+    if (!state.posterLoading) renderPosterInventory();
+  }
+});
+
+document.querySelector("#publishPlatform").addEventListener("change", async (event) => {
+  await loadPublishAccounts(event.target.value);
+  await generatePublishCopy();
+});
+document.querySelector("#publishAccount").addEventListener("change", renderPublishPreview);
+document.querySelector("#publishScheduleMode").addEventListener("change", (event) => {
+  document.querySelector("#publishScheduleField").hidden = event.target.value !== "scheduled";
+  renderPublishPreview();
+});
+["#publishScheduledLocal", "#publishTitle", "#publishDescription", "#publishTags"].forEach((selector) => {
+  document.querySelector(selector).addEventListener("input", renderPublishPreview);
+});
+document.querySelector("#regeneratePublishCopy").addEventListener("click", generatePublishCopy);
+
+document.querySelector("#publishForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const asset = state.pendingPublishAsset;
+  if (!asset?.download_url) return toast("这个成片没有可下载链接", "error");
+  const platform = document.querySelector("#publishPlatform").value;
+  const capability = state.publishCapabilities[platform] || {};
+  const account = document.querySelector("#publishAccount").value;
+  if (capability.requires_account && !account) return toast("YouTube 必须选择可用授权账号", "error");
+  const title = document.querySelector("#publishTitle").value.trim();
+  const description = document.querySelector("#publishDescription").value.trim();
+  const tags = tagsFromInput(document.querySelector("#publishTags").value);
+  if (!title || !description || !tags.length) return toast("请先生成或填写标题、文案和标签", "error");
+  try {
+    const result = await api("/api/publications", { method: "POST", body: JSON.stringify({
+      candidate_id: String(asset.id).split(":", 1)[0],
       asset_id: asset.id,
       filename: asset.filename,
       variant: asset.variant || "",
-      publisher,
-      publish_platform: publishPlatform,
-      note: document.querySelector("#downloadClaimNote").value.trim(),
+      platform,
+      account,
+      schedule_mode: document.querySelector("#publishScheduleMode").value,
+      scheduled_local_at: document.querySelector("#publishScheduledLocal").value,
+      title,
+      description,
+      tags,
     }) });
-    document.querySelector("#downloadClaimDialog").close();
-    toast("已登记下载人，开始下载");
-    const link = document.createElement("a");
-    link.href = asset.download_url;
-    link.download = asset.filename || "";
-    link.target = "_blank";
-    link.rel = "noopener";
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
+    document.querySelector("#publishDialog").close();
+    if (result.operation_type === "LOCAL_DOWNLOAD") {
+      toast("该平台暂未配置自动发布，本次仅下载到本地");
+      const link = document.createElement("a");
+      link.href = result.download_url || asset.download_url;
+      link.download = asset.filename || "";
+      link.target = "_blank";
+      link.rel = "noopener";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } else {
+      toast(result.status === "SCHEDULED" ? "已创建预约发布任务" : "已创建 YouTube 发布任务");
+    }
     await refreshAll();
   } catch (error) {
-    toast(`登记失败：${error.message}`, "error");
+    toast(`发布失败：${error.message}`, "error");
   }
 });
 
@@ -1299,16 +2540,36 @@ function updateDiscoverMode() {
     tiktok: "粘贴 TikTok 具体视频 URL；服务器 TikTok 登录态会用于解析和下载。",
     facebook: "请粘贴具体视频或 Reels URL；服务器登录态必须有权访问该视频。",
   };
+  const target = selectedDiscoverTarget();
+  const targetLabel = target === "approved" ? "审核通过" : "待制作";
   const modeNotes = {
-    url: "粘贴单条视频 URL 后会在服务器解析并下载，成功后直接进入待制作；超过 30 分钟的素材只允许删除。",
-    upload: "上传自有或已授权源视频后会直接进入待制作；后续制作规则与爬取视频完全一致。",
+    url: `粘贴单条视频 URL 后会在服务器解析并下载；目标区域：${targetLabel}。超过 30 分钟的素材不会进入成功库存。`,
+    upload: `上传自有或已授权视频后会执行完整媒体校验；目标区域：${targetLabel}。`,
   };
   document.querySelector("#discoverPlatformNote").textContent = modeNotes[mode] || notes[platform];
   document.querySelector("#submitDiscovery").textContent = mode === "upload" ? "上传并入库" : "开始运行";
 }
 
+function selectedDiscoverTarget() {
+  return document.querySelector('input[name="discoverTarget"]:checked')?.value || "pending_production";
+}
+
+function updateDiscoverTarget() {
+  const approvedInput = document.querySelector('input[name="discoverTarget"][value="approved"]');
+  const canApprove = !!state.importCapabilities.can_direct_approve;
+  approvedInput.disabled = !canApprove;
+  document.querySelector("#discoverApprovedTarget").classList.toggle("disabled", !canApprove);
+  document.querySelector("#discoverApprovalPermission").hidden = canApprove;
+  if (!canApprove && approvedInput.checked) {
+    document.querySelector('input[name="discoverTarget"][value="pending_production"]').checked = true;
+  }
+  document.querySelector("#discoverApprovalWarning").hidden = selectedDiscoverTarget() !== "approved";
+  updateDiscoverMode();
+}
+
 document.querySelector("#discoverMode").addEventListener("change", updateDiscoverMode);
 document.querySelector("#discoverPlatform").addEventListener("change", updateDiscoverMode);
+document.querySelectorAll('input[name="discoverTarget"]').forEach((input) => input.addEventListener("change", updateDiscoverTarget));
 updateDiscoverMode();
 
 document.querySelector("#closeProductionDialog").addEventListener("click", () => document.querySelector("#productionDialog").close());
@@ -1416,8 +2677,9 @@ document.querySelector("#designForm").addEventListener("submit", async (event) =
       x: layer.x,
       y: layer.y,
     });
-    const variantMode = document.querySelector("#designVariant").value;
-    const variants = variantMode === "generic" ? ["通用版"] : variantMode === "fb" ? ["FB版"] : ["通用版", "FB版"];
+    const variants = Array.isArray(state.designCandidate?.design_variants) && state.designCandidate.design_variants.length
+      ? state.designCandidate.design_variants
+      : ["通用版"];
     const baseAssetIds = state.designCandidate?.design_base_asset_ids || {};
     const options = {
       content_type: "auto",
@@ -1443,23 +2705,49 @@ document.querySelector("#discoverForm").addEventListener("submit", async (event)
   try {
     const mode = document.querySelector("#discoverMode").value;
     const platform = document.querySelector("#discoverPlatform").value;
+    const targetArea = selectedDiscoverTarget();
+    const targetLabel = targetArea === "approved" ? "审核通过" : "待制作";
+    if (targetArea === "approved" && !state.importCapabilities.can_direct_approve) {
+      throw new Error("当前账号没有直接导入审核通过成片的后台权限");
+    }
+    if (targetArea === "approved" && !confirm("该视频将作为外部完整成片直接进入审核通过，并跳过智能切片与双版本制作。确认继续？")) {
+      return;
+    }
     if (mode === "upload") {
       const file = document.querySelector("#discoverUploadFile").files[0];
       if (!file) throw new Error("请选择要上传的源视频");
-      const uploaded = await uploadServerFile(file, "source", "", setDiscoverUploadProgress);
+      const uploaded = await uploadServerFile(file, "source", "", setDiscoverUploadProgress, {
+        source_import: true,
+        target_area: targetArea,
+        idempotency_key: state.discoverIdempotencyKey,
+        operator_id: localStorage.getItem("jaguartvOperatorName") || "dashboard",
+      });
       document.querySelector("#discoverUploadFile").value = "";
       document.querySelector("#discoverDialog").close();
-      toast(`源视频已入库：${uploaded.candidate_id}，可在待制作中生成成片`);
-      state.status = "DOWNLOADED";
+      toast(`源视频已入库：${uploaded.candidate_id}，目标区域：${targetLabel}`);
+      state.status = targetArea === "approved" ? "APPROVED" : "DOWNLOADED";
+      state.sourceFilter = "source_import";
       await refreshAll();
       return;
     }
-    document.querySelector("#discoverDialog").close();
     const url = document.querySelector("#discoverUrl").value.trim();
-    const payload = { action: "ingest", platform, url };
-    const result = await api("/api/actions", { method: "POST", body: JSON.stringify(payload) });
-    state.status = "DOWNLOADED";
-    toast(`URL 导入下载任务 ${result.task_id} 已启动，完成后进入待制作`);
+    const payload = {
+      action: "ingest",
+      platform,
+      url,
+      target_area: targetArea,
+      idempotency_key: state.discoverIdempotencyKey,
+      operator_id: localStorage.getItem("jaguartvOperatorName") || "dashboard",
+    };
+    const result = await api("/api/actions", {
+      method: "POST",
+      headers: { "X-Idempotency-Key": state.discoverIdempotencyKey },
+      body: JSON.stringify(payload),
+    });
+    document.querySelector("#discoverDialog").close();
+    state.status = targetArea === "approved" ? "APPROVED" : "DOWNLOADED";
+    state.sourceFilter = "source_import";
+    toast(`URL 导入下载任务 ${result.task_id} 已启动，目标区域：${targetLabel}`);
     pollTask(result.task_id);
   } catch (error) { toast(error.message, "error"); }
   finally { button.disabled = false; }
@@ -1472,6 +2760,31 @@ document.querySelector("#scheduleForm").addEventListener("submit", async (event)
     toast("已加入发布队列");
     await refreshAll();
   } catch (error) { toast(error.message, "error"); }
+});
+
+document.querySelector("#xAuthForm").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const account = document.querySelector("#xAuthAccount").value || "consumer_main";
+  window.open(`/oauth/x/start?account=${encodeURIComponent(account)}`, "_blank", "noopener");
+  toast("已打开 X 授权页面；完成后回到这里刷新并确认账号");
+});
+
+document.querySelector("#xAuthTable").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-x-auth-action]");
+  if (!button) return;
+  const action = button.dataset.xAuthAction;
+  const account = button.dataset.account;
+  button.disabled = true;
+  try {
+    await api("/api/x-auths", { method: "POST", body: JSON.stringify({ account, action }) });
+    toast(action === "confirm" ? "X 账号已确认，可发布" : "X 授权已撤销");
+    state.xAuths = await api("/api/x-auths");
+    renderXAuths();
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    button.disabled = false;
+  }
 });
 
 document.querySelector("#keywordForm").addEventListener("submit", async (event) => {
@@ -1502,6 +2815,31 @@ document.querySelector("#metricsForm").addEventListener("submit", async (event) 
     await refreshAll();
   } catch (error) { toast(error.message, "error"); }
 });
+
+document.querySelector("#youtubeGrowthFilters").addEventListener("submit", (event) => {
+  event.preventDefault();
+  loadYouTubeAnalytics({ resetPage: true });
+});
+document.querySelector("#youtubeGrowthRange").addEventListener("change", () => {
+  updateYouTubeCustomDates();
+  if (document.querySelector("#youtubeGrowthRange").value !== "custom") {
+    loadYouTubeAnalytics({ resetPage: true });
+  }
+});
+document.querySelector("#youtubeGrowthAccount").addEventListener("change", () => loadYouTubeAnalytics({ resetPage: true }));
+document.querySelector("#youtubeGrowthMetric").addEventListener("change", () => loadYouTubeAnalytics({ resetPage: true }));
+document.querySelector("#youtubeGrowthRetry").addEventListener("click", () => loadYouTubeAnalytics());
+document.querySelector("#youtubeGrowthPrevious").addEventListener("click", () => {
+  if (state.youtubeGrowth.page <= 1) return;
+  state.youtubeGrowth.page -= 1;
+  loadYouTubeAnalytics();
+});
+document.querySelector("#youtubeGrowthNext").addEventListener("click", () => {
+  if (state.youtubeGrowth.page >= state.youtubeGrowth.pages) return;
+  state.youtubeGrowth.page += 1;
+  loadYouTubeAnalytics();
+});
+updateYouTubeCustomDates();
 
 document.querySelector("#sessionForm").addEventListener("submit", async (event) => {
   event.preventDefault();

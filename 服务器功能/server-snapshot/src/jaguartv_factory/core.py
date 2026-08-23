@@ -14,6 +14,7 @@ import sqlite3
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -22,7 +23,7 @@ import wave
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Sequence
 
 import yaml
 from PIL import Image, ImageDraw, ImageFont
@@ -41,6 +42,7 @@ from .pyvideotrans_adapter import (
     pyvideotrans_tts,
 )
 from .workbuddy_adapter import (
+    classify_chinese_audio,
     demucs_backing_track,
     detect_chinese_text_regions,
     edge_tts_ptbr,
@@ -51,6 +53,7 @@ from .workbuddy_adapter import (
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG = ROOT / "config" / "pipeline.yaml"
 LOCALIZABLE_CHINESE_AUDIO_PLATFORMS = {"bilibili", "douyin"}
+DB_SCHEMA_LOCK = threading.RLock()
 
 
 def scoring_config_path(config: dict[str, Any]) -> str | None:
@@ -163,6 +166,11 @@ def workspace_dir(config: dict[str, Any]) -> Path:
 
 
 def connect_db(config: dict[str, Any]) -> sqlite3.Connection:
+    with DB_SCHEMA_LOCK:
+        return _connect_db_unlocked(config)
+
+
+def _connect_db_unlocked(config: dict[str, Any]) -> sqlite3.Connection:
     db_path = workspace_dir(config) / "factory.db"
     connection = sqlite3.connect(db_path, timeout=float(config.get("run", {}).get("sqlite_timeout_sec", 30)))
     connection.row_factory = sqlite3.Row
@@ -211,13 +219,43 @@ def connect_db(config: dict[str, Any]) -> sqlite3.Connection:
         CREATE TABLE IF NOT EXISTS publications (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           candidate_id TEXT NOT NULL,
+          package_id TEXT NOT NULL DEFAULT '',
+          asset_id TEXT NOT NULL DEFAULT '',
+          variant TEXT NOT NULL DEFAULT '',
+          source_platform TEXT NOT NULL DEFAULT '',
           platform TEXT NOT NULL,
           account TEXT NOT NULL DEFAULT '',
+          account_label TEXT NOT NULL DEFAULT '',
+          channel_id TEXT NOT NULL DEFAULT '',
           scheduled_at TEXT,
           published_at TEXT,
           status TEXT NOT NULL DEFAULT 'QUEUED',
+          title TEXT NOT NULL DEFAULT '',
+          description TEXT NOT NULL DEFAULT '',
+          tags_json TEXT NOT NULL DEFAULT '[]',
+          privacy_status TEXT NOT NULL DEFAULT '',
+          youtube_video_id TEXT NOT NULL DEFAULT '',
+          youtube_url TEXT NOT NULL DEFAULT '',
           post_url TEXT NOT NULL DEFAULT '',
           error TEXT NOT NULL DEFAULT '',
+          error_json TEXT NOT NULL DEFAULT '{}',
+          timezone TEXT NOT NULL DEFAULT '',
+          reviewer TEXT NOT NULL DEFAULT '',
+          review_decision_at TEXT,
+          operation_type TEXT NOT NULL DEFAULT 'PUBLICATION',
+          review_status TEXT NOT NULL DEFAULT '',
+          platform_account_id TEXT NOT NULL DEFAULT '',
+          platform_username_snapshot TEXT NOT NULL DEFAULT '',
+          scheduled_local_at TEXT,
+          scheduled_utc_at TEXT,
+          public_status TEXT NOT NULL DEFAULT '',
+          retry_count INTEGER NOT NULL DEFAULT 0,
+          platform_video_id TEXT NOT NULL DEFAULT '',
+          public_url TEXT NOT NULL DEFAULT '',
+          started_at TEXT,
+          completed_at TEXT,
+          local_download_path TEXT NOT NULL DEFAULT '',
+          idempotency_key TEXT NOT NULL DEFAULT '',
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL,
           UNIQUE(candidate_id, platform, account, scheduled_at)
@@ -263,6 +301,133 @@ def connect_db(config: dict[str, Any]) -> sqlite3.Connection:
         );
         CREATE INDEX IF NOT EXISTS render_jobs_candidate
           ON render_jobs(candidate_id, updated_at DESC);
+        CREATE TABLE IF NOT EXISTS production_runs (
+          id TEXT PRIMARY KEY,
+          candidate_id TEXT NOT NULL,
+          trigger_source TEXT NOT NULL,
+          idempotency_key TEXT NOT NULL UNIQUE,
+          contract_version TEXT NOT NULL,
+          contract_hash TEXT NOT NULL,
+          status TEXT NOT NULL,
+          stage TEXT NOT NULL DEFAULT '',
+          error_code TEXT NOT NULL DEFAULT '',
+          error TEXT NOT NULL DEFAULT '',
+          options_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS production_runs_candidate
+          ON production_runs(candidate_id, updated_at DESC);
+        CREATE TABLE IF NOT EXISTS production_slices (
+          id TEXT PRIMARY KEY,
+          production_run_id TEXT NOT NULL,
+          candidate_id TEXT NOT NULL,
+          slice_index INTEGER NOT NULL,
+          start_sec REAL NOT NULL,
+          end_sec REAL NOT NULL,
+          duration_sec REAL NOT NULL,
+          status TEXT NOT NULL,
+          analysis_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(production_run_id, slice_index)
+        );
+        CREATE INDEX IF NOT EXISTS production_slices_candidate
+          ON production_slices(candidate_id, slice_index);
+        CREATE TABLE IF NOT EXISTS production_outputs (
+          id TEXT PRIMARY KEY,
+          production_run_id TEXT NOT NULL,
+          slice_id TEXT NOT NULL,
+          candidate_id TEXT NOT NULL,
+          variant TEXT NOT NULL,
+          status TEXT NOT NULL,
+          path TEXT NOT NULL,
+          sha256 TEXT NOT NULL,
+          source_sha256 TEXT NOT NULL,
+          size_bytes INTEGER NOT NULL,
+          duration_sec REAL NOT NULL,
+          width INTEGER NOT NULL,
+          height INTEGER NOT NULL,
+          fps REAL NOT NULL,
+          has_video INTEGER NOT NULL,
+          has_audio INTEGER NOT NULL,
+          render_job_id TEXT NOT NULL,
+          endcard_count INTEGER NOT NULL DEFAULT 0,
+          layout_json TEXT NOT NULL DEFAULT '{}',
+          qa_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(slice_id, variant)
+        );
+        CREATE INDEX IF NOT EXISTS production_outputs_candidate
+          ON production_outputs(candidate_id, slice_id, variant);
+        CREATE TABLE IF NOT EXISTS repair_runs (
+          id TEXT PRIMARY KEY,
+          status TEXT NOT NULL,
+          requested_json TEXT NOT NULL DEFAULT '[]',
+          processed_json TEXT NOT NULL DEFAULT '[]',
+          failed_json TEXT NOT NULL DEFAULT '[]',
+          backup_path TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS source_imports (
+          id TEXT PRIMARY KEY,
+          candidate_id TEXT NOT NULL DEFAULT '',
+          source_type TEXT NOT NULL DEFAULT 'source_import',
+          import_method TEXT NOT NULL,
+          source_platform TEXT NOT NULL,
+          normalized_url TEXT NOT NULL DEFAULT '',
+          original_title TEXT NOT NULL DEFAULT '',
+          download_task_id TEXT NOT NULL DEFAULT '',
+          idempotency_key TEXT NOT NULL UNIQUE,
+          download_completed_at TEXT,
+          file_relative_path TEXT NOT NULL DEFAULT '',
+          file_sha256 TEXT NOT NULL DEFAULT '',
+          file_mime_type TEXT NOT NULL DEFAULT '',
+          file_size_bytes INTEGER NOT NULL DEFAULT 0,
+          duration_sec REAL NOT NULL DEFAULT 0,
+          width INTEGER NOT NULL DEFAULT 0,
+          height INTEGER NOT NULL DEFAULT 0,
+          fps REAL NOT NULL DEFAULT 0,
+          has_video INTEGER NOT NULL DEFAULT 0,
+          has_audio INTEGER NOT NULL DEFAULT 0,
+          target_area TEXT NOT NULL DEFAULT 'pending_production',
+          actual_workflow_status TEXT NOT NULL DEFAULT 'IMPORT_PENDING',
+          download_status TEXT NOT NULL DEFAULT 'PENDING',
+          review_source TEXT NOT NULL DEFAULT '',
+          operator_id TEXT NOT NULL DEFAULT '',
+          reviewed_at TEXT,
+          approval_reason TEXT NOT NULL DEFAULT '',
+          error_category TEXT NOT NULL DEFAULT '',
+          error_summary TEXT NOT NULL DEFAULT '',
+          metadata_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS source_imports_candidate
+          ON source_imports(candidate_id) WHERE candidate_id != '';
+        CREATE UNIQUE INDEX IF NOT EXISTS source_imports_normalized_url
+          ON source_imports(source_type,normalized_url) WHERE normalized_url != '';
+        CREATE UNIQUE INDEX IF NOT EXISTS source_imports_file_sha256
+          ON source_imports(file_sha256) WHERE file_sha256 != '';
+        CREATE INDEX IF NOT EXISTS source_imports_status_created
+          ON source_imports(actual_workflow_status,created_at DESC);
+        CREATE TABLE IF NOT EXISTS source_import_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          import_id TEXT NOT NULL,
+          candidate_id TEXT NOT NULL DEFAULT '',
+          event_type TEXT NOT NULL,
+          from_status TEXT NOT NULL DEFAULT '',
+          to_status TEXT NOT NULL DEFAULT '',
+          actor TEXT NOT NULL DEFAULT '',
+          payload_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS source_import_events_import_created
+          ON source_import_events(import_id,created_at DESC,id DESC);
+        CREATE INDEX IF NOT EXISTS source_import_events_candidate_created
+          ON source_import_events(candidate_id,created_at DESC,id DESC);
         CREATE TABLE IF NOT EXISTS conversion_events (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           candidate_id TEXT NOT NULL,
@@ -339,6 +504,162 @@ def connect_db(config: dict[str, Any]) -> sqlite3.Connection:
           updated_at TEXT NOT NULL,
           metadata_json TEXT NOT NULL DEFAULT '{}'
         );
+        CREATE TABLE IF NOT EXISTS youtube_metric_snapshots (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          publication_id INTEGER NOT NULL,
+          sync_window TEXT NOT NULL,
+          view_count INTEGER,
+          like_count INTEGER,
+          comment_count INTEGER,
+          share_count INTEGER,
+          analytics_views INTEGER,
+          average_view_duration REAL,
+          average_view_percentage REAL,
+          completion_rate REAL,
+          completion_raw_ratio REAL,
+          completion_bucket_ratio REAL,
+          completion_calculation_version TEXT NOT NULL DEFAULT '',
+          completion_weight_views INTEGER,
+          fetched_at TEXT NOT NULL,
+          data_through_date TEXT,
+          data_api_source TEXT,
+          analytics_api_source TEXT,
+          retention_source TEXT,
+          api_response_status TEXT NOT NULL,
+          raw_status_json TEXT NOT NULL DEFAULT '{}',
+          UNIQUE(publication_id,sync_window)
+        );
+        CREATE TABLE IF NOT EXISTS youtube_sync_states (
+          publication_id INTEGER PRIMARY KEY,
+          account_id TEXT NOT NULL,
+          backfill_run_id INTEGER,
+          first_sync_due_at TEXT NOT NULL,
+          last_attempted_at TEXT,
+          last_successful_at TEXT,
+          next_sync_at TEXT,
+          retry_count INTEGER NOT NULL DEFAULT 0,
+          sync_status TEXT NOT NULL DEFAULT 'PENDING',
+          last_error_category TEXT NOT NULL DEFAULT '',
+          last_error_summary TEXT NOT NULL DEFAULT '',
+          lease_owner TEXT NOT NULL DEFAULT '',
+          lease_expires_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS youtube_backfill_runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          status TEXT NOT NULL,
+          dry_run INTEGER NOT NULL DEFAULT 1,
+          rate_limit_per_minute INTEGER NOT NULL DEFAULT 6,
+          report_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          started_at TEXT,
+          completed_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS youtube_channel_import_states (
+          account_id TEXT PRIMARY KEY,
+          channel_id TEXT NOT NULL DEFAULT '',
+          uploads_playlist_id TEXT NOT NULL DEFAULT '',
+          last_attempted_at TEXT,
+          last_successful_at TEXT,
+          next_scan_at TEXT,
+          retry_count INTEGER NOT NULL DEFAULT 0,
+          sync_status TEXT NOT NULL DEFAULT 'PENDING',
+          imported_count INTEGER NOT NULL DEFAULT 0,
+          public_video_count INTEGER NOT NULL DEFAULT 0,
+          skipped_nonpublic_count INTEGER NOT NULL DEFAULT 0,
+          pages_scanned INTEGER NOT NULL DEFAULT 0,
+          last_error_category TEXT NOT NULL DEFAULT '',
+          last_error_summary TEXT NOT NULL DEFAULT '',
+          lease_owner TEXT NOT NULL DEFAULT '',
+          lease_expires_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS youtube_channel_video_imports (
+          account_id TEXT NOT NULL,
+          video_id TEXT NOT NULL,
+          publication_id INTEGER NOT NULL,
+          first_imported_at TEXT NOT NULL,
+          last_seen_at TEXT NOT NULL,
+          PRIMARY KEY(account_id,video_id),
+          UNIQUE(publication_id)
+        );
+        CREATE TABLE IF NOT EXISTS x_oauth_states (
+          state TEXT PRIMARY KEY,
+          account TEXT NOT NULL,
+          code_verifier TEXT NOT NULL,
+          redirect_uri TEXT NOT NULL DEFAULT '',
+          scopes TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          expires_at TEXT NOT NULL,
+          used_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS x_account_auths (
+          account TEXT PRIMARY KEY,
+          x_user_id TEXT NOT NULL DEFAULT '',
+          username TEXT NOT NULL DEFAULT '',
+          display_name TEXT NOT NULL DEFAULT '',
+          scopes TEXT NOT NULL DEFAULT '',
+          encrypted_access_token TEXT NOT NULL DEFAULT '',
+          encrypted_refresh_token TEXT NOT NULL DEFAULT '',
+          token_type TEXT NOT NULL DEFAULT '',
+          expires_in INTEGER NOT NULL DEFAULT 0,
+          expires_at TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'PENDING_CONFIRMATION',
+          authorized_at TEXT NOT NULL,
+          confirmed_at TEXT,
+          revoked_at TEXT,
+          updated_at TEXT NOT NULL,
+          metadata_json TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE TABLE IF NOT EXISTS posters (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          file_key TEXT NOT NULL,
+          thumbnail_key TEXT NOT NULL DEFAULT '',
+          category TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'PENDING_SCREENING',
+          source_candidate_id TEXT NOT NULL DEFAULT '',
+          created_by TEXT NOT NULL DEFAULT '',
+          updated_by TEXT NOT NULL DEFAULT '',
+          deleted_by TEXT NOT NULL DEFAULT '',
+          metadata_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          screened_at TEXT,
+          approved_at TEXT,
+          deleted_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS poster_audit_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          poster_id TEXT NOT NULL,
+          action TEXT NOT NULL,
+          from_status TEXT NOT NULL DEFAULT '',
+          to_status TEXT NOT NULL DEFAULT '',
+          actor TEXT NOT NULL DEFAULT '',
+          request_id TEXT NOT NULL DEFAULT '',
+          metadata_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS poster_attachments (
+          id TEXT PRIMARY KEY,
+          poster_id TEXT NOT NULL,
+          file_key TEXT NOT NULL,
+          original_name TEXT NOT NULL DEFAULT '',
+          mime_type TEXT NOT NULL DEFAULT '',
+          width INTEGER NOT NULL DEFAULT 0,
+          height INTEGER NOT NULL DEFAULT 0,
+          size_bytes INTEGER NOT NULL DEFAULT 0,
+          sha256 TEXT NOT NULL DEFAULT '',
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          created_by TEXT NOT NULL DEFAULT '',
+          updated_by TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          deleted_at TEXT
+        );
         """
     )
     candidate_columns = {
@@ -349,6 +670,198 @@ def connect_db(config: dict[str, Any]) -> sqlite3.Connection:
             "ALTER TABLE candidates ADD COLUMN published_flag INTEGER NOT NULL DEFAULT 0"
         )
         connection.commit()
+    publication_columns = {
+        str(row["name"]) for row in connection.execute("PRAGMA table_info(publications)")
+    }
+    publication_column_sql = {
+        "package_id": "ALTER TABLE publications ADD COLUMN package_id TEXT NOT NULL DEFAULT ''",
+        "asset_id": "ALTER TABLE publications ADD COLUMN asset_id TEXT NOT NULL DEFAULT ''",
+        "variant": "ALTER TABLE publications ADD COLUMN variant TEXT NOT NULL DEFAULT ''",
+        "source_platform": "ALTER TABLE publications ADD COLUMN source_platform TEXT NOT NULL DEFAULT ''",
+        "account_label": "ALTER TABLE publications ADD COLUMN account_label TEXT NOT NULL DEFAULT ''",
+        "channel_id": "ALTER TABLE publications ADD COLUMN channel_id TEXT NOT NULL DEFAULT ''",
+        "title": "ALTER TABLE publications ADD COLUMN title TEXT NOT NULL DEFAULT ''",
+        "description": "ALTER TABLE publications ADD COLUMN description TEXT NOT NULL DEFAULT ''",
+        "tags_json": "ALTER TABLE publications ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'",
+        "privacy_status": "ALTER TABLE publications ADD COLUMN privacy_status TEXT NOT NULL DEFAULT ''",
+        "youtube_video_id": "ALTER TABLE publications ADD COLUMN youtube_video_id TEXT NOT NULL DEFAULT ''",
+        "youtube_url": "ALTER TABLE publications ADD COLUMN youtube_url TEXT NOT NULL DEFAULT ''",
+        "error_json": "ALTER TABLE publications ADD COLUMN error_json TEXT NOT NULL DEFAULT '{}'",
+        "timezone": "ALTER TABLE publications ADD COLUMN timezone TEXT NOT NULL DEFAULT ''",
+        "reviewer": "ALTER TABLE publications ADD COLUMN reviewer TEXT NOT NULL DEFAULT ''",
+        "review_decision_at": "ALTER TABLE publications ADD COLUMN review_decision_at TEXT",
+        "operation_type": "ALTER TABLE publications ADD COLUMN operation_type TEXT NOT NULL DEFAULT 'PUBLICATION'",
+        "review_status": "ALTER TABLE publications ADD COLUMN review_status TEXT NOT NULL DEFAULT ''",
+        "platform_account_id": "ALTER TABLE publications ADD COLUMN platform_account_id TEXT NOT NULL DEFAULT ''",
+        "platform_username_snapshot": "ALTER TABLE publications ADD COLUMN platform_username_snapshot TEXT NOT NULL DEFAULT ''",
+        "scheduled_local_at": "ALTER TABLE publications ADD COLUMN scheduled_local_at TEXT",
+        "scheduled_utc_at": "ALTER TABLE publications ADD COLUMN scheduled_utc_at TEXT",
+        "public_status": "ALTER TABLE publications ADD COLUMN public_status TEXT NOT NULL DEFAULT ''",
+        "retry_count": "ALTER TABLE publications ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0",
+        "platform_video_id": "ALTER TABLE publications ADD COLUMN platform_video_id TEXT NOT NULL DEFAULT ''",
+        "public_url": "ALTER TABLE publications ADD COLUMN public_url TEXT NOT NULL DEFAULT ''",
+        "started_at": "ALTER TABLE publications ADD COLUMN started_at TEXT",
+        "completed_at": "ALTER TABLE publications ADD COLUMN completed_at TEXT",
+        "local_download_path": "ALTER TABLE publications ADD COLUMN local_download_path TEXT NOT NULL DEFAULT ''",
+        "idempotency_key": "ALTER TABLE publications ADD COLUMN idempotency_key TEXT NOT NULL DEFAULT ''",
+        "published_local_at": "ALTER TABLE publications ADD COLUMN published_local_at TEXT",
+        "authorized_account_id": "ALTER TABLE publications ADD COLUMN authorized_account_id TEXT NOT NULL DEFAULT ''",
+        "source_category": "ALTER TABLE publications ADD COLUMN source_category TEXT NOT NULL DEFAULT 'unknown'",
+        "source_keyword": "ALTER TABLE publications ADD COLUMN source_keyword TEXT NOT NULL DEFAULT 'unknown'",
+        "slice_id": "ALTER TABLE publications ADD COLUMN slice_id TEXT NOT NULL DEFAULT ''",
+        "version_id": "ALTER TABLE publications ADD COLUMN version_id TEXT NOT NULL DEFAULT ''",
+        "publish_task_id": "ALTER TABLE publications ADD COLUMN publish_task_id TEXT NOT NULL DEFAULT ''",
+        "thumbnail_url": "ALTER TABLE publications ADD COLUMN thumbnail_url TEXT NOT NULL DEFAULT ''",
+        "publication_origin": "ALTER TABLE publications ADD COLUMN publication_origin TEXT NOT NULL DEFAULT 'SYSTEM_AUTO_PUBLISH'",
+    }
+    for column, statement in publication_column_sql.items():
+        if column not in publication_columns:
+            connection.execute(statement)
+    youtube_auth_columns = {
+        str(row["name"]) for row in connection.execute("PRAGMA table_info(youtube_channel_auths)")
+    }
+    youtube_auth_column_sql = {
+        "status": "ALTER TABLE youtube_channel_auths ADD COLUMN status TEXT NOT NULL DEFAULT 'AUTHORIZED'",
+        "last_error_category": "ALTER TABLE youtube_channel_auths ADD COLUMN last_error_category TEXT NOT NULL DEFAULT ''",
+        "last_error_summary": "ALTER TABLE youtube_channel_auths ADD COLUMN last_error_summary TEXT NOT NULL DEFAULT ''",
+        "last_verified_at": "ALTER TABLE youtube_channel_auths ADD COLUMN last_verified_at TEXT",
+    }
+    for column, statement in youtube_auth_column_sql.items():
+        if column not in youtube_auth_columns:
+            connection.execute(statement)
+    youtube_sync_columns = {
+        str(row["name"]) for row in connection.execute("PRAGMA table_info(youtube_sync_states)")
+    }
+    if "backfill_run_id" not in youtube_sync_columns:
+        connection.execute("ALTER TABLE youtube_sync_states ADD COLUMN backfill_run_id INTEGER")
+    poster_columns = {
+        str(row["name"]) for row in connection.execute("PRAGMA table_info(posters)")
+    }
+    poster_column_sql = {
+        "name": "ALTER TABLE posters ADD COLUMN name TEXT NOT NULL DEFAULT ''",
+        "file_key": "ALTER TABLE posters ADD COLUMN file_key TEXT NOT NULL DEFAULT ''",
+        "thumbnail_key": "ALTER TABLE posters ADD COLUMN thumbnail_key TEXT NOT NULL DEFAULT ''",
+        "category": "ALTER TABLE posters ADD COLUMN category TEXT NOT NULL DEFAULT ''",
+        "status": "ALTER TABLE posters ADD COLUMN status TEXT NOT NULL DEFAULT 'PENDING_SCREENING'",
+        "source_candidate_id": "ALTER TABLE posters ADD COLUMN source_candidate_id TEXT NOT NULL DEFAULT ''",
+        "created_by": "ALTER TABLE posters ADD COLUMN created_by TEXT NOT NULL DEFAULT ''",
+        "updated_by": "ALTER TABLE posters ADD COLUMN updated_by TEXT NOT NULL DEFAULT ''",
+        "deleted_by": "ALTER TABLE posters ADD COLUMN deleted_by TEXT NOT NULL DEFAULT ''",
+        "metadata_json": "ALTER TABLE posters ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'",
+        "created_at": "ALTER TABLE posters ADD COLUMN created_at TEXT NOT NULL DEFAULT ''",
+        "updated_at": "ALTER TABLE posters ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''",
+        "screened_at": "ALTER TABLE posters ADD COLUMN screened_at TEXT",
+        "approved_at": "ALTER TABLE posters ADD COLUMN approved_at TEXT",
+        "deleted_at": "ALTER TABLE posters ADD COLUMN deleted_at TEXT",
+        "original_name": "ALTER TABLE posters ADD COLUMN original_name TEXT NOT NULL DEFAULT ''",
+        "mime_type": "ALTER TABLE posters ADD COLUMN mime_type TEXT NOT NULL DEFAULT ''",
+        "width": "ALTER TABLE posters ADD COLUMN width INTEGER NOT NULL DEFAULT 0",
+        "height": "ALTER TABLE posters ADD COLUMN height INTEGER NOT NULL DEFAULT 0",
+        "size_bytes": "ALTER TABLE posters ADD COLUMN size_bytes INTEGER NOT NULL DEFAULT 0",
+        "sha256": "ALTER TABLE posters ADD COLUMN sha256 TEXT NOT NULL DEFAULT ''",
+        "content_title": "ALTER TABLE posters ADD COLUMN content_title TEXT NOT NULL DEFAULT ''",
+        "content_copy": "ALTER TABLE posters ADD COLUMN content_copy TEXT NOT NULL DEFAULT ''",
+        "content_tags_json": "ALTER TABLE posters ADD COLUMN content_tags_json TEXT NOT NULL DEFAULT '[]'",
+    }
+    for column, statement in poster_column_sql.items():
+        if column not in poster_columns:
+            connection.execute(statement)
+    poster_audit_columns = {
+        str(row["name"]) for row in connection.execute("PRAGMA table_info(poster_audit_events)")
+    }
+    poster_audit_column_sql = {
+        "action": "ALTER TABLE poster_audit_events ADD COLUMN action TEXT NOT NULL DEFAULT ''",
+        "from_status": "ALTER TABLE poster_audit_events ADD COLUMN from_status TEXT NOT NULL DEFAULT ''",
+        "to_status": "ALTER TABLE poster_audit_events ADD COLUMN to_status TEXT NOT NULL DEFAULT ''",
+        "actor": "ALTER TABLE poster_audit_events ADD COLUMN actor TEXT NOT NULL DEFAULT ''",
+        "request_id": "ALTER TABLE poster_audit_events ADD COLUMN request_id TEXT NOT NULL DEFAULT ''",
+        "metadata_json": "ALTER TABLE poster_audit_events ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'",
+        "created_at": "ALTER TABLE poster_audit_events ADD COLUMN created_at TEXT NOT NULL DEFAULT ''",
+    }
+    for column, statement in poster_audit_column_sql.items():
+        if column not in poster_audit_columns:
+            connection.execute(statement)
+    poster_attachment_columns = {
+        str(row["name"]) for row in connection.execute("PRAGMA table_info(poster_attachments)")
+    }
+    poster_attachment_column_sql = {
+        "poster_id": "ALTER TABLE poster_attachments ADD COLUMN poster_id TEXT NOT NULL DEFAULT ''",
+        "file_key": "ALTER TABLE poster_attachments ADD COLUMN file_key TEXT NOT NULL DEFAULT ''",
+        "original_name": "ALTER TABLE poster_attachments ADD COLUMN original_name TEXT NOT NULL DEFAULT ''",
+        "mime_type": "ALTER TABLE poster_attachments ADD COLUMN mime_type TEXT NOT NULL DEFAULT ''",
+        "width": "ALTER TABLE poster_attachments ADD COLUMN width INTEGER NOT NULL DEFAULT 0",
+        "height": "ALTER TABLE poster_attachments ADD COLUMN height INTEGER NOT NULL DEFAULT 0",
+        "size_bytes": "ALTER TABLE poster_attachments ADD COLUMN size_bytes INTEGER NOT NULL DEFAULT 0",
+        "sha256": "ALTER TABLE poster_attachments ADD COLUMN sha256 TEXT NOT NULL DEFAULT ''",
+        "sort_order": "ALTER TABLE poster_attachments ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0",
+        "created_by": "ALTER TABLE poster_attachments ADD COLUMN created_by TEXT NOT NULL DEFAULT ''",
+        "updated_by": "ALTER TABLE poster_attachments ADD COLUMN updated_by TEXT NOT NULL DEFAULT ''",
+        "created_at": "ALTER TABLE poster_attachments ADD COLUMN created_at TEXT NOT NULL DEFAULT ''",
+        "updated_at": "ALTER TABLE poster_attachments ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''",
+        "deleted_at": "ALTER TABLE poster_attachments ADD COLUMN deleted_at TEXT",
+    }
+    for column, statement in poster_attachment_column_sql.items():
+        if column not in poster_attachment_columns:
+            connection.execute(statement)
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS posters_status_category_created "
+        "ON posters(status,category,created_at DESC) WHERE deleted_at IS NULL"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS poster_audit_poster_created "
+        "ON poster_audit_events(poster_id,created_at DESC,id DESC)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS poster_audit_request "
+        "ON poster_audit_events(poster_id,request_id) WHERE request_id != ''"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS poster_attachments_poster_order "
+        "ON poster_attachments(poster_id,sort_order,id) WHERE deleted_at IS NULL"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS posters_active_sha256 "
+        "ON posters(sha256) WHERE deleted_at IS NULL AND sha256 != ''"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS publications_account_status ON publications(account,status,scheduled_at)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS publications_candidate_account ON publications(candidate_id,platform,account,status)"
+    )
+    connection.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS publications_idempotency_key ON publications(idempotency_key) WHERE idempotency_key != ''"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS publications_due_utc ON publications(operation_type,status,scheduled_utc_at,id)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS publications_youtube_video ON publications(platform,youtube_video_id)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS publications_youtube_published ON publications(platform,status,published_at,id)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS publications_authorized_account ON publications(authorized_account_id,published_at)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS youtube_snapshots_latest ON youtube_metric_snapshots(publication_id,fetched_at DESC,id DESC)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS youtube_snapshots_fetched ON youtube_metric_snapshots(fetched_at DESC)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS youtube_sync_due ON youtube_sync_states(sync_status,next_sync_at,account_id,publication_id)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS youtube_sync_backfill ON youtube_sync_states(backfill_run_id,sync_status,next_sync_at)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS youtube_channel_import_due ON youtube_channel_import_states(sync_status,next_scan_at,account_id)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS youtube_channel_import_publication ON youtube_channel_video_imports(publication_id)"
+    )
     connection.execute(
         """
         INSERT OR IGNORE INTO seen_sources
@@ -370,12 +883,20 @@ def connect_db(config: dict[str, Any]) -> sqlite3.Connection:
     return connection
 
 
-def append_event(connection: sqlite3.Connection, candidate_id: str, event_type: str, payload: dict[str, Any]) -> None:
+def append_event(
+    connection: sqlite3.Connection,
+    candidate_id: str,
+    event_type: str,
+    payload: dict[str, Any],
+    *,
+    commit: bool = True,
+) -> None:
     connection.execute(
         "INSERT INTO events(candidate_id,event_type,payload_json,created_at) VALUES(?,?,?,?)",
         (candidate_id, event_type, json.dumps(payload, ensure_ascii=False), now_iso()),
     )
-    connection.commit()
+    if commit:
+        connection.commit()
 
 
 def upsert_render_job(
@@ -469,6 +990,14 @@ def update_render_job(
 def candidate_id(platform: str, source_id: str | None, url: str) -> str:
     stable = f"{platform}:{source_id or url}"
     return hashlib.sha256(stable.encode("utf-8")).hexdigest()[:16]
+
+
+def file_sha256(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(chunk_size):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def seen_source_key(source_id: str | None, url: str) -> str:
@@ -740,12 +1269,23 @@ def discover(
     return stats
 
 
-def list_candidates(config: dict[str, Any], status: str | None = None, limit: int = 50) -> list[sqlite3.Row]:
+def list_candidates(
+    config: dict[str, Any], status: str | None = None, limit: int | None = 50
+) -> list[sqlite3.Row]:
     connection = connect_db(config)
     if status:
+        if limit is None:
+            return connection.execute(
+                "SELECT * FROM candidates WHERE status=? ORDER BY score DESC, created_at DESC",
+                (status,),
+            ).fetchall()
         return connection.execute(
             "SELECT * FROM candidates WHERE status=? ORDER BY score DESC, created_at DESC LIMIT ?",
             (status, limit),
+        ).fetchall()
+    if limit is None:
+        return connection.execute(
+            "SELECT * FROM candidates ORDER BY created_at DESC"
         ).fetchall()
     return connection.execute(
         "SELECT * FROM candidates ORDER BY created_at DESC LIMIT ?", (limit,)
@@ -1128,9 +1668,22 @@ def transcribe_with_whisper(media: Path, output_dir: Path, config: dict[str, Any
     model_name = os.environ.get("JAGUARTV_WHISPER_MODEL", "tiny")
     model = WhisperModel(model_name, device="cpu", compute_type="int8")
     segments, info = model.transcribe(str(media), vad_filter=True)
-    transcript = " ".join(segment.text.strip() for segment in segments if segment.text.strip())
+    segment_blocks: list[tuple[float, float, str]] = []
+    for segment in segments:
+        text = segment.text.strip()
+        if text:
+            segment_blocks.append((float(segment.start), float(segment.end), text))
+    transcript = " ".join(text for _, _, text in segment_blocks)
+    if segment_blocks:
+        write_srt_blocks(segment_blocks, output_dir / "source.asr.srt")
     (output_dir / "transcript_source.json").write_text(
-        json.dumps({"model": model_name, "language": info.language, "probability": info.language_probability, "text": transcript}, ensure_ascii=False, indent=2),
+        json.dumps({
+            "model": model_name,
+            "language": info.language,
+            "probability": info.language_probability,
+            "subtitle": str(output_dir / "source.asr.srt") if segment_blocks else "",
+            "text": transcript,
+        }, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     return transcript
@@ -1143,6 +1696,7 @@ def source_text(
     *,
     enable_asr: bool = True,
     config: dict[str, Any] | None = None,
+    allow_metadata_fallback: bool = True,
 ) -> str:
     subtitles = sorted([*work.glob("source*.srt"), *work.glob("source*.vtt")])
     for subtitle in subtitles:
@@ -1154,6 +1708,20 @@ def source_text(
             return transcribe_with_whisper(media, work, config)
         except RuntimeError:
             pass
+    if not allow_metadata_fallback:
+        payload = {
+            "provider": "speech_required",
+            "language": "unknown",
+            "text": "",
+            "fallback_rejected": fallback[:500],
+        }
+        (work / "transcript_source.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        raise RuntimeError(
+            "Chinese localization requires real source subtitles or ASR transcript; "
+            "metadata fallback is disabled to avoid repeated generic pt-BR narration"
+        )
     payload = {"provider": "metadata_fallback", "language": "unknown", "text": fallback}
     (work / "transcript_source.json").write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -1203,6 +1771,37 @@ def choose_audio_strategy(
     return "silent", "", "no_speech_evidence_source_has_no_audio"
 
 
+def chinese_audio_evidence(
+    config: dict[str, Any] | None,
+    media: Path,
+) -> tuple[bool | None, dict[str, Any]]:
+    settings = (config or {}).get("localization", {}) or {}
+    if not bool(settings.get("chinese_audio_detection_enabled", True)):
+        return None, {"enabled": False, "reason": "disabled"}
+    model_name = str(settings.get("chinese_audio_detection_model") or settings.get("whisper_model") or "tiny")
+    threshold = int(settings.get("chinese_audio_threshold") or 3)
+    try:
+        result = classify_chinese_audio(media, model_name=model_name, threshold=threshold)
+    except Exception as error:
+        return None, {"enabled": True, "reason": f"unavailable:{error}"}
+    return bool(result.get("chinese_audio")), {
+        "enabled": True,
+        "model": model_name,
+        "language": result.get("language", "unknown"),
+        "language_probability": result.get("language_probability", 0.0),
+        "chinese_characters": result.get("chinese_characters", 0),
+        "transcript_preview": str(result.get("transcript") or "")[:500],
+        "reason": "chinese_audio_detected" if result.get("chinese_audio") else "no_chinese_audio_detected",
+    }
+
+
+def localization_class_id(profile: dict[str, Any]) -> int:
+    try:
+        return int(profile.get("class") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def localization_profile_for_candidate(
     row: sqlite3.Row,
     metadata: dict[str, Any],
@@ -1237,22 +1836,22 @@ def localization_profile_for_candidate(
         except RuntimeError as error:
             ocr_reason = f"ocr_unavailable:{error}"
     chinese_on_screen = chinese_subtitles or bool(ocr_regions)
-    chinese_audio_evidence = can_localize_chinese_audio and has_audio and (
-        chinese_subtitles
-        or chinese_on_screen
-        or detected_language.startswith("zh")
-        or title_has_chinese
+    detected_chinese_audio, audio_detection = (
+        chinese_audio_evidence(config, media) if can_localize_chinese_audio and has_audio else (False, {"reason": "not_checked"})
     )
-    if chinese_audio_evidence and chinese_on_screen:
+    inferred_chinese_audio = bool(detected_chinese_audio)
+    if detected_chinese_audio is None:
+        inferred_chinese_audio = bool(chinese_on_screen and has_audio)
+    if can_localize_chinese_audio and chinese_on_screen and has_audio:
         class_id = 1
         mode = "localized"
         subtitle_mode = "ptbr_subtitles"
-        reason = "chinese_subtitles_detected" if chinese_subtitles else ocr_reason
-    elif chinese_audio_evidence:
+        reason = "chinese_subtitles_detected" if chinese_subtitles else (ocr_reason or "ocr_screen_chinese_detected")
+    elif can_localize_chinese_audio and inferred_chinese_audio:
         class_id = 3
         mode = "localized"
         subtitle_mode = "none"
-        reason = "chinese_audio_inferred_without_screen_subtitles"
+        reason = "chinese_audio_detected_without_screen_subtitles"
     else:
         class_id = 2
         mode = "preserve_source" if has_audio else "silent"
@@ -1265,6 +1864,7 @@ def localization_profile_for_candidate(
         "chinese_subtitles": chinese_subtitles,
         "chinese_on_screen": chinese_on_screen,
         "ocr_regions": ocr_regions,
+        "audio_detection": audio_detection,
         "title_has_chinese": title_has_chinese,
         "detected_language": detected_language or "unknown",
         "subtitle_files": [path.name for path in subtitle_files],
@@ -1291,16 +1891,7 @@ def should_ocr_blur_source_subtitles(
         and bool(localization_profile.get("chinese_on_screen", localization_profile.get("chinese_subtitles")))
     ):
         return True
-    text_has_chinese = bool(re.search(r"[\u4e00-\u9fff]", title_text))
-    profile_has_chinese = bool(localization_profile.get("title_has_chinese"))
-    language_is_chinese = str(detected_language or localization_profile.get("detected_language") or "").lower().startswith("zh")
-    inferred_chinese_audio = int(localization_profile.get("class") or 0) == 3
-    return (
-        text_has_chinese
-        or profile_has_chinese
-        or language_is_chinese
-        or inferred_chinese_audio
-    )
+    return False
 
 
 DEFAULT_HOOK = "Olha só o que aconteceu aqui."
@@ -1380,7 +1971,7 @@ def translate_source_subtitles_to_ptbr(config: dict[str, Any], work: Path, desti
         return None
 
 
-def build_ptbr_script(source: str, *, hook: str = DEFAULT_HOOK) -> str:
+def build_ptbr_script(source: str, *, hook: str = DEFAULT_HOOK, max_body_words: int = 105) -> str:
     clean_source = re.sub(r"https?://\S+", "", source)
     clean_source = re.sub(r"欢迎.{0,8}(订阅|关注).*$", "", clean_source).strip()
     translated = translate_to_ptbr(clean_source)
@@ -1400,7 +1991,7 @@ def build_ptbr_script(source: str, *, hook: str = DEFAULT_HOOK) -> str:
             "O momento envolve uma grande figura do esporte e merece ser acompanhado até o final."
         )
     words = translated.split()
-    body = " ".join(words[:105])
+    body = " ".join(words[:max(12, max_body_words)])
     closing = "Gostou? Descubra mais conteúdos no JaguarTV Hoje."
     return f"{hook} {body} {closing}".strip()
 
@@ -1607,6 +2198,21 @@ def format_srt_time(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
 
+def write_srt_blocks(blocks: Sequence[tuple[float, float, str]], destination: Path) -> None:
+    rendered = []
+    for index, (start, end, text) in enumerate(blocks, start=1):
+        cleaned = re.sub(r"\s+", " ", text).strip()
+        if not cleaned:
+            continue
+        safe_end = max(float(end), float(start) + 0.2)
+        rendered.append(
+            f"{len(rendered) + 1}\n"
+            f"{format_srt_time(float(start))} --> {format_srt_time(safe_end)}\n"
+            f"{cleaned}\n"
+        )
+    destination.write_text("\n".join(rendered), encoding="utf-8")
+
+
 def tts_ptbr(
     text: str,
     destination: Path,
@@ -1738,9 +2344,62 @@ def parse_srt_blocks(path: Path) -> list[tuple[float, float, str]]:
     return blocks
 
 
+def source_text_for_interval(
+    work: Path,
+    *,
+    start: float,
+    duration: float,
+    fallback: str = "",
+    min_chars: int = 8,
+) -> str:
+    end = start + duration
+    parts: list[str] = []
+    for subtitle in sorted([*work.glob("source*.srt"), *work.glob("source*.vtt")]):
+        try:
+            blocks = parse_srt_blocks(subtitle)
+        except OSError:
+            continue
+        for block_start, block_end, text in blocks:
+            overlap = max(0.0, min(end, block_end) - max(start, block_start))
+            midpoint = (block_start + block_end) / 2
+            if overlap > 0.15 or start <= midpoint <= end:
+                parts.append(text)
+        if parts:
+            break
+    text = re.sub(r"\s+", " ", " ".join(parts)).strip()
+    if len(text) >= min_chars:
+        return text
+    fallback = re.sub(r"\s+", " ", fallback).strip()
+    return fallback if len(fallback) >= min_chars else ""
+
+
 def parse_srt_time(value: str) -> float:
     hours, minutes, remainder = value.replace(",", ".").split(":")
     return int(hours) * 3600 + int(minutes) * 60 + float(remainder)
+
+
+def _caption_region_for_interval(
+    start: float,
+    end: float,
+    timed_regions: Sequence[dict[str, Any]] | None,
+) -> list[float] | None:
+    if not timed_regions:
+        return None
+    midpoint = (start + end) / 2
+    candidates: list[tuple[float, list[float]]] = []
+    for event in timed_regions:
+        event_start = float(event.get("start") or 0.0)
+        event_end = float(event.get("end") or event_start)
+        overlap = max(0.0, min(end, event_end) - max(start, event_start))
+        distance = abs(midpoint - ((event_start + event_end) / 2))
+        score = overlap - distance * 0.08
+        for region in event.get("regions") or []:
+            if len(region) != 4:
+                continue
+            candidates.append((score, [float(value) for value in region]))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[0])[1]
 
 
 def remotion_caption_cues(
@@ -1749,6 +2408,7 @@ def remotion_caption_cues(
     max_end: float | None = None,
     max_cues: int = 500,
     max_text_chars: int = 180,
+    timed_regions: Sequence[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     if not subtitles:
         return []
@@ -1774,11 +2434,15 @@ def remotion_caption_cues(
         cleaned = re.sub(r"\s+", " ", text).strip()
         if not cleaned:
             continue
-        cues.append({
+        cue = {
             "startSeconds": round(max(0.0, start), 3),
             "endSeconds": round(max(0.0, end), 3),
             "text": cleaned[:max_text_chars],
-        })
+        }
+        region = _caption_region_for_interval(start, end, timed_regions)
+        if region:
+            cue["region"] = region
+        cues.append(cue)
         if len(cues) >= max_cues:
             break
     return cues
@@ -1800,9 +2464,9 @@ def remotion_caption_style(config: dict[str, Any]) -> dict[str, Any]:
     return {
         "position": position,
         "maxWidthRatio": clamp_float(captions.get("max_width_ratio"), 0.82, 0.45, 0.96),
-        "fontSizeRatio": clamp_float(captions.get("font_size_ratio"), 0.044, 0.02, 0.075),
+        "fontSizeRatio": clamp_float(captions.get("font_size_ratio"), 0.052, 0.02, 0.085),
         "backgroundOpacity": clamp_float(captions.get("background_opacity"), 0.74, 0.0, 0.95),
-        "maxLines": int(clamp_float(captions.get("max_lines"), 3, 1, 4)),
+        "maxLines": int(clamp_float(captions.get("max_lines"), 2, 1, 2)),
         "textColor": str(captions.get("text_color", "#ffffff")).strip() or "#ffffff",
         "backgroundColor": str(captions.get("background_color", "#050505")).strip() or "#050505",
         "accentColor": str(captions.get("accent_color", "#f2d14b")).strip() or "#f2d14b",
@@ -2329,8 +2993,8 @@ def render_video_ffmpeg(
     bgm_volume = float(config.get("audio", {}).get("bgm_volume", 0.62))
     fade_out_start = max(0.0, duration - 1.0)
     if audio_mode == "localized":
-        chains.append(f"[1:a]volume={voice_volume},apad,asplit=2[voice_sc][voice_mix]")
         if bgm:
+            chains.append(f"[1:a]volume={voice_volume},apad,asplit=2[voice_sc][voice_mix]")
             chains.append(
                 f"[2:a]volume={bgm_volume},atrim=0:{duration:.3f},"
                 f"afade=t=in:st=0:d=0.35,afade=t=out:st={fade_out_start:.3f}:d=1[backing]"
@@ -2338,7 +3002,10 @@ def render_video_ffmpeg(
             chains.append("[backing][voice_sc]sidechaincompress=threshold=0.060:ratio=4:attack=12:release=220[backing_ducked]")
             chains.append("[backing_ducked][voice_mix]amix=inputs=2:duration=first:dropout_transition=1:normalize=0[a]")
         else:
-            chains.append(f"[voice_mix]atrim=0:{duration:.3f},afade=t=out:st={fade_out_start:.3f}:d=1[a]")
+            chains.append(
+                f"[1:a]volume={voice_volume},apad,atrim=0:{duration:.3f},"
+                f"afade=t=out:st={fade_out_start:.3f}:d=1[a]"
+            )
     elif audio_mode == "preserve_source":
         source_volume = float(config.get("audio", {}).get("source_music_volume", 1.0))
         chains.append(
@@ -2491,8 +3158,7 @@ def production_design_config(config: dict[str, Any], options: dict[str, Any]) ->
         raw_layers = design.get("layers") if isinstance(design.get("layers"), list) else []
         raw_variants = design.get("variants") if isinstance(design.get("variants"), list) else ["通用版", "FB版"]
         variants = [str(item).strip() for item in raw_variants if str(item).strip() in {"通用版", "FB版"}]
-        if not variants:
-            variants = ["通用版", "FB版"]
+        variants = ["通用版", "FB版"]
         layers: list[dict[str, Any]] = []
         for index, raw in enumerate(raw_layers):
             if not isinstance(raw, dict):
@@ -2684,9 +3350,9 @@ def selected_endcard_asset(config: dict[str, Any], width: int, height: int) -> t
 def enforce_dual_variant_remotion(config: dict[str, Any]) -> None:
     """The production contract requires Remotion-rendered 通用版 + FB版 outputs.
 
-    通用版 carries corner overlays and a 1.5s full-frame endcard. FB版 is clean
-    throughout. Falling back to the old FFmpeg copy path would silently ship the
-    wrong package, so fail loudly instead.
+    通用版 carries an external bottom banner and one 1.5s full-frame endcard.
+    FB版 keeps its established clean layout. Falling back to an FFmpeg copy path
+    would silently ship the wrong package, so fail loudly instead.
     """
     if str(config.get("edit", {}).get("render_engine", "ffmpeg")).strip().lower() != "remotion":
         raise RuntimeError("standard production requires edit.render_engine=remotion")
@@ -2696,7 +3362,7 @@ def enforce_dual_variant_remotion(config: dict[str, Any]) -> None:
     promo = float(remotion_settings.get("promo_duration_sec", 1.5))
     if abs(promo - 1.5) > 0.01:
         raise RuntimeError("standard production requires remotion.promo_duration_sec=1.5")
-    for key in ("tu_yi", "tu_er", "lv_tu", "lan_tu"):
+    for key in ("bottom_banner", "lv_tu", "lan_tu"):
         configured_remotion_asset(config, key)
 
 
@@ -2750,16 +3416,19 @@ def render_clean_segment(
         if not voice:
             raise RuntimeError("Localized clean render requires pt-BR voice")
         args.extend(["-i", str(voice)])
-        audio_chains.append(f"[1:a]volume={voice_volume},apad,asplit=2[voice_sc][voice_mix]")
         if bgm:
             args.extend(["-stream_loop", "-1", "-i", str(bgm)])
             audio_chains.extend([
+                f"[1:a]volume={voice_volume},apad,asplit=2[voice_sc][voice_mix]",
                 f"[2:a]volume={bgm_volume},atrim=0:{duration:.3f},afade=t=in:st=0:d=0.35,afade=t=out:st={fade_out_start:.3f}:d=1[backing]",
                 "[backing][voice_sc]sidechaincompress=threshold=0.060:ratio=4:attack=12:release=220[backing_ducked]",
                 "[backing_ducked][voice_mix]amix=inputs=2:duration=first:dropout_transition=1:normalize=0[a]",
             ])
         else:
-            audio_chains.append(f"[voice_mix]atrim=0:{duration:.3f},afade=t=out:st={fade_out_start:.3f}:d=1[a]")
+            audio_chains.append(
+                f"[1:a]volume={voice_volume},apad,atrim=0:{duration:.3f},"
+                f"afade=t=out:st={fade_out_start:.3f}:d=1[a]"
+            )
     elif audio_mode == "preserve_source":
         audio_chains.append(
             f"[0:a]volume={source_volume},atrim=0:{duration:.3f},afade=t=out:st={fade_out_start:.3f}:d=1[a]"
@@ -2856,9 +3525,13 @@ def run_remotion_renderer_api(
     )
 
     args = [require_binary("node"), str(script), str(payload_path)]
+    renderer_tmp = Path(tempfile.mkdtemp(prefix="jaguartv-remotion-"))
+    renderer_env = os.environ.copy()
+    renderer_env["TMPDIR"] = str(renderer_tmp)
     process = subprocess.Popen(
         args,
         cwd=runtime,
+        env=renderer_env,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -2885,6 +3558,7 @@ def run_remotion_renderer_api(
                 handle_remotion_renderer_event(config, job_id, line)
     finally:
         selector.close()
+        shutil.rmtree(renderer_tmp, ignore_errors=True)
 
     output_text = "\n".join(lines)
     if process.returncode != 0:
@@ -2948,6 +3622,7 @@ def render_video_remotion_variant(
     *,
     variant: str,
     subtitles: Path | None = None,
+    caption_regions: Sequence[dict[str, Any]] | None = None,
     job_id: str | None = None,
     candidate_id: str | None = None,
 ) -> dict[str, Any]:
@@ -3005,7 +3680,7 @@ def render_video_remotion_variant(
         "customDesign": custom_design_enabled,
     }
     if remotion_captions_enabled_for_variant(config, variant):
-        caption_cues = remotion_caption_cues(subtitles, max_end=content_duration)
+        caption_cues = remotion_caption_cues(subtitles, max_end=content_duration, timed_regions=caption_regions)
         if caption_cues:
             props["captions"] = caption_cues
             props["captionStyle"] = remotion_caption_style(config)
@@ -3022,27 +3697,15 @@ def render_video_remotion_variant(
                 )
             design_layers.append(rendered_layer)
         props["designLayers"] = design_layers
-    else:
-        logo_path = str(brand_kit(config).get("watermark", {}).get("image") or "").strip()
-        if logo_path and variant == "通用版":
-            logo = resolve_config_path(config, logo_path)
-            if logo.is_file():
-                props["imgLogo"] = copy_remotion_public_asset(logo, public_dir, f"logo{logo.suffix or '.png'}")
-        for key, prop_key in (
-            ("top_badge", "topBadge"),
-            ("bottom_headline", "bottomHeadline"),
-            ("bottom_subline", "bottomSubline"),
-            ("endcard_cta", "endcardCta"),
-        ):
-            value = str(remotion_settings.get(key) or "").strip()
-            if value:
-                props[prop_key] = value
     endcard_class = ""
-    if variant == "通用版" and not custom_design_enabled:
-        tu_yi = configured_remotion_asset(config, "tu_yi")
-        tu_er = configured_remotion_asset(config, "tu_er")
-        props["imgTuYi"] = copy_remotion_public_asset(tu_yi, public_dir, f"tu_yi{tu_yi.suffix or '.png'}")
-        props["imgTuEr"] = copy_remotion_public_asset(tu_er, public_dir, f"tu_er{tu_er.suffix or '.png'}")
+    if variant == "通用版":
+        bottom_banner = configured_remotion_asset(config, "bottom_banner")
+        props["imgBottomBanner"] = copy_remotion_public_asset(
+            bottom_banner, public_dir, f"bottom_banner{bottom_banner.suffix or '.jpg'}"
+        )
+        with Image.open(bottom_banner) as banner_image:
+            banner_width, banner_height = banner_image.size
+        props["bottomBannerAspectRatio"] = banner_width / max(1, banner_height)
         endcard_path, endcard_class = selected_endcard_asset(config, source_width, source_height)
         props["imgEndcard"] = copy_remotion_public_asset(endcard_path, public_dir, f"endcard{endcard_path.suffix or '.png'}")
 
@@ -3052,28 +3715,63 @@ def render_video_remotion_variant(
         f".remotion-{os.getpid()}-{threading.get_ident()}-{random.randrange(1_000_000)}{output.suffix}"
     )
     render_runner = str(remotion_settings.get("render_runner", "renderer_api")).strip().lower()
+    stable_job_id = job_id or output.stem
+    full_render_job_id = f"{stable_job_id}:{variant}"
     if render_runner == "cli":
-        runner_info = run_remotion_cli_render(config, runtime, props, output, render_target)
+        upsert_render_job(
+            config,
+            full_render_job_id,
+            candidate_id=candidate_id or stable_job_id,
+            variant=variant,
+            engine="remotion_cli",
+            status="STARTED",
+            output_path=str(output),
+            metadata={"props_path": str(props_path), "target_path": str(render_target)},
+        )
+        try:
+            runner_info = run_remotion_cli_render(config, runtime, props, output, render_target)
+        except Exception as error:
+            update_render_job(config, full_render_job_id, status="FAILED", error=str(error)[-4000:])
+            raise
+        update_render_job(
+            config,
+            full_render_job_id,
+            status="COMPLETED",
+            progress=1.0,
+            metadata_patch={"completed_output": str(output), "size": output.stat().st_size},
+        )
+        runner_info["render_job_id"] = full_render_job_id
     elif render_runner == "renderer_api":
-        stable_job_id = job_id or output.stem
         runner_info = run_remotion_renderer_api(
             config,
             runtime,
             props,
             output,
             render_target,
-            job_id=f"{stable_job_id}:{variant}",
+            job_id=full_render_job_id,
             candidate_id=candidate_id or stable_job_id,
             variant=variant,
         )
     else:
         raise RuntimeError("remotion.render_runner must be renderer_api or cli")
+    layout = {
+        "mode": "external_bottom_banner"
+        if variant == "通用版"
+        else "existing_fb_layout",
+        "banner_asset": str(
+            (config.get("remotion", {}).get("dual_variant", {}) or {}).get("bottom_banner") or ""
+        ) if variant == "通用版" else "",
+        "banner_fit": "contain" if variant == "通用版" else "",
+        "overlays_removed": variant == "通用版",
+    }
     return {
         "variant": variant,
         "path": str(output),
         "filename": output.name,
         **runner_info,
         "endcard_class": endcard_class,
+        "endcard_count": 1 if variant == "通用版" else 0,
+        "layout": layout,
         "duration": media_duration(output),
         "size": output.stat().st_size,
         "mobile_format": canvas["mobile_format"],
@@ -3105,18 +3803,28 @@ def render_video(
 
 def qa_video(path: Path, config: dict[str, Any] | None = None) -> dict[str, Any]:
     result = run_command([
-        "ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
-        "stream=width,height,codec_name:format=duration", "-of", "json", str(path)
+        "ffprobe", "-v", "error", "-show_entries",
+        "stream=codec_type,width,height,codec_name,r_frame_rate:format=duration,size", "-of", "json", str(path)
     ])
     payload = json.loads(result.stdout)
-    stream = payload["streams"][0]
+    streams = payload.get("streams") or []
+    stream = next((item for item in streams if item.get("codec_type") == "video"), None)
+    if not stream:
+        raise RuntimeError(f"QA failed: no video stream in {path}")
     duration = float(payload["format"]["duration"])
+    rate = str(stream.get("r_frame_rate") or "0/1")
+    numerator, denominator = (rate.split("/", 1) + ["1"])[:2]
+    fps = float(numerator) / max(1.0, float(denominator))
     checks = {
         "playable": True,
+        "has_video": True,
+        "has_audio": any(item.get("codec_type") == "audio" for item in streams),
         "width": stream.get("width"),
         "height": stream.get("height"),
         "duration": duration,
         "codec": stream.get("codec_name"),
+        "fps": fps,
+        "size": int((payload.get("format") or {}).get("size") or path.stat().st_size),
     }
     layout = str((config or {}).get("edit", {}).get("layout_mode", "vertical")).strip().lower()
     minimum, maximum = short_duration_bounds(config or {})
@@ -3127,10 +3835,16 @@ def qa_video(path: Path, config: dict[str, Any] | None = None) -> dict[str, Any]
         checks["passed"] = (
             int(checks["width"] or 0) >= 360
             and int(checks["height"] or 0) >= 360
+            and checks["has_audio"]
+            and fps >= 20
             and minimum <= duration <= maximum + extra_duration + 0.5
         )
     else:
-        checks["passed"] = checks["width"] == 1080 and checks["height"] == 1920 and minimum <= duration <= maximum + extra_duration + 0.5
+        checks["passed"] = (
+            checks["width"] == 1080 and checks["height"] == 1920
+            and checks["has_audio"] and fps >= 20
+            and minimum <= duration <= maximum + extra_duration + 0.5
+        )
     return checks
 
 
@@ -3143,10 +3857,6 @@ def short_duration_bounds(config: dict[str, Any]) -> tuple[float, float]:
         minimum = 20.0
         maximum = float(configured)
     return max(12.0, minimum), min(60.0, max(minimum, maximum))
-
-
-def short_video_threshold(config: dict[str, Any]) -> float:
-    return max(45.0, min(90.0, float(config.get("edit", {}).get("short_video_threshold_sec", 75))))
 
 
 def source_duration_limit(config: dict[str, Any]) -> float:
@@ -3218,170 +3928,6 @@ def edge_rate_from_config(config: dict[str, Any]) -> str:
     return f"{percent:+d}%"
 
 
-def whole_source_segment(source_duration: float, strategy: str) -> dict[str, Any]:
-    return {
-        "start": 0.0,
-        "duration": round(source_duration, 3),
-        "highlight_score": 50.0,
-        "highlight_reasons": ["short_source_no_smart_slice"],
-        "signal_scores": {
-            "audio_peak": 0.0, "audio_surge": 0.0, "motion_peak": 0.0,
-            "scene_change": 0.0, "keyword": 0.0, "replay": 0.0,
-        },
-        "strategy": strategy,
-        "fallback": False,
-        "index": 1,
-        "total": 1,
-        "source_start": 0.0,
-        "source_end": round(source_duration, 3),
-    }
-
-
-def short_segments(config: dict[str, Any], source_duration: float, preferred_duration: float) -> list[dict[str, Any]]:
-    """Build YouTube Shorts/TikTok-compatible segment windows.
-
-    A normal source produces one package. Longer sources can produce multiple
-    review packages, capped so a batch remains practical on a local machine.
-    """
-    minimum, maximum = short_duration_bounds(config)
-    target = max(minimum, min(maximum, preferred_duration, source_duration))
-    if source_duration <= maximum + 2.0:
-        return [{"index": 1, "total": 1, "start": 0.0, "duration": max(minimum, min(maximum, source_duration))}]
-
-    edit = config.get("edit", {})
-    max_segments = max(1, int(edit.get("max_segments_per_source", 3)))
-    overlap = max(0.0, float(edit.get("segment_overlap_sec", 3)))
-    stride = max(5.0, target - overlap)
-    possible = max(1, int(math.ceil((source_duration - target) / stride)) + 1)
-    count = min(max_segments, possible)
-    segments = []
-    for index in range(count):
-        if count == 1:
-            start = 0.0
-        else:
-            start = min(max(0.0, source_duration - target), index * stride)
-        duration = min(target, source_duration - start)
-        if duration >= minimum:
-            segments.append({"index": index + 1, "total": count, "start": start, "duration": duration})
-    return segments or [{"index": 1, "total": 1, "start": 0.0, "duration": min(maximum, source_duration)}]
-
-
-def produce_design_overlay_from_base(
-    config: dict[str, Any],
-    row: sqlite3.Row,
-    options: dict[str, Any],
-    progress: Callable[[int, str], None],
-) -> Path:
-    work = workspace_dir(config) / "jobs" / row["id"]
-    work.mkdir(parents=True, exist_ok=True)
-    progress(12, "正在读取服务器成片底视频")
-    candidate_metadata: dict[str, Any] = {}
-    try:
-        candidate_metadata = json.loads(row["metadata_json"] or "{}")
-    except (json.JSONDecodeError, KeyError):
-        pass
-    date_label = candidate_date_label(row)
-    source_label = source_filename_label(str(row["platform"]))
-    batch_label = batch_label_for_output(options) or "文案设计版"
-    filename_source_label = f"{source_label}-{batch_label}"
-    inventory_index = next_inventory_index(config, date_label, filename_source_label)
-    filename_stem = f"{date_label}-{filename_source_label}-{inventory_index}"
-    variant_outputs: list[dict[str, Any]] = []
-    for variant in remotion_output_variants(config):
-        base_video = remotion_design_base_video(config, variant)
-        if base_video is None:
-            raise RuntimeError("文案设计需要先选择一条服务器成片作为底视频")
-        variant_output = work / f"{filename_stem}-{variant}.mp4"
-        progress(32, f"正在基于服务器成片叠加文案设计：{variant}")
-        info = render_video_remotion_variant(
-            config,
-            base_video,
-            variant_output,
-            variant=variant,
-            subtitles=None,
-            job_id=f"{row['id']}-design",
-            candidate_id=row["id"],
-        )
-        info["duration"] = media_duration(variant_output)
-        info["size"] = variant_output.stat().st_size
-        info["source_label"] = source_label
-        info["batch_label"] = batch_label
-        inventory_dir = inventory_root(config) / batch_label / variant / source_label
-        inventory_dir.mkdir(parents=True, exist_ok=True)
-        inventory_path = inventory_dir / variant_output.name
-        shutil.copy2(variant_output, inventory_path)
-        info["inventory_path"] = str(inventory_path)
-        qa_variant = qa_video(variant_output, config)
-        qa_variant["variant"] = variant
-        info["qa"] = qa_variant
-        if not qa_variant["passed"]:
-            raise RuntimeError(f"QA failed for design overlay {variant}: {qa_variant}")
-        variant_outputs.append(info)
-    output = Path(str(variant_outputs[0]["path"]))
-    review_root = workspace_dir(config) / "ready_for_review"
-    package_id = row["id"]
-    review = review_root / package_id
-    review.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(output, review / "video.mp4")
-    for info in variant_outputs:
-        variant_path = Path(str(info["path"]))
-        if variant_path.is_file():
-            shutil.copy2(variant_path, review / variant_path.name)
-    cover = review / "cover.jpg"
-    cover_source = render_cover_image(config, brand_kit(config), output, cover)
-    duration = media_duration(output)
-    metadata = {
-        "job_id": package_id,
-        "keyword": str(candidate_metadata.get("keyword") or ""),
-        "category": str(candidate_metadata.get("category") or ""),
-        "source": {
-            "candidate_id": row["id"],
-            "platform": row["platform"],
-            "url": row["url"],
-            "title": row["title"],
-            "base_video": str(remotion_design_base_video(config, remotion_output_variants(config)[0]) or ""),
-        },
-        "segment": {
-            "index": 1,
-            "total": 1,
-            "start_sec": 0.0,
-            "duration_sec": duration,
-            "highlight_score": 0,
-            "highlight_reasons": ["design_overlay_on_server_output"],
-        },
-        "strategy": {
-            "content_type": "design_overlay",
-            "segment_strategy": "server_output_overlay",
-            "audio_policy": "preserve_output_audio",
-        },
-        "publishing_text": str(candidate_metadata.get("title") or row["title"] or ""),
-        "tracking": tracking_links(config, package_id),
-        "outputs": {
-            "video": str(output),
-            "cover": str(cover),
-            "cover_source": cover_source,
-            "variants": variant_outputs,
-        },
-        "batch_label": batch_label,
-        "rights_status": str(options.get("rights_status") or "MANUAL_REVIEW"),
-        "rights_note": "Design overlay generated from existing server-produced output.",
-        "qa": variant_outputs[0].get("qa", {}),
-        "created_at": now_iso(),
-    }
-    (review / "metadata.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
-    connection = connect_db(config)
-    connection.execute(
-        "UPDATE candidates SET status='READY_FOR_REVIEW',updated_at=? WHERE id=?",
-        (now_iso(), row["id"]),
-    )
-    append_event(connection, row["id"], "READY_FOR_REVIEW", {"package": package_id, "mode": "design_overlay"})
-    connection.commit()
-    storage_result = archive_review_package(config, package_id, review)
-    append_event(connection, row["id"], "SERVER_ARCHIVED", storage_result)
-    progress(100, "文案设计版已基于服务器成片生成")
-    return review
-
-
 def produce_candidate(
     config: dict[str, Any], row: sqlite3.Row,
     progress_callback: Callable[[int, str], None] | None = None,
@@ -3395,17 +3941,45 @@ def produce_candidate(
     require_binary("ffprobe")
     options = options or {}
     config = production_design_config(config, options)
-    custom_design = ((config.get("remotion", {}) or {}).get("custom_design", {}) or {})
-    if custom_design.get("enabled") and (
-        custom_design.get("base_video_path") or custom_design.get("base_asset_id") or custom_design.get("base_asset_ids")
-    ):
-        return produce_design_overlay_from_base(config, row, options, progress)
+    production_run_id = str(options.get("_production_run_id") or "").strip()
+    owns_production_run = not production_run_id
+    if owns_production_run:
+        production_run_id = hashlib.sha256(
+            f"direct\x1f{row['id']}\x1f{now_iso()}".encode("utf-8")
+        ).hexdigest()[:24]
+        timestamp = now_iso()
+        connection = connect_db(config)
+        connection.execute(
+            """
+            INSERT INTO production_runs(
+              id,candidate_id,trigger_source,idempotency_key,contract_version,contract_hash,
+              status,stage,options_json,created_at,updated_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                production_run_id, row["id"], "test", f"direct:{production_run_id}",
+                "candidate-production-v1", "direct", "RUNNING", "INPUT_VALIDATION",
+                json.dumps({}, ensure_ascii=False), timestamp, timestamp,
+            ),
+        )
+        connection.execute(
+            "UPDATE candidates SET status='PRODUCTION_RUNNING',updated_at=? WHERE id=?",
+            (timestamp, row["id"]),
+        )
+        connection.commit()
     progress(5, "正在读取源素材")
     work = workspace_dir(config) / "jobs" / row["id"]
+    work.mkdir(parents=True, exist_ok=True)
     media = next((path for path in work.glob("source.*") if path.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov"}), None)
+    custom_design = ((config.get("remotion", {}) or {}).get("custom_design", {}) or {})
+    if not media and custom_design.get("enabled"):
+        design_base = remotion_design_base_video(config, "通用版") or remotion_design_base_video(config, "FB版")
+        if design_base and design_base.is_file():
+            media = work / f"source{design_base.suffix.lower() or '.mp4'}"
+            shutil.copy2(design_base, media)
     if not media:
         raise RuntimeError(f"No downloaded media for {row['id']}")
-    original_media = media
+    original_media = media.resolve()
     try:
         candidate_metadata = json.loads(row["metadata_json"] or "{}")
     except (json.JSONDecodeError, KeyError):
@@ -3454,12 +4028,17 @@ def produce_candidate(
     audio_reason = f"content_policy:{strategy.content_type}->{strategy.audio_policy}"
     audio_reason += f":localization_class_{localization_profile['class']}:{localization_profile['reason']}"
     if audio_mode == "localized":
+        require_source_transcript = (
+            not audio_override
+            and localization_class_id(localization_profile) in {1, 3}
+        )
         transcript = source_text(
             work,
             media,
             f"{row['title']}. {row['description']}".strip(),
             enable_asr=bool(config.get("localization", {}).get("asr_enabled", False)),
             config=config,
+            allow_metadata_fallback=not require_source_transcript,
         )
     elif audio_mode == "preserve_source" and not media_has_audio(media):
         audio_mode = "silent"
@@ -3506,7 +4085,9 @@ def produce_candidate(
             try:
                 bgm = demucs_backing_track(media, work)
                 bgm_source = "demucs_no_vocals"
-            except RuntimeError:
+            except RuntimeError as error:
+                if bool(config.get("localization", {}).get("require_backing_track", False)):
+                    raise RuntimeError(f"background track separation required but failed: {error}") from error
                 bgm = None
                 bgm_source = "none:demucs_unavailable"
         progress(55, "葡语音轨已准备，未添加固定 BGM")
@@ -3549,20 +4130,18 @@ def produce_candidate(
     enforce_dual_variant_remotion(config)
     transcript_file = next(iter(sorted([*work.glob("source*.srt"), *work.glob("source*.vtt")])), None)
     custom_design = ((config.get("remotion", {}) or {}).get("custom_design", {}) or {})
-    if bool(custom_design.get("enabled")) and bool(custom_design.get("whole_source")):
-        segments = [whole_source_segment(source_duration, "whole_source_design")]
-    elif source_duration <= short_video_threshold(config):
-        segment_duration = min(source_duration, max(float(short_duration_bounds(config)[1]), preferred_duration))
-        segments = [whole_source_segment(segment_duration, strategy.segment_strategy)]
-    else:
-        segments = analyze_video(
-            media,
-            source_duration=source_duration,
-            max_segments=strategy.max_segments,
-            max_duration=min(strategy.max_duration, preferred_duration),
-            strategy=strategy.segment_strategy,
-            transcript_path=transcript_file,
-        )
+    segments = analyze_video(
+        media,
+        source_duration=source_duration,
+        max_segments=strategy.max_segments,
+        max_duration=min(strategy.max_duration, preferred_duration),
+        strategy=strategy.segment_strategy,
+        transcript_path=transcript_file,
+    )
+    if not segments or any(bool(segment.get("fallback")) for segment in segments):
+        from .production import SliceAnalysisError
+
+        raise SliceAnalysisError("smart analysis did not produce a qualified slice; manual slicing is required")
     (work / "analysis.json").write_text(
         json.dumps({"strategy": strategy.to_dict(), "segments": segments}, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -3576,13 +4155,11 @@ def produce_candidate(
     reviews: list[Path] = []
     qa_results: list[dict[str, Any]] = []
     review_root = workspace_dir(config) / "ready_for_review"
-    stale_single_review = review_root / row["id"]
-    if len(segments) > 1 and stale_single_review.exists():
-        shutil.rmtree(stale_single_review)
-    if len(segments) == 1:
-        for stale_part in review_root.glob(f"{row['id']}_part*"):
-            if stale_part.is_dir():
-                shutil.rmtree(stale_part)
+    staging_root = workspace_dir(config) / "production_staging" / production_run_id
+    if staging_root.exists():
+        shutil.rmtree(staging_root)
+    staging_root.mkdir(parents=True, exist_ok=True)
+    package_records: list[dict[str, Any]] = []
     for segment in segments:
         segment_index = int(segment["index"])
         segment_total = int(segment["total"])
@@ -3649,10 +4226,51 @@ def produce_candidate(
         title_suffix = f" - Parte {segment_index}" if segment_total > 1 else ""
         variant_outputs: list[dict[str, Any]] = []
         hyperframes_package: dict[str, Any] | None = None
+        segment_script = script
+        segment_voice = voice
+        segment_subtitles = subtitles
+        segment_publishing_text = publishing_text
+        if audio_mode == "localized":
+            segment_source = source_text_for_interval(
+                work,
+                start=float(segment["start"]),
+                duration=float(segment["duration"]),
+                fallback=transcript if segment_total == 1 else "",
+            )
+            if not segment_source:
+                raise RuntimeError(
+                    f"No source transcript found for localized segment {segment_index}; "
+                    "refusing to reuse a generic pt-BR narration"
+                )
+            segment_script = build_ptbr_script(
+                segment_source,
+                hook=hook_text,
+                max_body_words=int(config.get("localization", {}).get("segment_script_max_words", 64)),
+            )
+            assert_script_is_portuguese(segment_script)
+            localization_settings = config.get("localization", {}) or {}
+            if bool(localization_settings.get("voice_enabled", False)):
+                segment_voice = work / f"voice_ptbr_part{segment_index:02d}.aiff"
+                segment_subtitles = work / f"subtitles_ptbr_part{segment_index:02d}.srt"
+                write_srt(segment_script, float(segment["duration"]), segment_subtitles)
+                tts_ptbr(
+                    segment_script,
+                    segment_voice,
+                    provider=str(localization_settings.get("tts_provider", "auto")),
+                    edge_voice=str(localization_settings.get("edge_tts_voice", "pt-BR-AntonioNeural")),
+                    edge_rate=tts_rate_percent(config),
+                    config=config,
+                    subtitles=segment_subtitles,
+                )
+                progress(
+                    63 + int((segment_index - 1) * 24 / max(1, segment_total)),
+                    f"第 {segment_index}/{segment_total} 段 pt-BR 配音已生成",
+                )
+            segment_publishing_text = segment_script
         if render_engine == "remotion" and (config.get("remotion", {}).get("dual_variant", {}) or {}).get("enabled", False):
             clean = work / f"{filename_stem}_clean_input.mp4"
             render_clean_segment(
-                config, render_media, voice, bgm, clean, float(segment["duration"]),
+                config, render_media, segment_voice, bgm, clean, float(segment["duration"]),
                 audio_mode=audio_mode, start_time=render_start,
             )
             for variant in remotion_output_variants(config):
@@ -3662,7 +4280,8 @@ def produce_candidate(
                     clean,
                     variant_output,
                     variant=variant,
-                    subtitles=subtitles,
+                    subtitles=segment_subtitles,
+                    caption_regions=ocr_cleanup.get("timed_regions") if ocr_cleanup.get("used") else None,
                     job_id=package_id,
                     candidate_id=row["id"],
                 )
@@ -3684,9 +4303,7 @@ def produce_candidate(
                 info["duration"] = media_duration(variant_output)
                 info["size"] = variant_output.stat().st_size
                 inventory_dir = inventory_root(config) / batch_label / variant / source_label if batch_label else inventory_root(config) / variant / source_label
-                inventory_dir.mkdir(parents=True, exist_ok=True)
                 inventory_path = inventory_dir / variant_output.name
-                shutil.copy2(variant_output, inventory_path)
                 qa_variant = qa_video(variant_output, config)
                 qa_variant["variant"] = variant
                 info.update({
@@ -3705,15 +4322,15 @@ def produce_candidate(
                     work,
                     package_id,
                     clean,
-                    subtitles,
+                    segment_subtitles,
                     f"{filename_stem}{title_suffix}",
-                    publishing_text,
+                    segment_publishing_text,
                     float(segment["duration"]),
                 )
             output = Path(str(variant_outputs[0]["path"]))
         else:
             render_video(
-                config, render_media, voice, bgm, subtitles, output, float(segment["duration"]),
+                config, render_media, segment_voice, bgm, segment_subtitles, output, float(segment["duration"]),
                 audio_mode=audio_mode, start_time=render_start,
             )
             if reaction.mode != "none":
@@ -3757,13 +4374,25 @@ def produce_candidate(
         )
         if not qa["passed"]:
             raise RuntimeError(f"QA failed for {package_id}: {qa}")
-        review = review_root / package_id
+        final_review = review_root / package_id
+        review = staging_root / package_id
         review.mkdir(parents=True, exist_ok=True)
         shutil.copy2(output, review / "video.mp4")
+        persisted_outputs: list[dict[str, Any]] = []
+        gate_outputs: list[dict[str, Any]] = []
         for info in variant_outputs:
             variant_path = Path(str(info["path"]))
             if variant_path.is_file():
-                shutil.copy2(variant_path, review / variant_path.name)
+                staged_variant = review / variant_path.name
+                shutil.copy2(variant_path, staged_variant)
+                final_variant = final_review / variant_path.name
+                persisted = {**info, "path": str(final_variant), "filename": variant_path.name}
+                persisted_outputs.append(persisted)
+                gate_outputs.append({**persisted, "path": str(staged_variant)})
+        from .production import validate_output_pair
+
+        slice_id = f"{production_run_id}:slice:{segment_index:02d}"
+        validate_output_pair(config, original_media, slice_id, gate_outputs)
         cover = review / "cover.jpg"
         active_kit = brand_kit(config)
         cover_source = render_cover_image(config, active_kit, output, cover)
@@ -3782,6 +4411,7 @@ def produce_candidate(
             "audio_policy": strategy.audio_policy,
             "operator_override": strategy.operator_override,
             "segment": {
+                "slice_id": slice_id,
                 "index": segment_index,
                 "total": segment_total,
                 "start_sec": segment["start"],
@@ -3792,18 +4422,18 @@ def produce_candidate(
                 "signal_scores": segment.get("signal_scores", {}),
                 "fallback": bool(segment.get("fallback", False)),
             },
-            "ptbr_script": script,
+            "ptbr_script": segment_script,
             "hook_version": hook_version,
             "youtube": {
                 "title": f"{filename_stem}{title_suffix}"[:100],
-                "description": f"{publishing_text[:500]}\n\n▶ {links['youtube']}",
+                "description": f"{segment_publishing_text[:500]}\n\n▶ {links['youtube']}",
                 "hashtags": ["JaguarTV", "Brasil", "Shorts"],
                 "cta_url": links["youtube"],
             },
-            "tiktok": {"caption": publishing_text[:220], "hashtags": ["JaguarTV", "ParaVoce"], "cta_url": links["tiktok"]},
-            "kwai": {"caption": publishing_text[:220], "hashtags": ["JaguarTV", "Brasil"], "cta_url": links["kwai"]},
+            "tiktok": {"caption": segment_publishing_text[:220], "hashtags": ["JaguarTV", "ParaVoce"], "cta_url": links["tiktok"]},
+            "kwai": {"caption": segment_publishing_text[:220], "hashtags": ["JaguarTV", "Brasil"], "cta_url": links["kwai"]},
             "facebook": {
-                "text": f"{publishing_text[:500]}\n\n▶ {links['facebook']}",
+                "text": f"{segment_publishing_text[:500]}\n\n▶ {links['facebook']}",
                 "hashtags": ["JaguarTV"],
                 "cta_url": links["facebook"],
             },
@@ -3814,7 +4444,9 @@ def produce_candidate(
                 "watermark": str(brand_kit(config).get("watermark", {}).get("image") or ""),
                 "endcard": str(brand_kit(config).get("endcard", {}).get("image") or ""),
             },
-            "output_variants": variant_outputs,
+            "production_contract": "candidate-production-v1",
+            "production_run_id": production_run_id,
+            "output_variants": persisted_outputs,
             "hyperframes_package": hyperframes_package,
             "render_engine": render_engine,
             "reaction": reaction.to_dict(),
@@ -3825,7 +4457,7 @@ def produce_candidate(
                 "reason": audio_reason,
                 "source_audio_removed": audio_mode == "localized",
                 "source_audio_preserved": audio_mode == "preserve_source",
-                "voice": "pt-BR/Luciana" if voice else "",
+                "voice": "pt-BR/Luciana" if segment_voice else "",
                 "bgm": str(bgm) if bgm else "",
                 "bgm_source": bgm_source,
             },
@@ -3844,30 +4476,55 @@ def produce_candidate(
         (review / "review.json").write_text(
             json.dumps({"decision": "pending", "note": "", "reviewed_at": ""}, ensure_ascii=False, indent=2), encoding="utf-8"
         )
-        storage_result = archive_review_package(config, package_id, review)
-        append_event(connect_db(config), row["id"], "SERVER_ARCHIVED", storage_result)
-        reviews.append(review)
-
-        if segment_total > 1:
-            conn = connect_db(config)
-            child_title = f"{row['title']} (Slice {segment_index})"
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO candidates
-                (id, parent_id, platform, source_id, url, title, description, duration, status, metadata_json, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'READY_FOR_REVIEW', ?, ?, ?)
-                """,
-                (
-                    package_id, row["id"], row["platform"], f"{row['source_id']}_slice{segment_index}",
-                    row["url"], child_title, row["description"], segment["duration"],
-                    json.dumps(metadata, ensure_ascii=False), now_iso(), now_iso()
-                )
-            )
-            conn.commit()
+        package_records.append({
+            "package_id": package_id,
+            "slice_id": slice_id,
+            "segment": dict(segment),
+            "metadata": metadata,
+            "staged_review": review,
+            "final_review": final_review,
+            "outputs": persisted_outputs,
+        })
 
     progress(94, "质量检查通过，正在打包")
+    quarantine_root = workspace_dir(config) / "review_quarantine" / f"pre-{production_run_id}"
+    moved_existing: list[tuple[Path, Path]] = []
+    try:
+        for record in package_records:
+            staged_review = Path(record["staged_review"])
+            final_review = Path(record["final_review"])
+            final_review.parent.mkdir(parents=True, exist_ok=True)
+            if final_review.exists():
+                quarantine_root.mkdir(parents=True, exist_ok=True)
+                quarantined = quarantine_root / final_review.name
+                if quarantined.exists():
+                    shutil.rmtree(quarantined)
+                final_review.replace(quarantined)
+                moved_existing.append((quarantined, final_review))
+            staged_review.replace(final_review)
+            reviews.append(final_review)
+            for output_info in record["outputs"]:
+                final_output = Path(str(output_info["path"]))
+                inventory_path = Path(str(output_info.get("inventory_path") or ""))
+                if inventory_path:
+                    inventory_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(final_output, inventory_path)
+            storage_result = archive_review_package(config, str(record["package_id"]), final_review)
+            record["storage_result"] = storage_result
+    except Exception:
+        for record in package_records:
+            final_review = Path(record["final_review"])
+            if final_review.exists():
+                shutil.rmtree(final_review)
+        for quarantined, original in reversed(moved_existing):
+            if quarantined.exists():
+                quarantined.replace(original)
+        raise
+
     manifest = {
-        "job_id": row["id"], "status": "READY_FOR_REVIEW", "created_at": now_iso(),
+        "job_id": row["id"], "status": "OUTPUTS_COMPLETE", "created_at": now_iso(),
+        "production_contract": "candidate-production-v1",
+        "production_run_id": production_run_id,
         "assets": {
             "source": str(media),
             "original_source": str(original_media),
@@ -3890,8 +4547,121 @@ def produce_candidate(
     }
     (work / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     connection = connect_db(config)
-    connection.execute("UPDATE candidates SET status='READY_FOR_REVIEW',updated_at=? WHERE id=?", (now_iso(), row["id"]))
-    append_event(connection, row["id"], "READY_FOR_REVIEW", manifest)
+    timestamp = now_iso()
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        connection.execute(
+            "DELETE FROM production_outputs WHERE production_run_id=?",
+            (production_run_id,),
+        )
+        connection.execute(
+            "DELETE FROM production_slices WHERE production_run_id=?",
+            (production_run_id,),
+        )
+        for record in package_records:
+            segment = record["segment"]
+            slice_id = str(record["slice_id"])
+            connection.execute(
+                """
+                INSERT INTO production_slices(
+                  id,production_run_id,candidate_id,slice_index,start_sec,end_sec,duration_sec,
+                  status,analysis_json,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    slice_id, production_run_id, row["id"], int(segment["index"]),
+                    float(segment["start"]), float(segment["start"]) + float(segment["duration"]),
+                    float(segment["duration"]), "COMPLETED",
+                    json.dumps(segment, ensure_ascii=False), timestamp, timestamp,
+                ),
+            )
+            for output_info in record["outputs"]:
+                output_path = Path(str(output_info["path"])).resolve()
+                qa_payload = output_info.get("qa") if isinstance(output_info.get("qa"), dict) else {}
+                variant = str(output_info["variant"])
+                output_id = f"{slice_id}:{'generic' if variant == '通用版' else 'facebook'}"
+                connection.execute(
+                    """
+                    INSERT INTO production_outputs(
+                      id,production_run_id,slice_id,candidate_id,variant,status,path,sha256,
+                      source_sha256,size_bytes,duration_sec,width,height,fps,has_video,has_audio,
+                      render_job_id,endcard_count,layout_json,qa_json,created_at,updated_at
+                    ) VALUES(?,?,?,?,?,'COMPLETED',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        output_id, production_run_id, slice_id, row["id"], variant,
+                        str(output_path), file_sha256(output_path),
+                        file_sha256(original_media), output_path.stat().st_size,
+                        float(qa_payload.get("duration") or output_info.get("duration") or 0),
+                        int(qa_payload.get("width") or 0), int(qa_payload.get("height") or 0),
+                        float(qa_payload.get("fps") or 0), int(bool(qa_payload.get("has_video", True))),
+                        int(bool(qa_payload.get("has_audio", True))), str(output_info.get("render_job_id") or ""),
+                        int(output_info.get("endcard_count") or 0),
+                        json.dumps(output_info.get("layout") or {}, ensure_ascii=False),
+                        json.dumps(qa_payload, ensure_ascii=False), timestamp, timestamp,
+                    ),
+                )
+            if int(segment["total"]) > 1:
+                metadata = record["metadata"]
+                package_id = str(record["package_id"])
+                child_title = f"{row['title']} (Slice {int(segment['index'])})"
+                connection.execute(
+                    """
+                    INSERT OR REPLACE INTO candidates(
+                      id,parent_id,platform,source_id,url,title,description,duration,status,
+                      metadata_json,created_at,updated_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        package_id, row["id"], row["platform"],
+                        f"{row['source_id']}_slice{int(segment['index'])}", row["url"], child_title,
+                        row["description"], float(segment["duration"]), "PRODUCTION_STAGED",
+                        json.dumps(metadata, ensure_ascii=False), timestamp, timestamp,
+                    ),
+                )
+        parent_metadata = dict(candidate_metadata)
+        parent_metadata["production"] = {
+            "contract": "candidate-production-v1",
+            "run_id": production_run_id,
+            "slice_ids": [str(record["slice_id"]) for record in package_records],
+            "packages": [str(record["package_id"]) for record in package_records],
+        }
+        connection.execute(
+            "UPDATE candidates SET status='PRODUCTION_RUNNING',metadata_json=?,updated_at=? WHERE id=?",
+            (json.dumps(parent_metadata, ensure_ascii=False), timestamp, row["id"]),
+        )
+        connection.execute(
+            "UPDATE production_runs SET status='OUTPUTS_COMPLETE',stage='QUALITY_GATE',updated_at=? WHERE id=?",
+            (timestamp, production_run_id),
+        )
+        append_event(connection, row["id"], "PRODUCTION_OUTPUTS_COMPLETE", manifest, commit=False)
+        for record in package_records:
+            append_event(
+                connection,
+                row["id"],
+                "SERVER_ARCHIVED",
+                record.get("storage_result") or {},
+                commit=False,
+            )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    if owns_production_run:
+        from .production import assert_candidate_ready_for_review
+
+        gate = assert_candidate_ready_for_review(config, row["id"], run_id=production_run_id)
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            "UPDATE production_runs SET status='SUCCEEDED',stage='READY_FOR_REVIEW',updated_at=? WHERE id=?",
+            (now_iso(), production_run_id),
+        )
+        connection.execute(
+            "UPDATE candidates SET status='READY_FOR_REVIEW',updated_at=? WHERE id=? OR parent_id=?",
+            (now_iso(), row["id"], row["id"]),
+        )
+        append_event(connection, row["id"], "READY_FOR_REVIEW", {"run_id": production_run_id, "gate": gate}, commit=False)
+        connection.commit()
     progress(100, "审核包已生成")
     return reviews[0]
 
@@ -3926,17 +4696,16 @@ def analyze_candidate(
             f"source duration {source_duration:.1f}s exceeds max_source_duration_sec={source_duration_limit(config):.0f}"
         )
     transcript_file = next(iter(sorted([*work.glob("source*.srt"), *work.glob("source*.vtt")])), None)
-    if source_duration <= short_video_threshold(config):
-        segments = [whole_source_segment(min(source_duration, strategy.max_duration), strategy.segment_strategy)]
-    else:
-        segments = analyze_video(
-            media,
-            source_duration=source_duration,
-            max_segments=strategy.max_segments,
-            max_duration=strategy.max_duration,
-            strategy=strategy.segment_strategy,
-            transcript_path=transcript_file,
-        )
+    segments = analyze_video(
+        media,
+        source_duration=source_duration,
+        max_segments=strategy.max_segments,
+        max_duration=strategy.max_duration,
+        strategy=strategy.segment_strategy,
+        transcript_path=transcript_file,
+    )
+    if not segments or any(bool(segment.get("fallback")) for segment in segments):
+        raise RuntimeError("smart analysis did not produce a qualified slice; manual slicing is required")
     result = {
         "candidate_id": row["id"],
         "media": str(media),
@@ -3973,6 +4742,8 @@ def produce_top(
     progress_callback: Callable[[int, str], None] | None = None,
     options: dict[str, Any] | None = None,
 ) -> dict[str, int]:
+    from .production import CandidateProductionService
+
     connection = connect_db(config)
     if candidate:
         rows = connection.execute("SELECT * FROM candidates WHERE id=?", (candidate,)).fetchall()
@@ -3981,19 +4752,20 @@ def produce_top(
             "SELECT * FROM candidates WHERE status IN ('DOWNLOADED','PRODUCTION_FAILED') ORDER BY score DESC LIMIT ?", (limit,)
         ).fetchall()
     stats = {"selected": len(rows), "produced": 0, "failed": 0}
+    service = CandidateProductionService(config)
+    requested_options = dict(options or {})
+    trigger_source = str(requested_options.pop("trigger_source", "cli") or "cli")
     for row in rows:
         try:
-            produce_candidate(config, row, progress_callback=progress_callback, options=options)
+            service.run(
+                str(row["id"]),
+                trigger_source=trigger_source,
+                options=requested_options,
+                progress_callback=progress_callback,
+            )
             stats["produced"] += 1
         except Exception as error:
             stats["failed"] += 1
-            blocked = isinstance(error, PermissionError) and str(error).startswith("BLOCKED_RIGHTS")
-            status = "BLOCKED_RIGHTS" if blocked else "PRODUCTION_FAILED"
-            if not blocked and candidate_has_review_outputs(config, row["id"]):
-                status = "READY_FOR_REVIEW"
-            connection.execute("UPDATE candidates SET status=?,updated_at=? WHERE id=?", (status, now_iso(), row["id"]))
-            event_type = "PRODUCTION_PARTIAL_FAILED" if status == "READY_FOR_REVIEW" else status
-            append_event(connection, row["id"], event_type, {"error": str(error)})
             print(f"WARN produce {row['id']}: {error}")
     return stats
 

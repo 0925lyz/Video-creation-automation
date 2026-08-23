@@ -16,6 +16,7 @@ type BrandProps = {
   imgLogo?: string;
   imgTuYi?: string;
   imgTuEr?: string;
+  imgBottomBanner?: string;
   imgEndcard?: string;
   topBadge?: string;
   bottomHeadline?: string;
@@ -40,6 +41,7 @@ type BrandProps = {
   endcardFit?: "cover" | "contain";
   overlayPlacement?: "video_corners" | "mobile_top_band";
   sourceAspectRatio?: number;
+  bottomBannerAspectRatio?: number;
 };
 
 type DesignLayer = {
@@ -60,6 +62,7 @@ type CaptionCue = {
   startSeconds: number;
   endSeconds: number;
   text: string;
+  region?: [number, number, number, number];
 };
 
 type CaptionStyle = {
@@ -79,6 +82,7 @@ const fallbackProps: BrandProps = {
   imgLogo: "",
   imgTuYi: "",
   imgTuEr: "",
+  imgBottomBanner: "",
   imgEndcard: "",
   topBadge: "",
   bottomHeadline: "",
@@ -101,13 +105,14 @@ const fallbackProps: BrandProps = {
   endcardFit: "cover",
   overlayPlacement: "video_corners",
   sourceAspectRatio: 16 / 9,
+  bottomBannerAspectRatio: 992 / 136,
   captions: [],
   captionStyle: {
     position: "bottom",
     maxWidthRatio: 0.82,
     fontSizeRatio: 0.044,
     backgroundOpacity: 0.74,
-    maxLines: 3,
+    maxLines: 2,
     textColor: "#ffffff",
     backgroundColor: "#050505",
     accentColor: "#f2d14b",
@@ -134,15 +139,19 @@ function JaguarTVVariant(props: BrandProps) {
   return (
     <AbsoluteFill style={{backgroundColor: "#000"}}>
       <Sequence durationInFrames={contentFrames}>
-        {p.sourceVideo ? (
+        {isGeneric ? (
+          <GenericContentLayout {...p} />
+        ) : p.sourceVideo ? (
           <OffthreadVideo src={assetSrc(p.sourceVideo)} style={{width, height, objectFit: p.sourceFit || "cover"}} muted={false} />
-        ) : (
-          <AbsoluteFill style={{width, height, backgroundColor: "#050505"}} />
-        )}
+        ) : <AbsoluteFill style={{width, height, backgroundColor: "#050505"}} />}
         {p.customDesign ? <FreeformDesignOverlay layers={p.designLayers || []} /> : null}
-        {isGeneric && !p.customDesign ? <CornerOverlays {...p} /> : null}
-        {isGeneric && !p.customDesign ? <DesignCopyOverlay {...p} /> : null}
-        <CaptionOverlays captions={p.captions || []} style={p.captionStyle || fallbackProps.captionStyle} />
+        <CaptionOverlays
+          captions={p.captions || []}
+          style={p.captionStyle || fallbackProps.captionStyle}
+          sourceFit={p.sourceFit || "cover"}
+          sourceAspectRatio={p.sourceAspectRatio || width / height}
+          frameRect={isGeneric ? genericContentRects(p, width, height).video : undefined}
+        />
       </Sequence>
       {isGeneric && p.imgEndcard ? (
         <Sequence from={contentFrames} durationInFrames={endcardFrames}>
@@ -151,6 +160,48 @@ function JaguarTVVariant(props: BrandProps) {
           </AbsoluteFill>
         </Sequence>
       ) : null}
+    </AbsoluteFill>
+  );
+}
+
+type ContentRect = {x: number; y: number; width: number; height: number};
+
+function genericContentRects(p: BrandProps, width: number, height: number) {
+  const sourceAspect = Math.max(0.1, p.sourceAspectRatio || width / height);
+  const bannerAspect = Math.max(1, p.bottomBannerAspectRatio || 992 / 136);
+  const videoWidth = Math.min(width, height / (1 / sourceAspect + 1 / bannerAspect));
+  const videoHeight = videoWidth / sourceAspect;
+  const genericBannerHeight = videoWidth / bannerAspect;
+  const groupHeight = videoHeight + genericBannerHeight;
+  const x = (width - videoWidth) / 2;
+  const y = (height - groupHeight) / 2;
+  return {
+    video: {x, y, width: videoWidth, height: videoHeight},
+    banner: {x, y: y + videoHeight, width: videoWidth, height: genericBannerHeight},
+  };
+}
+
+function GenericContentLayout(p: BrandProps) {
+  const {width, height} = useVideoConfig();
+  const rects = genericContentRects(p, width, height);
+  return (
+    <AbsoluteFill style={{backgroundColor: "#000"}}>
+      {p.sourceVideo ? <OffthreadVideo src={assetSrc(p.sourceVideo)} style={{
+        position: "absolute",
+        left: rects.video.x,
+        top: rects.video.y,
+        width: rects.video.width,
+        height: rects.video.height,
+        objectFit: "contain",
+      }} muted={false} /> : null}
+      {p.imgBottomBanner ? <Img src={assetSrc(p.imgBottomBanner)} style={{
+        position: "absolute",
+        left: rects.banner.x,
+        top: rects.banner.y,
+        width: rects.banner.width,
+        height: rects.banner.height,
+        objectFit: "contain",
+      }} /> : null}
     </AbsoluteFill>
   );
 }
@@ -200,101 +251,85 @@ function FreeformDesignOverlay({layers}: {layers: DesignLayer[]}) {
   );
 }
 
-function DesignCopyOverlay(p: BrandProps) {
-  const {width, height} = useVideoConfig();
-  const isMobileTopBand = p.overlayPlacement === "mobile_top_band";
-  const sourceAspect = Math.max(0.1, p.sourceAspectRatio || width / height);
-  const containedHeight = Math.min(height, Math.round(width / sourceAspect));
-  const topBand = Math.max(0, Math.floor((height - containedHeight) / 2));
-  const lowerBand = Math.max(0, height - containedHeight - topBand);
-  const topY = isMobileTopBand && topBand > 96 ? Math.round(topBand * 0.2) : Math.round(height * 0.035);
-  const bottomY = isMobileTopBand && lowerBand > 96 ? Math.round(lowerBand * 0.2) : Math.round(height * 0.035);
-  const headline = String(p.bottomHeadline || "").trim();
-  const subline = String(p.bottomSubline || "").trim();
-  const cta = String(p.endcardCta || "").trim();
-  return (
-    <AbsoluteFill style={{pointerEvents: "none", fontFamily: "Arial, Helvetica, sans-serif"}}>
-      <div style={{
-        position: "absolute",
-        left: Math.round(width * 0.035),
-        top: topY,
-        display: "flex",
-        alignItems: "center",
-        gap: Math.round(width * 0.016),
-        maxWidth: Math.round(width * 0.54),
-      }}>
-        {p.imgLogo ? (
-          <Img src={assetSrc(p.imgLogo)} style={{
-            width: Math.round(width * 0.12),
-            maxHeight: Math.round(height * 0.07),
-            objectFit: "contain",
-            filter: "drop-shadow(0 3px 10px rgba(0,0,0,.55))",
-          }} />
-        ) : null}
-        {p.topBadge ? (
-          <div style={{
-            padding: `${Math.round(height * 0.006)}px ${Math.round(width * 0.018)}px`,
-            borderRadius: Math.round(width * 0.012),
-            background: "rgba(5, 5, 5, .72)",
-            color: "#fff",
-            fontSize: Math.round(height * 0.024),
-            fontWeight: 900,
-            lineHeight: 1,
-            textShadow: "0 2px 6px rgba(0,0,0,.65)",
-          }}>{p.topBadge}</div>
-        ) : null}
-      </div>
-      {(headline || subline || cta) ? (
-        <div style={{
-          position: "absolute",
-          left: Math.round(width * 0.05),
-          right: Math.round(width * 0.05),
-          bottom: bottomY,
-          padding: `${Math.round(height * 0.014)}px ${Math.round(width * 0.028)}px`,
-          borderRadius: Math.round(width * 0.018),
-          background: "linear-gradient(90deg, rgba(3, 84, 62, .88), rgba(5, 5, 5, .7))",
-          color: "#fff",
-          boxShadow: "0 10px 30px rgba(0,0,0,.32)",
-          textShadow: "0 2px 6px rgba(0,0,0,.55)",
-        }}>
-          {headline ? <div style={{fontSize: Math.round(height * 0.033), fontWeight: 900, lineHeight: 1.05}}>{headline}</div> : null}
-          {subline ? <div style={{marginTop: Math.round(height * 0.006), fontSize: Math.round(height * 0.021), fontWeight: 700, opacity: .92}}>{subline}</div> : null}
-          {cta ? <div style={{marginTop: Math.round(height * 0.008), color: "#f2d14b", fontSize: Math.round(height * 0.022), fontWeight: 900}}>{cta}</div> : null}
-        </div>
-      ) : null}
-    </AbsoluteFill>
-  );
+function sourceVideoRect(width: number, height: number, sourceAspect: number, fit: "cover" | "contain") {
+  const canvasAspect = width / Math.max(1, height);
+  if (fit === "contain") {
+    if (sourceAspect >= canvasAspect) {
+      const displayWidth = width;
+      const displayHeight = width / sourceAspect;
+      return {x: 0, y: (height - displayHeight) / 2, width: displayWidth, height: displayHeight};
+    }
+    const displayHeight = height;
+    const displayWidth = height * sourceAspect;
+    return {x: (width - displayWidth) / 2, y: 0, width: displayWidth, height: displayHeight};
+  }
+  if (sourceAspect >= canvasAspect) {
+    const displayHeight = height;
+    const displayWidth = height * sourceAspect;
+    return {x: (width - displayWidth) / 2, y: 0, width: displayWidth, height: displayHeight};
+  }
+  const displayWidth = width;
+  const displayHeight = width / sourceAspect;
+  return {x: 0, y: (height - displayHeight) / 2, width: displayWidth, height: displayHeight};
 }
 
-function CaptionOverlays({captions, style}: {captions: CaptionCue[]; style?: CaptionStyle}) {
+function CaptionOverlays({
+  captions,
+  style,
+  sourceFit,
+  sourceAspectRatio,
+  frameRect,
+}: {
+  captions: CaptionCue[];
+  style?: CaptionStyle;
+  sourceFit: "cover" | "contain";
+  sourceAspectRatio: number;
+  frameRect?: ContentRect;
+}) {
   const {width, height, fps} = useVideoConfig();
   if (!captions.length) {
     return null;
   }
 
   const maxWidth = Math.round(width * (style?.maxWidthRatio || 0.82));
-  const fontSize = Math.max(24, Math.round(height * (style?.fontSizeRatio || 0.044)));
+  const fontSize = Math.max(32, Math.round(height * (style?.fontSizeRatio || 0.052)));
   const lineHeight = Math.round(fontSize * 1.22);
-  const maxLines = Math.max(1, Math.min(4, Math.round(style?.maxLines || 3)));
+  const maxLines = Math.max(1, Math.min(2, Math.round(style?.maxLines || 2)));
   const verticalOffset = Math.round(height * 0.07);
   const placement: React.CSSProperties = style?.position === "top"
     ? {top: verticalOffset}
     : {bottom: verticalOffset};
   const background = hexToRgba(style?.backgroundColor || "#050505", style?.backgroundOpacity ?? 0.74);
+  const rect = frameRect || sourceVideoRect(width, height, sourceAspectRatio || width / height, sourceFit || "cover");
 
   return (
     <AbsoluteFill style={{pointerEvents: "none"}}>
       {captions.map((caption, index) => {
         const from = Math.max(0, Math.round(caption.startSeconds * fps));
         const durationInFrames = Math.max(1, Math.round((caption.endSeconds - caption.startSeconds) * fps));
+        const region = Array.isArray(caption.region) && caption.region.length === 4 ? caption.region : null;
+        const regionStyle: React.CSSProperties = region ? {
+          left: Math.round(Math.max(width * 0.06, Math.min(width * 0.94, rect.x + ((region[0] + region[2]) / 2) * rect.width))),
+          top: Math.round(Math.max(height * 0.08, Math.min(height * 0.92, rect.y + ((region[1] + region[3]) / 2) * rect.height))),
+          transform: "translate(-50%, -50%)",
+          maxWidth: Math.min(
+            maxWidth,
+            Math.max(Math.round(width * 0.36), Math.round((region[2] - region[0]) * rect.width + fontSize * 3))
+          ),
+        } : style?.position === "top" ? {
+          top: rect.y + Math.max(verticalOffset, rect.height * 0.06),
+          maxWidth: Math.min(maxWidth, rect.width * 0.9),
+        } : {
+          bottom: height - (rect.y + rect.height) + Math.max(verticalOffset, rect.height * 0.06),
+          maxWidth: Math.min(maxWidth, rect.width * 0.9),
+        };
         return (
           <Sequence key={`${caption.startSeconds}-${index}`} from={from} durationInFrames={durationInFrames}>
             <AbsoluteFill style={{alignItems: "center"}}>
               <div
                 style={{
                   position: "absolute",
-                  ...placement,
-                  maxWidth,
+                  ...regionStyle,
                   borderLeft: `${Math.max(6, Math.round(fontSize * 0.22))}px solid ${style?.accentColor || "#f2d14b"}`,
                   background,
                   color: style?.textColor || "#ffffff",
@@ -333,33 +368,6 @@ function hexToRgba(hex: string, opacity: number) {
   const green = parseInt(value.slice(2, 4), 16);
   const blue = parseInt(value.slice(4, 6), 16);
   return `rgba(${red}, ${green}, ${blue}, ${opacity})`;
-}
-
-function CornerOverlays(p: BrandProps) {
-  const {width, height} = useVideoConfig();
-  const isMobileTopBand = p.overlayPlacement === "mobile_top_band";
-  const sourceAspect = Math.max(0.1, p.sourceAspectRatio || width / height);
-  const containedHeight = Math.min(height, Math.round(width / sourceAspect));
-  const topBand = Math.max(0, Math.floor((height - containedHeight) / 2));
-  const leftWidth = Math.round(width * (isMobileTopBand ? (p.overlayLeftMaxWidthRatio || 0.22) : p.overlayMaxWidthRatio));
-  const rightWidth = Math.round(width * (isMobileTopBand ? (p.overlayRightMaxWidthRatio || 0.36) : p.overlayMaxWidthRatio));
-  const marginX = Math.round(width * p.overlayMarginHRatio);
-  const marginY = isMobileTopBand && topBand > 80
-    ? Math.max(18, Math.round(topBand * 0.18))
-    : Math.round(height * p.overlayMarginVRatio);
-  const common: React.CSSProperties = {
-    position: "absolute",
-    top: marginY,
-    height: "auto",
-    objectFit: "contain",
-  };
-
-  return (
-    <AbsoluteFill>
-      {p.imgTuYi ? <Img src={assetSrc(p.imgTuYi)} style={{...common, width: leftWidth, left: marginX}} /> : null}
-      {p.imgTuEr ? <Img src={assetSrc(p.imgTuEr)} style={{...common, width: rightWidth, right: marginX}} /> : null}
-    </AbsoluteFill>
-  );
 }
 
 function Root() {

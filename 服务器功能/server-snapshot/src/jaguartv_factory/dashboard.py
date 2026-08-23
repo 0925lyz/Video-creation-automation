@@ -45,7 +45,45 @@ from .core import (
     tracking_links,
     workspace_dir,
 )
+from .publisher import auto_enqueue_approved_publication, publication_state_for_candidates
+from .production import assert_candidate_ready_for_review
+from .posters import (
+    PosterError,
+    add_poster_attachment,
+    approve_poster,
+    delete_poster_attachment,
+    delete_poster,
+    import_poster,
+    list_posters,
+    poster_counts,
+    poster_detail,
+    poster_download_name,
+    poster_upload_limits,
+    reorder_poster_attachments,
+    replace_poster_attachment,
+    resolve_poster_attachment,
+    resolve_poster_file,
+    save_poster_content,
+)
+from .publish_flow import (
+    create_publish_operation,
+    generate_publish_copy_preview,
+    list_publish_accounts,
+    platform_capabilities,
+)
 from .sessions import check_session, delete_session, list_sessions, save_session
+from .youtube_analytics import (
+    analytics_accounts,
+    analytics_history,
+    analytics_ranking,
+    analytics_summary,
+    backfill_report,
+    channel_import_report,
+    channel_import_status,
+    publication_latest,
+    retry_publication_sync,
+    set_backfill_status,
+)
 from .server_store import (
     complete_chunked_upload,
     find_upload,
@@ -57,12 +95,26 @@ from .server_store import (
     storage_root,
 )
 from .source_outro import review_source_outro_summary
+from .source_imports import (
+    SOURCE_TYPE,
+    TARGET_APPROVED,
+    TARGET_LABELS,
+    attach_source_import_candidate,
+    complete_source_import,
+    create_source_import,
+    create_uploaded_source_import,
+    fail_source_import,
+    normalize_import_url,
+    normalize_target_area,
+    source_import_row,
+    sync_source_import_workflow_status,
+)
 from .trends import list_hot_keywords, run_trends_job, start_trends_scheduler, trends_today
 
 
 WEB_ROOT = Path(__file__).resolve().parent / "web"
 BRAND_ASSET_ROOT = Path(__file__).resolve().parents[2] / "assets" / "brand"
-PLATFORMS = ("youtube", "facebook", "tiktok", "kwai")
+PLATFORMS = ("youtube", "x", "facebook", "tiktok", "kwai")
 PUBLISH_TARGETS = (*PLATFORMS, "instagram", "other")
 EVENT_TYPES = ("landing_click", "download_started", "install", "registration", "first_watch")
 REVIEW_DECISIONS = ("APPROVED", "REVISION_REQUIRED")
@@ -204,11 +256,20 @@ YOUTUBE_SOURCE_BLOCKED_ACCOUNTS = {"consumer_main", "consumer_football", "consum
 YOUTUBE_OAUTH_SCOPES = (
     "https://www.googleapis.com/auth/youtube.upload",
     "https://www.googleapis.com/auth/youtube.readonly",
+    "https://www.googleapis.com/auth/youtube.force-ssl",
+    "https://www.googleapis.com/auth/yt-analytics.readonly",
 )
 GOOGLE_OAUTH_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 YOUTUBE_CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels"
+YOUTUBE_AUTH_LINK_MAX_TTL_SECONDS = 7 * 24 * 3600
+DEFAULT_X_OAUTH_SCOPES = ("tweet.read", "users.read", "tweet.write", "offline.access")
+X_OAUTH_AUTH_URL = "https://x.com/i/oauth2/authorize"
+X_OAUTH_TOKEN_URL = "https://api.x.com/2/oauth2/token"
+X_USERS_ME_URL = "https://api.x.com/2/users/me"
 ACCOUNT_ALIASES = {
+    "jaguartv_vivo": "jaguartv_vivo",
+    "jaguartv vivo": "jaguartv_vivo",
     "consumer_main": "consumer_main",
     "jaguartv hoje": "consumer_main",
     "yt_hoje": "consumer_main",
@@ -227,6 +288,7 @@ ACCOUNT_ALIASES = {
     "partner_academia": "partner_academia",
     "academia jaguartv": "partner_academia",
 }
+YOUTUBE_SOURCE_BLOCKED_ACCOUNTS = {*YOUTUBE_SOURCE_BLOCKED_ACCOUNTS, "jaguartv_vivo"}
 SOURCE_MEDIA_SUFFIXES = {".mp4", ".mkv", ".webm", ".mov", ".m4v"}
 PRODUCTION_RUNNING_STATUS = "PRODUCTION_RUNNING"
 
@@ -283,6 +345,18 @@ def int_value(value: Any, default: int = 0) -> int:
         return max(0, int(value))
     except (TypeError, ValueError):
         return default
+
+
+def validated_positive_int(value: Any, name: str, default: int) -> int:
+    if value is None or value == "":
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{name} must be an integer") from error
+    if parsed < 1:
+        raise ValueError(f"{name} must be positive")
+    return parsed
 
 
 def gemini_model_name(value: str | None = None) -> str:
@@ -621,8 +695,11 @@ def candidate_source_media(config: dict[str, Any], candidate_id: str) -> Path | 
 
 
 def production_recovery_status(config: dict[str, Any], candidate_id: str) -> str:
-    if candidate_has_review_outputs(config, candidate_id):
+    try:
+        assert_candidate_ready_for_review(config, candidate_id)
         return "READY_FOR_REVIEW"
+    except RuntimeError:
+        pass
     if candidate_source_media(config, candidate_id):
         return "DOWNLOADED"
     return "PRODUCTION_FAILED"
@@ -664,16 +741,155 @@ def review_output_asset_by_id(config: dict[str, Any], asset_id: str) -> dict[str
     return None
 
 
+def review_package_metadata(config: dict[str, Any], package_id: str) -> dict[str, Any]:
+    package_id = package_id.split(":", 1)[0].strip()
+    if not package_id:
+        return {}
+    for root in (workspace_dir(config) / "ready_for_review", storage_root(config) / "review"):
+        path = root / package_id / "metadata.json"
+        if not path.is_file():
+            continue
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}
+    return {}
+
+
+def review_asset_package_id(asset_id: str) -> str:
+    return unquote(str(asset_id or "")).split(":", 1)[0].strip()
+
+
+def review_slice_parent_id(candidate_id: str, parent_id: str = "", source_id: str = "") -> str:
+    parent = str(parent_id or "").strip()
+    for value in (str(candidate_id or "").strip(), str(source_id or "").strip()):
+        match = PART_PACKAGE_PATTERN.match(value.removeprefix("review:"))
+        if match:
+            return parent or match.group("parent")
+    return parent if parent and PART_PACKAGE_PATTERN.match(str(candidate_id or "").strip()) else ""
+
+
+def should_collapse_review_slice(
+    connection: Any,
+    outputs_by_candidate: dict[str, list[dict[str, Any]]],
+    candidate_id: str,
+    parent_id: str = "",
+    source_id: str = "",
+) -> bool:
+    parent = review_slice_parent_id(candidate_id, parent_id, source_id)
+    if not parent or parent == candidate_id or not outputs_by_candidate.get(parent):
+        return False
+    return connection.execute("SELECT 1 FROM candidates WHERE id=?", (parent,)).fetchone() is not None
+
+
+def resolve_production_candidate(
+    config: dict[str, Any], candidate_id: str, options: dict[str, Any] | None = None
+) -> tuple[str, dict[str, Any]]:
+    requested = unquote(str(candidate_id or "")).strip()
+    requested_asset = ""
+    if "::asset::" in requested:
+        requested, requested_asset = requested.split("::asset::", 1)
+        requested = requested.strip()
+        requested_asset = requested_asset.strip()
+
+    patched_options = dict(options or {})
+    if requested_asset and isinstance(patched_options.get("design"), dict):
+        design = dict(patched_options["design"])
+        design.setdefault("base_asset_id", requested_asset)
+        patched_options["design"] = design
+    if not requested_asset and isinstance(patched_options.get("design"), dict):
+        requested_asset = str((patched_options.get("design") or {}).get("base_asset_id") or "").strip()
+
+    connection = connect_db(config)
+    row = connection.execute("SELECT id FROM candidates WHERE id=?", (requested,)).fetchone()
+    if row:
+        return requested, patched_options
+
+    if requested_asset:
+        output_asset = review_output_asset_by_id(config, requested_asset)
+        asset_package = review_asset_package_id(str((output_asset or {}).get("id") or requested_asset))
+        if asset_package:
+            metadata = review_package_metadata(config, asset_package)
+            source_candidate = str(metadata.get("source_job_id") or "").strip()
+            if source_candidate:
+                row = connection.execute("SELECT id FROM candidates WHERE id=?", (source_candidate,)).fetchone()
+                if row:
+                    return source_candidate, patched_options
+            return asset_package, patched_options
+
+    metadata = review_package_metadata(config, requested)
+    source_candidate = str(metadata.get("source_job_id") or "").strip()
+    if source_candidate:
+        row = connection.execute("SELECT id FROM candidates WHERE id=?", (source_candidate,)).fetchone()
+        if row:
+            return source_candidate, patched_options
+
+    part_match = PART_PACKAGE_PATTERN.match(requested)
+    if part_match:
+        parent = part_match.group("parent")
+        row = connection.execute("SELECT id FROM candidates WHERE id=?", (parent,)).fetchone()
+        if row:
+            return parent, patched_options
+
+    return requested, patched_options
+
+
+def materialize_review_candidate(config: dict[str, Any], package_id: str) -> bool:
+    package_id = package_id.split(":", 1)[0].strip()
+    metadata = review_package_metadata(config, package_id)
+    if not metadata:
+        return False
+    connection = connect_db(config)
+    if connection.execute("SELECT id FROM candidates WHERE id=?", (package_id,)).fetchone():
+        return True
+    source = metadata.get("source") if isinstance(metadata.get("source"), dict) else {}
+    segment = metadata.get("segment") if isinstance(metadata.get("segment"), dict) else {}
+    url = str(source.get("url") or "")
+    platform = str(source.get("platform") or platform_from_url(url) or "server").strip().lower()
+    timestamp = now_iso()
+    connection.execute(
+        """
+        INSERT INTO candidates(
+          id,parent_id,platform,source_id,url,title,description,duration,view_count,
+          detected_language,score,status,metadata_json,created_at,updated_at
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            package_id,
+            str(metadata.get("source_job_id") or "").strip() or None,
+            platform,
+            f"review:{package_id}",
+            url,
+            str(source.get("title") or metadata.get("publishing_text") or package_id),
+            str(source.get("description") or ""),
+            float(segment.get("duration_sec") or 0),
+            0,
+            "",
+            0,
+            "READY_FOR_REVIEW",
+            json.dumps(metadata, ensure_ascii=False),
+            timestamp,
+            timestamp,
+        ),
+    )
+    append_event(connection, package_id, "CANDIDATE_MATERIALIZED_FROM_REVIEW", {"package": package_id})
+    connection.commit()
+    return True
+
+
 def candidate_design_info(config: dict[str, Any], candidate_id: str) -> dict[str, Any]:
     requested_asset = ""
     if "::asset::" in candidate_id:
         candidate_id, requested_asset = candidate_id.split("::asset::", 1)
     output_asset = review_output_asset_by_id(config, requested_asset) if requested_asset else None
     output_path = Path(str((output_asset or {}).get("_path") or ""))
+    resolve_candidate_id = f"{candidate_id}::asset::{requested_asset}" if requested_asset else candidate_id
+    production_candidate_id, _ = resolve_production_candidate(config, resolve_candidate_id)
     if output_path.is_file():
         output_width, output_height = media_dimensions(output_path)
         return {
             "candidate_id": candidate_id,
+            "source_candidate_id": production_candidate_id,
             "source_preview_url": str((output_asset or {}).get("video_url") or ""),
             "design_canvas_width": int(output_width),
             "design_canvas_height": int(output_height),
@@ -684,6 +900,7 @@ def candidate_design_info(config: dict[str, Any], candidate_id: str) -> dict[str
     source_media = candidate_source_media(config, candidate_id)
     result = {
         "candidate_id": candidate_id,
+        "source_candidate_id": production_candidate_id,
         "source_preview_url": "",
         "design_canvas_width": 1080,
         "design_canvas_height": 1920,
@@ -1017,15 +1234,27 @@ def review_output_index(config: dict[str, Any]) -> dict[str, list[dict[str, Any]
             server_url = str(server_files.get(video.name, {}).get("url") or "")
             if not server_url and server_video.is_file():
                 server_url = public_url(config, f"review/{package_id}/{video.name}")
-            variant = "通用版" if "通用版" in video.name or video.name == "video.mp4" else ("FB版" if "FB版" in video.name else "")
-            is_batch_output = bool(batch_label) and (
-                batch_label in video.name or (video.name == "video.mp4" and content_type == "design_overlay")
+            metadata_variant = str(review_metadata.get("variant") or "").strip()
+            variant = (
+                metadata_variant
+                if video.name == "video.mp4" and metadata_variant
+                else "通用版" if "通用版" in video.name or video.name == "video.mp4"
+                else "FB版" if "FB版" in video.name
+                else ""
             )
-            base_label = f"片段 {part_number:02d}" if part_number is not None else (batch_label if is_batch_output else "成片")
+            file_batch_label = batch_label or ("文案设计版" if "文案设计版" in video.name else "")
+            is_batch_output = bool(file_batch_label) and (
+                file_batch_label in video.name or (video.name == "video.mp4" and content_type == "design_overlay")
+            )
+            base_label = (
+                file_batch_label
+                if is_batch_output
+                else f"片段 {part_number:02d}" if part_number is not None else "成片"
+            )
             asset = {
                 "id": package_id if video.name == "video.mp4" else f"{package_id}:{video.stem}",
                 "label": f"{base_label} · {variant}" if variant else base_label,
-                "batch_label": batch_label if is_batch_output else "",
+                "batch_label": file_batch_label if is_batch_output else "",
                 "content_type": content_type,
                 "variant": variant,
                 "part_number": part_number,
@@ -1087,11 +1316,13 @@ def save_download_claim(config: dict[str, Any], payload: dict[str, Any]) -> dict
     if publish_platform and publish_platform not in PUBLISH_TARGETS:
         raise ValueError(f"publish_platform must be one of {PUBLISH_TARGETS}")
     connection = connect_db(config)
-    row = connection.execute("SELECT id FROM candidates WHERE id=?", (candidate,)).fetchone()
+    row = connection.execute("SELECT id,status FROM candidates WHERE id=?", (candidate,)).fetchone()
     server_package = storage_root(config) / "review" / candidate
     local_package = workspace_dir(config) / "ready_for_review" / candidate
     if not row and not server_package.exists() and not local_package.exists():
         raise ValueError("candidate does not exist")
+    if row and row["status"] != "APPROVED":
+        raise ValueError(f"candidate must be APPROVED before downloading (current status: {row['status']})")
     timestamp = now_iso()
     cursor = connection.execute(
         """
@@ -1457,6 +1688,46 @@ def sign_oauth_state(payload: str) -> str:
     return hmac.new(oauth_state_secret().encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
+def sign_youtube_auth_link(account: str, expires_at: int) -> str:
+    canonical = canonical_account_id(account)
+    if canonical not in set(ACCOUNT_ALIASES.values()):
+        raise ValueError(f"unknown YouTube account: {canonical or 'empty'}")
+    payload = f"youtube-oauth-start:{canonical}:{int(expires_at)}"
+    return sign_oauth_state(payload)
+
+
+def youtube_auth_link_is_valid(query: dict[str, list[str]], *, now: int | None = None) -> bool:
+    account = canonical_account_id(str((query.get("account") or [""])[0]))
+    expires_raw = str((query.get("expires") or [""])[0]).strip()
+    signature = str((query.get("signature") or [""])[0]).strip()
+    if not account or not expires_raw or not signature:
+        return False
+    try:
+        expires_at = int(expires_raw)
+        expected = sign_youtube_auth_link(account, expires_at)
+    except (TypeError, ValueError):
+        return False
+    current = int(time.time()) if now is None else int(now)
+    if expires_at <= current or expires_at - current > YOUTUBE_AUTH_LINK_MAX_TTL_SECONDS:
+        return False
+    return hmac.compare_digest(signature, expected)
+
+
+def youtube_auth_link(config: dict[str, Any], account: str, *, expires_at: int) -> str:
+    canonical = canonical_account_id(account)
+    callback = youtube_oauth_redirect_uri(config)
+    callback_path = "/oauth/youtube/callback"
+    if not callback.endswith(callback_path):
+        raise ValueError("YouTube OAuth redirect URI must end with /oauth/youtube/callback")
+    base_url = callback[:-len(callback_path)]
+    params = {
+        "account": canonical,
+        "expires": str(int(expires_at)),
+        "signature": sign_youtube_auth_link(canonical, expires_at),
+    }
+    return f"{base_url}/oauth/youtube/start?{urlencode(params)}"
+
+
 def make_oauth_state(account: str) -> str:
     canonical = canonical_account_id(account or "consumer_football")
     timestamp = str(int(time.time()))
@@ -1487,34 +1758,93 @@ def parse_oauth_state(value: str) -> str:
     return canonical_account_id(account)
 
 
-def encrypt_refresh_token(refresh_token: str) -> str:
+def encrypt_oauth_secret(secret_value: str) -> str:
     key = os.environ.get("JAGUARTV_OAUTH_TOKEN_KEY", "").strip()
     if not key:
         raise RuntimeError("missing JAGUARTV_OAUTH_TOKEN_KEY")
     openssl = shutil.which("openssl")
     if not openssl:
-        raise RuntimeError("missing openssl; cannot encrypt OAuth refresh token")
+        raise RuntimeError("missing openssl; cannot encrypt OAuth token")
     result = subprocess.run(
         [
             openssl, "enc", "-aes-256-cbc", "-pbkdf2", "-salt", "-base64", "-A",
             "-pass", "env:JAGUARTV_OAUTH_TOKEN_KEY",
         ],
-        input=refresh_token,
+        input=secret_value,
         text=True,
         capture_output=True,
         check=False,
         env={**os.environ, "JAGUARTV_OAUTH_TOKEN_KEY": key},
     )
     if result.returncode != 0:
-        raise RuntimeError("openssl failed to encrypt OAuth refresh token")
+        raise RuntimeError("openssl failed to encrypt OAuth token")
     return result.stdout.strip()
 
 
-def post_form_json(url: str, form: dict[str, str], *, timeout: int = 20) -> dict[str, Any]:
+def encrypt_refresh_token(refresh_token: str) -> str:
+    return encrypt_oauth_secret(refresh_token)
+
+
+def ensure_oauth_tables(config: dict[str, Any]) -> None:
+    connection = connect_db(config)
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS youtube_channel_auths (
+          account TEXT PRIMARY KEY,
+          channel_id TEXT NOT NULL DEFAULT '',
+          channel_title TEXT NOT NULL DEFAULT '',
+          scopes TEXT NOT NULL DEFAULT '',
+          encrypted_refresh_token TEXT NOT NULL DEFAULT '',
+          token_type TEXT NOT NULL DEFAULT '',
+          expires_in INTEGER NOT NULL DEFAULT 0,
+          authorized_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          metadata_json TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE TABLE IF NOT EXISTS x_oauth_states (
+          state TEXT PRIMARY KEY,
+          account TEXT NOT NULL,
+          code_verifier TEXT NOT NULL,
+          redirect_uri TEXT NOT NULL DEFAULT '',
+          scopes TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          expires_at TEXT NOT NULL,
+          used_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS x_account_auths (
+          account TEXT PRIMARY KEY,
+          x_user_id TEXT NOT NULL DEFAULT '',
+          username TEXT NOT NULL DEFAULT '',
+          display_name TEXT NOT NULL DEFAULT '',
+          scopes TEXT NOT NULL DEFAULT '',
+          encrypted_access_token TEXT NOT NULL DEFAULT '',
+          encrypted_refresh_token TEXT NOT NULL DEFAULT '',
+          token_type TEXT NOT NULL DEFAULT '',
+          expires_in INTEGER NOT NULL DEFAULT 0,
+          expires_at TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'PENDING_CONFIRMATION',
+          authorized_at TEXT NOT NULL,
+          confirmed_at TEXT,
+          revoked_at TEXT,
+          updated_at TEXT NOT NULL,
+          metadata_json TEXT NOT NULL DEFAULT '{}'
+        );
+        """
+    )
+    connection.commit()
+
+
+def post_form_json(
+    url: str,
+    form: dict[str, str],
+    *,
+    timeout: int = 20,
+    headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
     request = Request(
         url,
         data=urlencode(form).encode("utf-8"),
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        headers={"Content-Type": "application/x-www-form-urlencoded", **(headers or {})},
         method="POST",
     )
     with urlopen(request, timeout=timeout) as response:
@@ -1579,14 +1909,15 @@ def save_youtube_oauth_callback(config: dict[str, Any], query: dict[str, list[st
         raise RuntimeError("Google did not return access_token")
     channel = get_authorized_youtube_channel(access_token)
     timestamp = now_iso()
+    ensure_oauth_tables(config)
     connection = connect_db(config)
     connection.execute(
         """
         INSERT INTO youtube_channel_auths(
           account,channel_id,channel_title,scopes,encrypted_refresh_token,
-          token_type,expires_in,authorized_at,updated_at,metadata_json
+          token_type,expires_in,authorized_at,updated_at,metadata_json,status
         )
-        VALUES(?,?,?,?,?,?,?,?,?,?)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(account) DO UPDATE SET
           channel_id=excluded.channel_id,
           channel_title=excluded.channel_title,
@@ -1595,7 +1926,10 @@ def save_youtube_oauth_callback(config: dict[str, Any], query: dict[str, list[st
           token_type=excluded.token_type,
           expires_in=excluded.expires_in,
           updated_at=excluded.updated_at,
-          metadata_json=excluded.metadata_json
+          metadata_json=excluded.metadata_json,
+          status='AUTHORIZED',
+          last_error_category='',
+          last_error_summary=''
         """,
         (
             account,
@@ -1608,6 +1942,7 @@ def save_youtube_oauth_callback(config: dict[str, Any], query: dict[str, list[st
             timestamp,
             timestamp,
             json.dumps({"provider": "google_oauth", "redirect_uri": credentials["redirect_uri"]}, ensure_ascii=False),
+            "AUTHORIZED",
         ),
     )
     connection.commit()
@@ -1617,6 +1952,276 @@ def save_youtube_oauth_callback(config: dict[str, Any], query: dict[str, list[st
         "channel_title": channel["channel_title"],
         "authorized_at": timestamp,
     }
+
+
+def x_oauth_redirect_uri(config: dict[str, Any]) -> str:
+    explicit = os.environ.get("JAGUARTV_X_REDIRECT_URI", "").strip()
+    if explicit:
+        return explicit
+    public_base = (
+        os.environ.get("JAGUARTV_PUBLIC_BASE_URL", "").strip()
+        or str((config.get("server", {}) or {}).get("public_base_url") or "").strip()
+        or str((config.get("storage", {}) or {}).get("dashboard_base_url") or "").strip()
+        or "https://factory.jarg.top"
+    )
+    return public_base.rstrip("/") + "/oauth/x/callback"
+
+
+def x_oauth_credentials(config: dict[str, Any]) -> dict[str, str]:
+    client_id = os.environ.get("JAGUARTV_X_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("JAGUARTV_X_CLIENT_SECRET", "").strip()
+    redirect_uri = x_oauth_redirect_uri(config)
+    missing = [
+        name for name, value in {
+            "JAGUARTV_X_CLIENT_ID": client_id,
+            "JAGUARTV_OAUTH_TOKEN_KEY": os.environ.get("JAGUARTV_OAUTH_TOKEN_KEY", "").strip(),
+        }.items() if not value
+    ]
+    if missing:
+        raise RuntimeError("missing X OAuth server configuration: " + ", ".join(missing))
+    return {"client_id": client_id, "client_secret": client_secret, "redirect_uri": redirect_uri}
+
+
+def x_oauth_scopes() -> tuple[str, ...]:
+    raw = os.environ.get("JAGUARTV_X_SCOPES", "").strip()
+    scopes = tuple(part for part in raw.split() if part) if raw else DEFAULT_X_OAUTH_SCOPES
+    if not scopes:
+        raise RuntimeError("missing X OAuth scopes")
+    for scope in scopes:
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,80}", scope):
+            raise RuntimeError(f"invalid X OAuth scope: {scope}")
+    return scopes
+
+
+def pkce_code_challenge(verifier: str) -> str:
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def make_x_oauth_state(config: dict[str, Any], account: str) -> dict[str, str]:
+    account_id = canonical_account_id(account or "consumer_main")
+    state = secrets.token_urlsafe(32)
+    verifier = secrets.token_urlsafe(64)[:96]
+    scopes = " ".join(x_oauth_scopes())
+    timestamp = now_iso()
+    expires_at = datetime.fromtimestamp(time.time() + 3600, tz=timezone.utc).isoformat()
+    ensure_oauth_tables(config)
+    connection = connect_db(config)
+    connection.execute(
+        """
+        INSERT INTO x_oauth_states(state,account,code_verifier,redirect_uri,scopes,created_at,expires_at)
+        VALUES(?,?,?,?,?,?,?)
+        """,
+        (state, account_id, verifier, x_oauth_redirect_uri(config), scopes, timestamp, expires_at),
+    )
+    connection.commit()
+    return {"state": state, "account": account_id, "code_verifier": verifier, "scopes": scopes}
+
+
+def x_oauth_start_url(config: dict[str, Any], account: str = "consumer_main") -> str:
+    credentials = x_oauth_credentials(config)
+    state = make_x_oauth_state(config, account)
+    params = {
+        "response_type": "code",
+        "client_id": credentials["client_id"],
+        "redirect_uri": credentials["redirect_uri"],
+        "scope": state["scopes"],
+        "state": state["state"],
+        "code_challenge": pkce_code_challenge(state["code_verifier"]),
+        "code_challenge_method": "S256",
+    }
+    return f"{X_OAUTH_AUTH_URL}?{urlencode(params, quote_via=quote)}"
+
+
+def consume_x_oauth_state(config: dict[str, Any], state: str) -> dict[str, str]:
+    if not state:
+        raise ValueError("missing OAuth state; start from /oauth/x/start")
+    ensure_oauth_tables(config)
+    connection = connect_db(config)
+    row = connection.execute("SELECT * FROM x_oauth_states WHERE state=?", (state,)).fetchone()
+    if not row:
+        raise ValueError("invalid X OAuth state")
+    if row["used_at"]:
+        raise ValueError("X OAuth state was already used; start authorization again")
+    try:
+        expires_at = datetime.fromisoformat(str(row["expires_at"]).replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError("invalid X OAuth state expiry") from error
+    if datetime.now(timezone.utc) > expires_at:
+        raise ValueError("X OAuth state expired; start authorization again")
+    connection.execute("UPDATE x_oauth_states SET used_at=? WHERE state=?", (now_iso(), state))
+    connection.commit()
+    return {
+        "account": str(row["account"] or ""),
+        "code_verifier": str(row["code_verifier"] or ""),
+        "redirect_uri": str(row["redirect_uri"] or ""),
+        "scopes": str(row["scopes"] or ""),
+    }
+
+
+def x_token_headers(credentials: dict[str, str]) -> dict[str, str]:
+    client_secret = credentials.get("client_secret", "")
+    if not client_secret:
+        return {}
+    raw = f"{credentials['client_id']}:{client_secret}".encode("utf-8")
+    return {"Authorization": "Basic " + base64.b64encode(raw).decode("ascii")}
+
+
+def get_authorized_x_user(access_token: str) -> dict[str, str]:
+    query = urlencode({"user.fields": "id,name,username,profile_image_url"})
+    request = Request(
+        f"{X_USERS_ME_URL}?{query}",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    with urlopen(request, timeout=20) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    data = payload.get("data") or {}
+    user_id = str(data.get("id") or "")
+    username = str(data.get("username") or "")
+    if not user_id or not username:
+        raise RuntimeError("authorized X account did not return user id and username")
+    return {
+        "x_user_id": user_id,
+        "username": username,
+        "display_name": str(data.get("name") or username),
+    }
+
+
+def save_x_oauth_callback(config: dict[str, Any], query: dict[str, list[str]]) -> dict[str, str]:
+    if error := str((query.get("error") or [""])[0]).strip():
+        raise ValueError(f"X OAuth returned error: {error}")
+    code = str((query.get("code") or [""])[0]).strip()
+    if not code:
+        raise ValueError("missing OAuth code")
+    state = consume_x_oauth_state(config, str((query.get("state") or [""])[0]).strip())
+    credentials = x_oauth_credentials(config)
+    token_form = {
+        "code": code,
+        "grant_type": "authorization_code",
+        "client_id": credentials["client_id"],
+        "redirect_uri": state["redirect_uri"] or credentials["redirect_uri"],
+        "code_verifier": state["code_verifier"],
+    }
+    token = post_form_json(
+        X_OAUTH_TOKEN_URL,
+        token_form,
+        headers=x_token_headers(credentials),
+    )
+    access_token = str(token.get("access_token") or "").strip()
+    refresh_token = str(token.get("refresh_token") or "").strip()
+    if not access_token:
+        raise RuntimeError("X did not return access_token")
+    if not refresh_token:
+        raise RuntimeError("X did not return refresh_token; confirm offline.access is enabled")
+    user = get_authorized_x_user(access_token)
+    timestamp = now_iso()
+    expires_in = int(token.get("expires_in") or 0)
+    expires_at = datetime.fromtimestamp(time.time() + expires_in, tz=timezone.utc).isoformat() if expires_in else ""
+    scopes = str(token.get("scope") or state["scopes"] or " ".join(x_oauth_scopes()))
+    ensure_oauth_tables(config)
+    connection = connect_db(config)
+    connection.execute(
+        """
+        INSERT INTO x_account_auths(
+          account,x_user_id,username,display_name,scopes,encrypted_access_token,
+          encrypted_refresh_token,token_type,expires_in,expires_at,status,
+          authorized_at,confirmed_at,revoked_at,updated_at,metadata_json
+        )
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(account) DO UPDATE SET
+          x_user_id=excluded.x_user_id,
+          username=excluded.username,
+          display_name=excluded.display_name,
+          scopes=excluded.scopes,
+          encrypted_access_token=excluded.encrypted_access_token,
+          encrypted_refresh_token=excluded.encrypted_refresh_token,
+          token_type=excluded.token_type,
+          expires_in=excluded.expires_in,
+          expires_at=excluded.expires_at,
+          status=excluded.status,
+          authorized_at=excluded.authorized_at,
+          confirmed_at='',
+          revoked_at='',
+          updated_at=excluded.updated_at,
+          metadata_json=excluded.metadata_json
+        """,
+        (
+            state["account"],
+            user["x_user_id"],
+            user["username"],
+            user["display_name"],
+            scopes,
+            encrypt_oauth_secret(access_token),
+            encrypt_oauth_secret(refresh_token),
+            str(token.get("token_type") or ""),
+            expires_in,
+            expires_at,
+            "PENDING_CONFIRMATION",
+            timestamp,
+            "",
+            "",
+            timestamp,
+            json.dumps({"provider": "x_oauth_pkce", "redirect_uri": state["redirect_uri"]}, ensure_ascii=False),
+        ),
+    )
+    connection.commit()
+    return {
+        "account": state["account"],
+        "x_user_id": user["x_user_id"],
+        "username": user["username"],
+        "display_name": user["display_name"],
+        "authorized_at": timestamp,
+        "status": "PENDING_CONFIRMATION",
+    }
+
+
+def x_auth_rows(config: dict[str, Any]) -> list[dict[str, Any]]:
+    ensure_oauth_tables(config)
+    connection = connect_db(config)
+    rows = []
+    for row in connection.execute(
+        """
+        SELECT account,x_user_id,username,display_name,scopes,token_type,expires_in,
+               expires_at,status,authorized_at,confirmed_at,revoked_at,updated_at
+        FROM x_account_auths
+        ORDER BY account
+        """
+    ):
+        item = dict(row)
+        item["authorization_url"] = f"/oauth/x/start?account={quote(str(row['account'] or ''), safe='')}"
+        rows.append(item)
+    return rows
+
+
+def update_x_auth(config: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    account = canonical_account_id(str(payload.get("account") or ""))
+    action = str(payload.get("action") or "").strip().lower()
+    if not account or action not in {"confirm", "revoke"}:
+        raise ValueError("account and action=confirm|revoke are required")
+    ensure_oauth_tables(config)
+    connection = connect_db(config)
+    row = connection.execute("SELECT account,status FROM x_account_auths WHERE account=?", (account,)).fetchone()
+    if not row:
+        raise ValueError("X authorization does not exist for this account")
+    timestamp = now_iso()
+    if action == "confirm":
+        connection.execute(
+            "UPDATE x_account_auths SET status='AUTHORIZED',confirmed_at=?,revoked_at='',updated_at=? WHERE account=?",
+            (timestamp, timestamp, account),
+        )
+    else:
+        connection.execute(
+            """
+            UPDATE x_account_auths
+            SET status='REVOKED',encrypted_access_token='',encrypted_refresh_token='',
+                revoked_at=?,updated_at=?
+            WHERE account=?
+            """,
+            (timestamp, timestamp, account),
+        )
+    connection.commit()
+    updated = [item for item in x_auth_rows(config) if item["account"] == account][0]
+    return updated
 
 
 def oauth_result_html(title: str, lines: list[str], *, ok: bool) -> str:
@@ -1641,10 +2246,24 @@ def oauth_result_html(title: str, lines: list[str], *, ok: bool) -> str:
 </html>"""
 
 
-def candidate_rows(config: dict[str, Any], status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+def candidate_rows(
+    config: dict[str, Any], status: str | None = None, limit: int | None = 100
+) -> list[dict[str, Any]]:
     rows = list_candidates(config, status, limit)
     result = []
     connection = connect_db(config)
+    imports_by_candidate = {
+        str(row["candidate_id"]): dict(row)
+        for row in connection.execute(
+            "SELECT * FROM source_imports WHERE candidate_id != ''"
+        )
+    }
+    unattached_imports = [
+        dict(row)
+        for row in connection.execute(
+            "SELECT * FROM source_imports WHERE candidate_id = '' ORDER BY created_at DESC"
+        )
+    ]
     outputs_by_candidate = review_output_index(config)
     failures = {
         row["candidate_id"]: dict(row)
@@ -1660,7 +2279,18 @@ def candidate_rows(config: dict[str, Any], status: str | None = None, limit: int
             """
         )
     }
+    collapsed_ids: set[str] = set()
     for row in rows:
+        candidate_id = str(row["id"] or "")
+        if should_collapse_review_slice(
+            connection,
+            outputs_by_candidate,
+            candidate_id,
+            str(row["parent_id"] or ""),
+            str(row["source_id"] or ""),
+        ):
+            collapsed_ids.add(candidate_id)
+            continue
         item = dict(row)
         metadata: dict[str, Any] = {}
         try:
@@ -1672,6 +2302,20 @@ def candidate_rows(config: dict[str, Any], status: str | None = None, limit: int
         source_category = str(metadata.get("category") or parent_metadata.get("category") or "")
         item.pop("metadata_json", None)
         item["published_flag"] = bool(item.get("published_flag"))
+        item["source_candidate_id"] = str(item.get("id") or "")
+        source_import = imports_by_candidate.get(candidate_id) or {}
+        item["source_type"] = str(source_import.get("source_type") or "")
+        item["source_import_id"] = str(source_import.get("id") or "")
+        item["import_method"] = str(source_import.get("import_method") or "")
+        item["import_source"] = "导入视频" if source_import else ""
+        item["target_area"] = str(source_import.get("target_area") or "")
+        item["target_area_label"] = TARGET_LABELS.get(item["target_area"], "")
+        item["imported_at"] = str(source_import.get("created_at") or "")
+        item["download_status"] = str(source_import.get("download_status") or "")
+        item["import_operator"] = str(source_import.get("operator_id") or "")
+        item["review_source"] = str(source_import.get("review_source") or "")
+        item["import_error_category"] = str(source_import.get("error_category") or "")
+        item["import_error_summary"] = str(source_import.get("error_summary") or "")
         item["keyword"] = source_keyword
         item["initial_category"] = initial_category_for_text(
             source_keyword,
@@ -1736,15 +2380,139 @@ def candidate_rows(config: dict[str, Any], status: str | None = None, limit: int
             item["failure_detail"] = detail[-4000:]
             item["failure_at"] = failure["created_at"]
         result.append(item)
-    existing = {str(item.get("id") or "") for item in result}
+    for source_import in unattached_imports:
+        actual_status = str(source_import.get("actual_workflow_status") or "IMPORT_PENDING")
+        if status and actual_status != status:
+            continue
+        normalized_url = str(source_import.get("normalized_url") or "")
+        title = str(source_import.get("original_title") or normalized_url or "导入视频")
+        result.append({
+            "id": f"source-import:{source_import['id']}",
+            "source_candidate_id": "",
+            "source_import_placeholder": True,
+            "platform": str(source_import.get("source_platform") or ""),
+            "url": normalized_url,
+            "title": title,
+            "display_title": title,
+            "description": "",
+            "duration": float(source_import.get("duration_sec") or 0),
+            "score": 0,
+            "status": actual_status,
+            "created_at": str(source_import.get("created_at") or ""),
+            "updated_at": str(source_import.get("updated_at") or ""),
+            "source_type": str(source_import.get("source_type") or SOURCE_TYPE),
+            "source_import_id": str(source_import.get("id") or ""),
+            "import_method": str(source_import.get("import_method") or ""),
+            "import_source": "导入视频",
+            "target_area": str(source_import.get("target_area") or ""),
+            "target_area_label": TARGET_LABELS.get(str(source_import.get("target_area") or ""), ""),
+            "imported_at": str(source_import.get("created_at") or ""),
+            "download_status": str(source_import.get("download_status") or ""),
+            "import_operator": str(source_import.get("operator_id") or ""),
+            "review_source": str(source_import.get("review_source") or ""),
+            "import_error_category": str(source_import.get("error_category") or ""),
+            "import_error_summary": str(source_import.get("error_summary") or ""),
+            "initial_category": "未分类",
+            "initial_keyword": "",
+            "keyword": "",
+            "content_type": "external_import",
+            "segment_strategy": "",
+            "audio_policy": "",
+            "highlight_score": 0,
+            "thumbnail_url": "",
+            "cover_url": "",
+            "video_url": "",
+            "download_url": "",
+            "server_url": "",
+            "output_assets": [],
+            "output_count": 0,
+            "published_flag": False,
+            "publication_state": {},
+            "score_breakdown": {},
+            "failure_event": "",
+            "failure_detail": str(source_import.get("error_summary") or ""),
+            "failure_at": str(source_import.get("updated_at") or ""),
+        })
+    existing = {str(item.get("id") or "") for item in result} | collapsed_ids
     if status in {None, "", "READY_FOR_REVIEW", "APPROVED", "REVISION_REQUIRED"}:
         for item in server_review_rows(config, exclude=existing):
             if status and item["status"] != status:
                 continue
             result.append(item)
-            if len(result) >= limit:
+            if limit is not None and len(result) >= limit:
                 break
+    publication_states = publication_state_for_candidates(
+        config,
+        [str(item.get("id") or "") for item in result if str(item.get("id") or "")],
+    )
+    for item in result:
+        item["publication_state"] = publication_states.get(str(item.get("id") or ""), {})
     return result
+
+
+def candidate_page(
+    config: dict[str, Any],
+    *,
+    status: str | None = None,
+    source_type: str = "",
+    platform: str = "",
+    category: str = "",
+    search: str = "",
+    page: int = 1,
+    page_size: int = 50,
+) -> dict[str, Any]:
+    page = max(1, int(page or 1))
+    page_size = max(1, min(int(page_size or 50), 100))
+    source_type = str(source_type or "").strip()
+    if source_type not in {"", SOURCE_TYPE}:
+        raise ValueError("unsupported source_type filter")
+    platform = str(platform or "").strip().lower()
+    category = str(category or "").strip()
+    query = str(search or "").strip().lower()
+    rows = candidate_rows(config, status, None)
+
+    def matches(item: dict[str, Any], *, include_source: bool = True) -> bool:
+        if include_source and source_type and str(item.get("source_type") or "") != source_type:
+            return False
+        if platform and str(item.get("platform") or "").lower() != platform:
+            return False
+        if category and str(item.get("initial_category") or "未分类") != category:
+            return False
+        if query:
+            values = (
+                item.get("display_title"), item.get("title"), item.get("id"),
+                item.get("initial_category"), item.get("initial_keyword"), item.get("keyword"),
+            )
+            if query not in " ".join(str(value or "").lower() for value in values):
+                return False
+        return True
+
+    base_rows = [item for item in rows if matches(item, include_source=False)]
+    filtered = [item for item in base_rows if matches(item)]
+    filtered.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    total = len(filtered)
+    pages = (total + page_size - 1) // page_size
+    if pages and page > pages:
+        page = pages
+    start = (page - 1) * page_size
+    source_import_count = sum(
+        1 for item in base_rows if str(item.get("source_type") or "") == SOURCE_TYPE
+    )
+    return {
+        "items": filtered[start:start + page_size],
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "pages": pages,
+        "source_counts": {"all": len(base_rows), SOURCE_TYPE: source_import_count},
+        "filters": {
+            "status": status or "",
+            "source_type": source_type,
+            "platform": platform,
+            "category": category,
+            "search": query,
+        },
+    }
 
 
 def server_review_rows(config: dict[str, Any], exclude: set[str] | None = None) -> list[dict[str, Any]]:
@@ -1763,6 +2531,9 @@ def server_review_rows(config: dict[str, Any], exclude: set[str] | None = None) 
             continue
         candidate = str(metadata.get("job_id") or package_dir.name)
         if candidate in exclude:
+            continue
+        source_candidate_id = str(metadata.get("source_job_id") or "").strip()
+        if should_collapse_review_slice(connection, outputs_by_candidate, candidate, source_candidate_id, candidate):
             continue
         review_state = "READY_FOR_REVIEW"
         review_file = package_dir / "review.json"
@@ -1793,8 +2564,9 @@ def server_review_rows(config: dict[str, Any], exclude: set[str] | None = None) 
         source_category = str(metadata.get("category") or source_keywords.get("category") or "")
         items.append({
             "id": candidate,
+            "source_candidate_id": source_candidate_id or candidate,
             "platform": str(source.get("platform") or "server"),
-            "source_id": str(metadata.get("source_job_id") or ""),
+            "source_id": source_candidate_id,
             "url": str(source.get("url") or ""),
             "title": str(source.get("title") or candidate),
             "display_title": str(primary_output.get("filename") or candidate).removesuffix(".mp4"),
@@ -2053,41 +2825,14 @@ def move_candidate_to_review(config: dict[str, Any], candidate: str) -> dict[str
     candidate = candidate.strip()
     if not candidate:
         raise ValueError("candidate_id is required")
-    local_root = workspace_dir(config) / "ready_for_review"
-    server_root = storage_root(config) / "review"
-    packages = [
-        path
-        for root in (local_root, server_root)
-        if root.exists()
-        for path in [root / candidate, *sorted(root.glob(f"{candidate}_part*"))]
-        if path.is_dir()
-        and any(item.is_file() and item.stat().st_size > 0 for item in path.glob("*.mp4"))
-    ]
-    if not packages:
-        raise ValueError("candidate has no verified rendered output to move into review")
+    gate = assert_candidate_ready_for_review(config, candidate)
     connection = connect_db(config)
-    connection.execute("BEGIN IMMEDIATE")
-    try:
-        row = connection.execute("SELECT status FROM candidates WHERE id=?", (candidate,)).fetchone()
-        if not row:
-            raise ValueError("candidate does not exist")
-        allowed = {"DOWNLOADED", "APPROVED", "REVISION_REQUIRED", "READY_FOR_REVIEW"}
-        if row["status"] not in allowed:
-            raise ValueError(f"candidate status {row['status']} cannot move to review")
-        timestamp = now_iso()
-        connection.execute(
-            "UPDATE candidates SET status='READY_FOR_REVIEW',updated_at=? WHERE id=?",
-            (timestamp, candidate),
-        )
-        connection.execute(
-            "INSERT INTO events(candidate_id,event_type,payload_json,created_at) VALUES(?,?,?,?)",
-            (candidate, "READY_FOR_REVIEW", json.dumps({"packages": [p.name for p in packages]}), timestamp),
-        )
-        connection.commit()
-    except Exception:
-        connection.rollback()
-        raise
-    return {"candidate_id": candidate, "status": "READY_FOR_REVIEW", "packages": [p.name for p in packages]}
+    row = connection.execute("SELECT status FROM candidates WHERE id=?", (candidate,)).fetchone()
+    if not row:
+        raise ValueError("candidate does not exist")
+    if row["status"] != "READY_FOR_REVIEW":
+        raise ValueError("standard production gate passed but candidate is not finalized")
+    return {"candidate_id": candidate, "status": row["status"], "gate": gate}
 
 
 def save_metrics(config: dict[str, Any], payload: dict[str, Any]) -> int:
@@ -2250,6 +2995,46 @@ def attribution_report(config: dict[str, Any], candidate: str) -> dict[str, Any]
     }
 
 
+def sync_child_slice_review_status(
+    connection: Any,
+    parent_candidate: str,
+    decision: str,
+    *,
+    timestamp: str,
+    reviewer: str = "",
+) -> list[str]:
+    children = [
+        dict(row) for row in connection.execute(
+            """
+            SELECT id,source_id,status
+            FROM candidates
+            WHERE parent_id=?
+              AND status IN ('READY_FOR_REVIEW','APPROVED','REVISION_REQUIRED')
+            """,
+            (parent_candidate,),
+        )
+    ]
+    updated: list[str] = []
+    for child in children:
+        child_id = str(child["id"] or "")
+        if not review_slice_parent_id(child_id, parent_candidate, str(child["source_id"] or "")):
+            continue
+        if str(child["status"] or "") == decision:
+            continue
+        connection.execute(
+            "UPDATE candidates SET status=?,updated_at=? WHERE id=?",
+            (decision, timestamp, child_id),
+        )
+        append_event(
+            connection,
+            child_id,
+            f"REVIEW_{decision}",
+            {"reviewer": reviewer, "synced_from_parent": parent_candidate},
+        )
+        updated.append(child_id)
+    return updated
+
+
 def save_review(config: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     candidate = str(payload.get("candidate_id") or "").strip()
     decision = str(payload.get("decision") or "").strip().upper()
@@ -2285,6 +3070,21 @@ def save_review(config: dict[str, Any], payload: dict[str, Any]) -> dict[str, An
             "reviewer": str(payload.get("reviewer") or ""),
         }, ensure_ascii=False), timestamp),
     )
+    sync_source_import_workflow_status(
+        connection,
+        candidate,
+        decision,
+        event_type=f"REVIEW_{decision}",
+        actor=str(payload.get("reviewer") or "dashboard"),
+        payload={"note": str(payload.get("note") or "")},
+    )
+    synced_children = sync_child_slice_review_status(
+        connection,
+        candidate,
+        decision,
+        timestamp=timestamp,
+        reviewer=str(payload.get("reviewer") or ""),
+    )
     connection.commit()
     review_file = workspace_dir(config) / "ready_for_review" / candidate / "review.json"
     if review_file.parent.exists():
@@ -2297,7 +3097,15 @@ def save_review(config: dict[str, Any], payload: dict[str, Any]) -> dict[str, An
             }, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-    return {"candidate_id": candidate, "status": decision}
+    result = {"candidate_id": candidate, "status": decision, "synced_children": synced_children}
+    if decision == "APPROVED":
+        result["publication"] = auto_enqueue_approved_publication(
+            config,
+            candidate,
+            reviewer=str(payload.get("reviewer") or ""),
+            review_decision_at=timestamp,
+        )
+    return result
 
 
 def keywords_file_path(config: dict[str, Any]) -> Path:
@@ -2546,7 +3354,31 @@ class DashboardApplication(ThreadingHTTPServer):
         if recovered:
             print(f"dashboard recovered {recovered} interrupted production candidate(s)")
 
-    def start_action(self, payload: dict[str, Any]) -> str:
+    def start_action(
+        self,
+        payload: dict[str, Any],
+        *,
+        actor: str = "dashboard",
+        can_direct_approve: bool = False,
+    ) -> str:
+        action = str(payload.get("action") or "")
+        source_import: dict[str, Any] | None = None
+        if action == "ingest":
+            source_import = create_source_import(
+                self.config,
+                platform=str(payload.get("platform") or ""),
+                url=str(payload.get("url") or ""),
+                target_area=payload.get("target_area"),
+                operator_id=actor,
+                can_direct_approve=can_direct_approve,
+                idempotency_key=str(payload.get("idempotency_key") or ""),
+            )
+            payload = {
+                **payload,
+                "source_import_id": source_import["id"],
+                "target_area": source_import["target_area"],
+                "url": source_import["normalized_url"],
+            }
         candidate_ids = payload.get("candidate_ids") or []
         if not isinstance(candidate_ids, list):
             raise ValueError("candidate_ids must be a list")
@@ -2555,19 +3387,41 @@ class DashboardApplication(ThreadingHTTPServer):
         if single and single not in candidate_ids:
             candidate_ids.append(single)
         candidate_ids = list(dict.fromkeys(candidate_ids))
-        task_id = uuid.uuid4().hex[:12]
+        task_id = str(source_import["download_task_id"]) if source_import else uuid.uuid4().hex[:12]
         task = {
-            "id": task_id, "action": payload.get("action"), "status": "RUNNING",
+            "id": task_id, "action": action, "status": "RUNNING",
             "started_at": now_iso(), "result": None, "error": "", "progress": 0,
             "completed": 0, "total": len(candidate_ids) or 1, "current_candidate": "",
             "message": "任务已进入队列", "candidate_ids": candidate_ids,
+            "source_import_id": str((source_import or {}).get("id") or ""),
+            "target_area": str((source_import or {}).get("target_area") or ""),
+            "target_area_label": str((source_import or {}).get("target_label") or ""),
         }
         with self.tasks_lock:
+            if task_id in self.tasks and self.tasks[task_id].get("status") == "RUNNING":
+                return task_id
             requested = set(candidate_ids)
             for active in self.tasks.values():
                 if active.get("status") == "RUNNING" and requested.intersection(active.get("candidate_ids") or []):
                     raise ValueError("selected candidate is already running in another task")
             self.tasks[task_id] = task
+        if source_import and source_import.get("actual_workflow_status") in {"DOWNLOADED", "APPROVED"}:
+            self.update_task(
+                task_id,
+                status="COMPLETED",
+                progress=100,
+                completed=1,
+                result={
+                    "candidate_id": source_import.get("candidate_id"),
+                    "source_import_id": source_import["id"],
+                    "status": source_import["actual_workflow_status"],
+                    "target_area": source_import["target_area"],
+                    "reused": True,
+                },
+                message="已有相同导入记录",
+                finished_at=now_iso(),
+            )
+            return task_id
         enriched = {**payload, "candidate_ids": candidate_ids}
         threading.Thread(target=self._run_action, args=(task_id, enriched), daemon=True).start()
         return task_id
@@ -2585,8 +3439,12 @@ class DashboardApplication(ThreadingHTTPServer):
         failed = 0
         total = len(candidate_ids)
         for index, candidate in enumerate(candidate_ids):
+            requested_candidate = candidate
+            item_options = options or {}
+            if action == "produce":
+                candidate, item_options = resolve_production_candidate(self.config, requested_candidate, options)
             self.update_task(
-                task_id, current_candidate=candidate, completed=index,
+                task_id, current_candidate=requested_candidate, completed=index,
                 progress=max(2, int(index / total * 95)),
                 message=f"正在{('下载' if action == 'download' else '制作' if action == 'produce' else '忽略')} {index + 1}/{total}",
             )
@@ -2597,20 +3455,21 @@ class DashboardApplication(ThreadingHTTPServer):
                 row = connect_db(self.config).execute(
                     "SELECT status FROM candidates WHERE id=?", (candidate,)
                 ).fetchone()
-                work = workspace_dir(self.config) / "jobs" / candidate
-                source_missing = not any(
-                    path.suffix.lower() in SOURCE_MEDIA_SUFFIXES
-                    for path in work.glob("source.*")
-                )
-                if row and (row["status"] in {"DISCOVERED", "DOWNLOAD_FAILED"} or (row["status"] == "PRODUCTION_FAILED" and source_missing)):
-                    self.update_task(task_id, message=f"先下载素材 · {index + 1}/{total}")
-                    download_result = download_top(self.config, 1, candidate)
-                    if int(download_result.get("failed", 0)) or int(download_result.get("downloaded", 0) == 0):
-                        result = {"download": download_result, "produce": {"selected": 0, "produced": 0, "failed": 1}}
-                        failed += 1
-                        items.append({"candidate_id": candidate, "result": result, "failed": True})
-                        self.update_task(task_id, completed=index + 1, progress=int((index + 1) / total * 95))
-                        continue
+                if not row and isinstance(item_options.get("design"), dict) and materialize_review_candidate(self.config, candidate):
+                    row = connect_db(self.config).execute(
+                        "SELECT status FROM candidates WHERE id=?", (candidate,)
+                    ).fetchone()
+                if not row:
+                    result = {
+                        "selected": 0,
+                        "produced": 0,
+                        "failed": 1,
+                        "error": f"candidate does not exist: {requested_candidate}",
+                    }
+                    failed += 1
+                    items.append({"candidate_id": requested_candidate, "result": result, "failed": True})
+                    self.update_task(task_id, completed=index + 1, progress=int((index + 1) / total * 95))
+                    continue
 
                 def production_progress(percent: int, message: str) -> None:
                     base = index / total * 95
@@ -2620,19 +3479,14 @@ class DashboardApplication(ThreadingHTTPServer):
                         message=f"{message} · {index + 1}/{total}",
                     )
 
-                self.update_task(task_id, message=f"等待制作资源 · {index + 1}/{total}")
-                with self.production_lock:
-                    started = now_iso()
-                    connection = connect_db(self.config)
-                    connection.execute(
-                        "UPDATE candidates SET status=?,updated_at=? WHERE id=?",
-                        (PRODUCTION_RUNNING_STATUS, started, candidate),
-                    )
-                    append_event(connection, candidate, "PRODUCTION_STARTED", {"task_id": task_id})
-                    connection.commit()
-                    result = produce_top(
-                        self.config, 1, candidate, progress_callback=production_progress, options=options
-                    )
+                self.update_task(task_id, message=f"统一下载与制作 · {index + 1}/{total}")
+                result = produce_top(
+                    self.config,
+                    1,
+                    candidate,
+                    progress_callback=production_progress,
+                    options={**item_options, "trigger_source": "dashboard"},
+                )
                 item_failed = int(result.get("failed", 0)) or int(result.get("selected", 0) == 0)
             else:
                 try:
@@ -2642,7 +3496,7 @@ class DashboardApplication(ThreadingHTTPServer):
                     result = {"error": str(error)}
                     item_failed = 1
             failed += int(bool(item_failed))
-            items.append({"candidate_id": candidate, "result": result, "failed": bool(item_failed)})
+            items.append({"candidate_id": requested_candidate, "resolved_candidate_id": candidate, "result": result, "failed": bool(item_failed)})
             self.update_task(task_id, completed=index + 1, progress=int((index + 1) / total * 95))
         return {"selected": total, "completed": total - failed, "failed": failed, "items": items}
 
@@ -2659,15 +3513,38 @@ class DashboardApplication(ThreadingHTTPServer):
                     keyword_overrides=keywords if isinstance(keywords, list) else [],
                 )
             elif action == "ingest":
-                url = str(payload.get("url") or "").strip()
-                if not url:
-                    raise ValueError("url is required")
+                import_id = str(payload.get("source_import_id") or "").strip()
+                if not import_id:
+                    created_import = create_source_import(
+                        self.config,
+                        platform=str(payload.get("platform") or ""),
+                        url=str(payload.get("url") or ""),
+                        target_area=payload.get("target_area"),
+                        operator_id="dashboard",
+                        can_direct_approve=False,
+                    )
+                    import_id = str(created_import["id"])
+                import_record = source_import_row(self.config, import_id)
+                url = str(import_record.get("normalized_url") or "").strip()
+                url = normalize_import_url(
+                    url,
+                    str(import_record.get("source_platform") or payload.get("platform") or ""),
+                )
                 self.update_task(task_id, progress=15, message="正在读取视频信息")
                 candidate_id = inspect_url(
                     self.config,
                     url,
                     requested_platform=str(payload.get("platform") or ""),
                     allow_stub=True,
+                )
+                candidate = connect_db(self.config).execute(
+                    "SELECT title,status FROM candidates WHERE id=?", (candidate_id,)
+                ).fetchone()
+                attach_source_import_candidate(
+                    self.config,
+                    import_id,
+                    candidate_id,
+                    original_title=str(candidate["title"] or "") if candidate else "",
                 )
                 self.update_task(
                     task_id,
@@ -2677,13 +3554,21 @@ class DashboardApplication(ThreadingHTTPServer):
                     message="正在下载到服务器",
                 )
                 row = connect_db(self.config).execute(
-                    "SELECT status FROM candidates WHERE id=?", (candidate_id,)
+                    "SELECT status,title FROM candidates WHERE id=?", (candidate_id,)
                 ).fetchone()
-                if row and row["status"] == "DOWNLOADED":
+                media = candidate_source_media(self.config, candidate_id)
+                if media is not None:
                     download_result = {"selected": 1, "downloaded": 1, "failed": 0, "already_downloaded": True}
                 elif row and row["status"] == "TOO_LONG":
                     raise RuntimeError("URL 已导入，但视频超过 30 分钟，只能删除，不能进入待制作")
                 else:
+                    if row and row["status"] == "IMPORT_FAILED":
+                        connection = connect_db(self.config)
+                        connection.execute(
+                            "UPDATE candidates SET status='DOWNLOAD_FAILED',updated_at=? WHERE id=?",
+                            (now_iso(), candidate_id),
+                        )
+                        connection.commit()
                     download_result = download_top(self.config, 1, candidate_id)
                 if int(download_result.get("failed", 0)) or int(download_result.get("downloaded", 0) == 0):
                     failure = connect_db(self.config).execute(
@@ -2703,10 +3588,23 @@ class DashboardApplication(ThreadingHTTPServer):
                             detail = str(failure["payload_json"] or "").strip()
                     suffix = f"：{detail[-500:]}" if detail else ""
                     raise RuntimeError(f"URL 已导入，但服务器下载失败，请在下载失败列表重试或检查登录态{suffix}")
+                media = candidate_source_media(self.config, candidate_id)
+                if media is None:
+                    raise RuntimeError("URL 已下载，但服务器没有找到受管理的源视频文件")
+                completed_import = complete_source_import(
+                    self.config,
+                    import_id,
+                    candidate_id=candidate_id,
+                    media_path=media,
+                    original_title=str(row["title"] or "") if row else "",
+                )
                 result = {
                     "candidate_id": candidate_id,
+                    "source_import_id": import_id,
                     "download": download_result,
-                    "status": "DOWNLOADED",
+                    "status": completed_import["actual_workflow_status"],
+                    "target_area": completed_import["target_area"],
+                    "target_area_label": completed_import["target_label"],
                 }
             elif action in {"download", "produce", "skip"}:
                 result = self.run_candidate_batch(
@@ -2722,6 +3620,20 @@ class DashboardApplication(ThreadingHTTPServer):
                      "completed": self.tasks[task_id].get("total", 1), "current_candidate": "",
                      "message": message, "finished_at": now_iso()}
         except Exception as error:
+            import_id = str(payload.get("source_import_id") or "").strip()
+            if action == "ingest" and import_id:
+                try:
+                    current = source_import_row(self.config, import_id)
+                    if current["actual_workflow_status"] != "IMPORT_FAILED":
+                        fail_source_import(
+                            self.config,
+                            import_id,
+                            category="DOWNLOAD_FAILED",
+                            summary=str(error),
+                            candidate_id=str(current.get("candidate_id") or ""),
+                        )
+                except Exception:
+                    pass
             state = {"status": "FAILED", "result": None, "error": str(error), "message": str(error),
                      "progress": 100, "current_candidate": "", "finished_at": now_iso()}
         with self.tasks_lock:
@@ -2740,10 +3652,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         try:
             if parsed.path == "/oauth/youtube/callback":
                 return self.send_youtube_oauth_callback(query)
+            if parsed.path == "/oauth/x/callback":
+                return self.send_x_oauth_callback(query)
             if parsed.path == "/oauth/youtube/start":
-                if not self.authorized_for_admin(parsed):
-                    return self.send_admin_unauthorized(parsed.path)
                 account = str((query.get("account") or ["consumer_football"])[0]).strip() or "consumer_football"
+                if not self.authorized_for_admin(parsed) and not youtube_auth_link_is_valid(query):
+                    return self.send_admin_unauthorized(parsed.path)
                 try:
                     return self.redirect(youtube_oauth_start_url(self.server.config, account))
                 except Exception as error:
@@ -2758,6 +3672,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         ),
                         HTTPStatus.BAD_REQUEST,
                     )
+            if parsed.path == "/oauth/x/start":
+                if not self.authorized_for_admin(parsed):
+                    return self.send_admin_unauthorized(parsed.path)
+                account = str((query.get("account") or ["consumer_main"])[0]).strip() or "consumer_main"
+                try:
+                    return self.redirect(x_oauth_start_url(self.server.config, account))
+                except Exception as error:
+                    return self.send_html(
+                        oauth_result_html(
+                            "X 授权尚未配置",
+                            [
+                                str(error),
+                                "请在服务器 .env 中配置 JAGUARTV_X_CLIENT_ID、JAGUARTV_OAUTH_TOKEN_KEY 和回调地址。",
+                            ],
+                            ok=False,
+                        ),
+                        HTTPStatus.BAD_REQUEST,
+                    )
             if self.admin_required_path(parsed.path) and not self.authorized_for_admin(parsed):
                 return self.send_admin_unauthorized(parsed.path)
             if parsed.path == "/api/overview":
@@ -2765,9 +3697,110 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/candidates":
                 status = query.get("status", [None])[0]
                 limit = int_value(query.get("limit", [100])[0], 100)
+                if str((query.get("paginated") or [""])[0]).lower() in {"1", "true", "yes"}:
+                    return self.send_json(candidate_page(
+                        self.server.config,
+                        status=status,
+                        source_type=str((query.get("source_type") or [""])[0]),
+                        platform=str((query.get("platform") or [""])[0]),
+                        category=str((query.get("category") or [""])[0]),
+                        search=str((query.get("search") or [""])[0]),
+                        page=validated_positive_int((query.get("page") or [1])[0], "page", 1),
+                        page_size=validated_positive_int(
+                            (query.get("page_size") or [50])[0], "page_size", 50
+                        ),
+                    ))
                 return self.send_json(candidate_rows(self.server.config, status, limit))
+            if parsed.path == "/api/import-capabilities":
+                return self.send_json({
+                    "default_target_area": "pending_production",
+                    "allowed_target_areas": ["pending_production", "approved"],
+                    "can_direct_approve": self.authorized_for_admin(parsed),
+                })
+            if parsed.path == "/api/posters":
+                return self.send_json(list_posters(
+                    self.server.config,
+                    status=(query.get("status") or [""])[0],
+                    category=(query.get("category") or [""])[0],
+                    page=(query.get("page") or [1])[0],
+                    page_size=(query.get("page_size") or [24])[0],
+                ))
+            if parsed.path == "/api/posters/counts":
+                return self.send_json(poster_counts(
+                    self.server.config,
+                    category=(query.get("category") or [""])[0],
+                ))
+            if parsed.path == "/api/posters/import/limits":
+                return self.send_json({
+                    **poster_upload_limits(self.server.config),
+                    "formats": ["JPEG", "PNG", "WebP"],
+                })
+            poster_parts = parsed.path.strip("/").split("/")
+            if len(poster_parts) == 3 and poster_parts[:2] == ["api", "posters"]:
+                return self.send_json(poster_detail(self.server.config, unquote(poster_parts[2])))
+            if len(poster_parts) == 4 and poster_parts[:2] == ["api", "posters"]:
+                poster_id = unquote(poster_parts[2])
+                if poster_parts[3] == "preview":
+                    return self.send_poster_asset(poster_id, download=False)
+                if poster_parts[3] == "thumbnail":
+                    return self.send_poster_asset(poster_id, download=False, thumbnail=True)
+                if poster_parts[3] == "download":
+                    return self.send_poster_asset(poster_id, download=True)
+            if (
+                len(poster_parts) == 6
+                and poster_parts[:2] == ["api", "posters"]
+                and poster_parts[3] == "attachments"
+                and poster_parts[5] == "preview"
+            ):
+                return self.send_poster_attachment(
+                    unquote(poster_parts[2]), unquote(poster_parts[4])
+                )
             if parsed.path == "/api/publications":
                 return self.send_json(publication_rows(self.server.config))
+            if parsed.path == "/api/youtube-analytics/summary":
+                return self.send_json(analytics_summary(
+                    self.server.config,
+                    range_name=str((query.get("range") or ["30d"])[0]),
+                    start_date=str((query.get("start_date") or [""])[0]),
+                    end_date=str((query.get("end_date") or [""])[0]),
+                    account_id=str((query.get("account_id") or [""])[0]),
+                ))
+            if parsed.path == "/api/youtube-analytics/ranking":
+                return self.send_json(analytics_ranking(
+                    self.server.config,
+                    range_name=str((query.get("range") or ["30d"])[0]),
+                    start_date=str((query.get("start_date") or [""])[0]),
+                    end_date=str((query.get("end_date") or [""])[0]),
+                    account_id=str((query.get("account_id") or [""])[0]),
+                    metric=str((query.get("metric") or ["views"])[0]),
+                    page=validated_positive_int((query.get("page") or [1])[0], "page", 1),
+                    page_size=validated_positive_int((query.get("page_size") or [20])[0], "page_size", 20),
+                ))
+            if parsed.path == "/api/youtube-analytics/accounts":
+                return self.send_json(analytics_accounts(self.server.config))
+            if parsed.path == "/api/youtube-analytics/channel-import/status":
+                return self.send_json(channel_import_status(self.server.config))
+            analytics_parts = parsed.path.strip("/").split("/")
+            if len(analytics_parts) in {4, 5} and analytics_parts[:3] == ["api", "youtube-analytics", "publications"]:
+                publication_id = validated_positive_int(analytics_parts[3], "publication_id", 0)
+                if len(analytics_parts) == 5 and analytics_parts[4] == "history":
+                    return self.send_json(analytics_history(
+                        self.server.config,
+                        publication_id,
+                        limit=validated_positive_int((query.get("limit") or [100])[0], "limit", 100),
+                    ))
+                if len(analytics_parts) == 4:
+                    detail = publication_latest(self.server.config, publication_id)
+                    if detail is None:
+                        return self.send_json({"error": "publication not found"}, HTTPStatus.NOT_FOUND)
+                    return self.send_json(detail)
+            if parsed.path == "/api/publish/capabilities":
+                return self.send_json(platform_capabilities())
+            if parsed.path == "/api/publish/accounts":
+                platform = (query.get("platform") or [""])[0].strip()
+                return self.send_json(list_publish_accounts(self.server.config, platform))
+            if parsed.path == "/api/x-auths":
+                return self.send_json(x_auth_rows(self.server.config))
             if parsed.path == "/api/workers":
                 return self.send_json(worker_rows(self.server.config))
             if parsed.path == "/api/render-jobs":
@@ -2834,8 +3867,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 download = str((query.get("download") or [""])[0]).lower() in {"1", "true", "yes"}
                 return self.send_media(parsed.path.removeprefix("/media/"), download=download)
             return self.send_static(parsed.path)
+        except PosterError as error:
+            self.send_json({"error": str(error)}, HTTPStatus(error.status))
+        except PermissionError as error:
+            self.send_json({"error": str(error)}, HTTPStatus.FORBIDDEN)
+        except ValueError as error:
+            self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
         except Exception as error:
-            self.send_json({"error": str(error)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            self.log_error("dashboard GET failed: %r", error)
+            self.send_json({"error": "internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def do_HEAD(self) -> None:
         parsed = urlparse(self.path)
@@ -2846,6 +3886,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return self.send_private_upload(parsed, head_only=True)
         if parsed.path.startswith("/api/candidates/") and parsed.path.endswith("/source"):
             return self.send_candidate_source(parsed, head_only=True)
+        poster_parts = parsed.path.strip("/").split("/")
+        if len(poster_parts) == 4 and poster_parts[:2] == ["api", "posters"]:
+            poster_id = unquote(poster_parts[2])
+            try:
+                if poster_parts[3] == "preview":
+                    return self.send_poster_asset(poster_id, download=False, head_only=True)
+                if poster_parts[3] == "thumbnail":
+                    return self.send_poster_asset(
+                        poster_id, download=False, thumbnail=True, head_only=True
+                    )
+                if poster_parts[3] == "download":
+                    return self.send_poster_asset(poster_id, download=True, head_only=True)
+            except PosterError as error:
+                return self.send_json({"error": str(error)}, HTTPStatus(error.status))
         if parsed.path.startswith("/media/"):
             download = str((query.get("download") or [""])[0]).lower() in {"1", "true", "yes"}
             return self.send_media(parsed.path.removeprefix("/media/"), download=download)
@@ -2854,8 +3908,69 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         try:
+            analytics_mutation = (
+                parsed.path == "/api/youtube-analytics/backfill"
+                or parsed.path == "/api/youtube-analytics/channel-import"
+                or parsed.path.startswith("/api/youtube-analytics/backfill/")
+                or (
+                    parsed.path.startswith("/api/youtube-analytics/publications/")
+                    and parsed.path.endswith("/retry")
+                )
+            )
+            if analytics_mutation and not self.authorized_for_admin(parsed):
+                return self.send_admin_unauthorized(parsed.path)
             if self.admin_required_path(parsed.path) and not self.authorized_for_admin(parsed):
                 return self.send_admin_unauthorized(parsed.path)
+            if parsed.path == "/api/posters/import":
+                query = parse_qs(parsed.query)
+                return self.send_json(
+                    import_poster(
+                        self.server.config,
+                        self.rfile,
+                        filename=str((query.get("filename") or [""])[0]),
+                        mime_type=self.headers.get("Content-Type", ""),
+                        content_length=int(self.headers.get("Content-Length") or 0),
+                        category=str((query.get("category") or [""])[0]),
+                        actor=self.headers.get("X-Operator", ""),
+                        batch_size=int(self.headers.get("X-Poster-Batch-Size") or 1),
+                    ),
+                    HTTPStatus.CREATED,
+                )
+            poster_parts = parsed.path.strip("/").split("/")
+            if len(poster_parts) == 4 and poster_parts[:2] == ["api", "posters"] and poster_parts[3] == "attachments":
+                query = parse_qs(parsed.query)
+                return self.send_json(
+                    add_poster_attachment(
+                        self.server.config,
+                        unquote(poster_parts[2]),
+                        self.rfile,
+                        filename=str((query.get("filename") or [""])[0]),
+                        mime_type=self.headers.get("Content-Type", ""),
+                        content_length=int(self.headers.get("Content-Length") or 0),
+                        actor=self.headers.get("X-Operator", ""),
+                    ),
+                    HTTPStatus.CREATED,
+                )
+            if (
+                len(poster_parts) == 6
+                and poster_parts[:2] == ["api", "posters"]
+                and poster_parts[3] == "attachments"
+                and poster_parts[5] == "replace"
+            ):
+                query = parse_qs(parsed.query)
+                return self.send_json(
+                    replace_poster_attachment(
+                        self.server.config,
+                        unquote(poster_parts[2]),
+                        unquote(poster_parts[4]),
+                        self.rfile,
+                        filename=str((query.get("filename") or [""])[0]),
+                        mime_type=self.headers.get("Content-Type", ""),
+                        content_length=int(self.headers.get("Content-Length") or 0),
+                        actor=self.headers.get("X-Operator", ""),
+                    ),
+                    HTTPStatus.OK,
+                )
             if parsed.path == "/api/uploads/init":
                 payload = self.read_json()
                 kind = str(payload.get("kind") or "").lower()
@@ -2890,7 +4005,57 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     )
                 result = complete_chunked_upload(self.server.config, upload_id)
                 if result["kind"] == "source":
-                    result["candidate_id"] = ingest_uploaded_media(self.server.config, result)
+                    if bool(payload.get("source_import")):
+                        target_area = normalize_target_area(payload.get("target_area"))
+                        can_direct_approve = self.authorized_for_admin(parsed)
+                        source_import = create_uploaded_source_import(
+                            self.server.config,
+                            upload_id=upload_id,
+                            target_area=target_area,
+                            operator_id=str(
+                                "dashboard_admin"
+                                if target_area == TARGET_APPROVED and can_direct_approve
+                                else payload.get("operator_id")
+                                or self.headers.get("X-Operator", "")
+                                or "dashboard"
+                            ),
+                            can_direct_approve=can_direct_approve,
+                            idempotency_key=str(payload.get("idempotency_key") or ""),
+                        )
+                        candidate_id = ingest_uploaded_media(self.server.config, result)
+                        attach_source_import_candidate(
+                            self.server.config,
+                            source_import["id"],
+                            candidate_id,
+                            original_title=str(result.get("original_filename") or ""),
+                        )
+                        media = candidate_source_media(self.server.config, candidate_id)
+                        if media is None:
+                            fail_source_import(
+                                self.server.config,
+                                source_import["id"],
+                                category="UPLOAD_INCOMPLETE",
+                                summary="uploaded source candidate has no managed media file",
+                                candidate_id=candidate_id,
+                            )
+                            raise ValueError("uploaded source candidate has no managed media file")
+                        completed_import = complete_source_import(
+                            self.server.config,
+                            source_import["id"],
+                            candidate_id=candidate_id,
+                            media_path=media,
+                            original_title=str(result.get("original_filename") or ""),
+                        )
+                        result.update({
+                            "candidate_id": candidate_id,
+                            "source_import_id": source_import["id"],
+                            "target_area": completed_import["target_area"],
+                            "target_area_label": completed_import["target_label"],
+                            "actual_workflow_status": completed_import["actual_workflow_status"],
+                        })
+                        result.pop("path", None)
+                    else:
+                        result["candidate_id"] = ingest_uploaded_media(self.server.config, result)
                 result["download_url"] = signed_upload_url(result["id"])
                 return self.send_json(result, HTTPStatus.CREATED)
             if parsed.path == "/api/uploads":
@@ -2914,9 +4079,74 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 result["download_url"] = signed_upload_url(result["id"])
                 return self.send_json(result, HTTPStatus.CREATED)
             payload = self.read_json()
+            analytics_parts = parsed.path.strip("/").split("/")
+            if len(analytics_parts) == 5 and analytics_parts[:3] == ["api", "youtube-analytics", "publications"] and analytics_parts[4] == "retry":
+                return self.send_json(
+                    retry_publication_sync(
+                        self.server.config,
+                        validated_positive_int(analytics_parts[3], "publication_id", 0),
+                    ),
+                    HTTPStatus.OK,
+                )
+            if parsed.path == "/api/youtube-analytics/backfill":
+                dry_run_value = payload.get("dry_run", True)
+                if not isinstance(dry_run_value, bool):
+                    raise ValueError("dry_run must be a boolean")
+                return self.send_json(backfill_report(
+                    self.server.config,
+                    dry_run=dry_run_value,
+                    rate_limit_per_minute=validated_positive_int(
+                        payload.get("rate_limit_per_minute"), "rate_limit_per_minute", 6
+                    ),
+                ), HTTPStatus.OK if dry_run_value else HTTPStatus.ACCEPTED)
+            if parsed.path == "/api/youtube-analytics/channel-import":
+                dry_run_value = payload.get("dry_run", True)
+                if not isinstance(dry_run_value, bool):
+                    raise ValueError("dry_run must be a boolean")
+                max_pages_value = payload.get("max_pages")
+                max_pages = None if max_pages_value is None or max_pages_value == "" else validated_positive_int(
+                    max_pages_value, "max_pages", 0
+                )
+                return self.send_json(channel_import_report(
+                    self.server.config,
+                    account_id=str(payload.get("account_id") or ""),
+                    dry_run=dry_run_value,
+                    max_pages=max_pages,
+                ), HTTPStatus.OK if dry_run_value else HTTPStatus.ACCEPTED)
+            if len(analytics_parts) == 5 and analytics_parts[:3] == ["api", "youtube-analytics", "backfill"] and analytics_parts[4] == "status":
+                return self.send_json(set_backfill_status(
+                    self.server.config,
+                    validated_positive_int(analytics_parts[3], "run_id", 0),
+                    str(payload.get("action") or ""),
+                ), HTTPStatus.OK)
             if parsed.path == "/api/actions":
-                task_id = self.server.start_action(payload)
-                return self.send_json({"task_id": task_id, "status": "RUNNING"}, HTTPStatus.ACCEPTED)
+                payload["idempotency_key"] = str(
+                    payload.get("idempotency_key")
+                    or self.headers.get("X-Idempotency-Key", "")
+                )
+                can_direct_approve = self.authorized_for_admin(parsed)
+                requested_target = (
+                    normalize_target_area(payload.get("target_area"))
+                    if str(payload.get("action") or "") == "ingest"
+                    else ""
+                )
+                task_id = self.server.start_action(
+                    payload,
+                    actor=str(
+                        "dashboard_admin"
+                        if requested_target == TARGET_APPROVED and can_direct_approve
+                        else payload.get("operator_id")
+                        or self.headers.get("X-Operator", "")
+                        or "dashboard"
+                    ),
+                    can_direct_approve=can_direct_approve,
+                )
+                with self.server.tasks_lock:
+                    task_status = str(self.server.tasks.get(task_id, {}).get("status") or "RUNNING")
+                return self.send_json(
+                    {"task_id": task_id, "status": task_status},
+                    HTTPStatus.OK if task_status == "COMPLETED" else HTTPStatus.ACCEPTED,
+                )
             if parsed.path == "/api/copywriter/generate":
                 try:
                     return self.send_json(
@@ -2927,10 +4157,79 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     return self.send_json({"error": str(error)}, HTTPStatus.SERVICE_UNAVAILABLE)
             if parsed.path == "/api/candidates/delete":
                 return self.send_json(delete_candidates(self.server.config, payload), HTTPStatus.OK)
+            poster_parts = parsed.path.strip("/").split("/")
+            if len(poster_parts) == 4 and poster_parts[:2] == ["api", "posters"]:
+                poster_id = unquote(poster_parts[2])
+                audit = {
+                    "actor": payload.get("actor") or self.headers.get("X-Operator", ""),
+                    "request_id": payload.get("request_id") or self.headers.get("X-Request-ID", ""),
+                }
+                if poster_parts[3] == "approve":
+                    return self.send_json(
+                        approve_poster(
+                            self.server.config,
+                            poster_id,
+                            expected_status=payload.get("expected_status") or "",
+                            **audit,
+                        ),
+                        HTTPStatus.OK,
+                    )
+                if poster_parts[3] == "delete":
+                    return self.send_json(
+                        delete_poster(self.server.config, poster_id, **audit), HTTPStatus.OK
+                    )
+                if poster_parts[3] == "content":
+                    return self.send_json(
+                        save_poster_content(
+                            self.server.config,
+                            poster_id,
+                            title=payload.get("title"),
+                            copy_text=payload.get("copy"),
+                            tags=payload.get("tags"),
+                            actor=audit["actor"],
+                        ),
+                        HTTPStatus.OK,
+                    )
+            if (
+                len(poster_parts) == 5
+                and poster_parts[:2] == ["api", "posters"]
+                and poster_parts[3:] == ["attachments", "reorder"]
+            ):
+                return self.send_json({
+                    "attachments": reorder_poster_attachments(
+                        self.server.config,
+                        unquote(poster_parts[2]),
+                        payload.get("attachment_ids"),
+                        actor=payload.get("actor") or self.headers.get("X-Operator", ""),
+                    )
+                })
+            if (
+                len(poster_parts) == 6
+                and poster_parts[:2] == ["api", "posters"]
+                and poster_parts[3] == "attachments"
+                and poster_parts[5] == "delete"
+            ):
+                return self.send_json(
+                    delete_poster_attachment(
+                        self.server.config,
+                        unquote(poster_parts[2]),
+                        unquote(poster_parts[4]),
+                        actor=payload.get("actor") or self.headers.get("X-Operator", ""),
+                    )
+                )
+            if parsed.path == "/api/publish/copy":
+                try:
+                    return self.send_json(generate_publish_copy_preview(self.server.config, payload), HTTPStatus.OK)
+                except RuntimeError as error:
+                    return self.send_json({"error": str(error)}, HTTPStatus.SERVICE_UNAVAILABLE)
             if parsed.path == "/api/publications":
+                if payload.get("asset_id") or payload.get("title") or payload.get("operation_type"):
+                    return self.send_json(create_publish_operation(self.server.config, payload), HTTPStatus.CREATED)
                 return self.send_json({"id": save_publication(self.server.config, payload)}, HTTPStatus.CREATED)
             if parsed.path == "/api/publications/status":
                 return self.send_json(update_publication_status(self.server.config, payload), HTTPStatus.OK)
+            if parsed.path == "/api/x-auths":
+                return self.send_json(update_x_auth(self.server.config, payload), HTTPStatus.OK)
             if parsed.path == "/api/download-claims":
                 return self.send_json(save_download_claim(self.server.config, payload), HTTPStatus.CREATED)
             if parsed.path == "/api/download-claims/metrics":
@@ -2990,10 +4289,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     )
                 return self.send_json(save_events(self.server.config, payload), HTTPStatus.CREATED)
             self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+        except PosterError as error:
+            self.send_json({"error": str(error)}, HTTPStatus(error.status))
+        except PermissionError as error:
+            self.send_json({"error": str(error)}, HTTPStatus.FORBIDDEN)
         except ValueError as error:
             self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
         except Exception as error:
-            self.send_json({"error": str(error)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            self.log_error("dashboard POST failed: %r", error)
+            self.send_json({"error": "internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def admin_required_path(self, path: str) -> bool:
         if os.environ.get("JAGUARTV_DASHBOARD_PUBLIC", "1").strip().lower() in {"1", "true", "yes", "on"}:
@@ -3001,6 +4305,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == "/api/health":
             return False
         if path == "/oauth/youtube/callback":
+            return False
+        if path == "/oauth/x/callback":
             return False
         if path in {"/api/events", "/api/callback"}:
             return False
@@ -3132,6 +4438,41 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return self.send_error(HTTPStatus.NOT_FOUND)
         self.send_file(source, cache="private, no-store", head_only=head_only)
 
+    def send_poster_asset(
+        self,
+        poster_id: str,
+        *,
+        download: bool,
+        thumbnail: bool = False,
+        head_only: bool = False,
+    ) -> None:
+        path = resolve_poster_file(
+            self.server.config,
+            poster_id,
+            require_approved=download,
+            thumbnail=thumbnail,
+        )
+        disposition = "inline"
+        if download:
+            filename = poster_download_name(self.server.config, poster_id)
+            fallback = f"poster{path.suffix.lower()}"
+            disposition = f"attachment; filename={fallback}; filename*=UTF-8''{quote(filename)}"
+        self.send_file(
+            path,
+            cache="private, no-store",
+            disposition=disposition,
+            head_only=head_only,
+        )
+
+    def send_poster_attachment(self, poster_id: str, attachment_id: str) -> None:
+        path = resolve_poster_attachment(self.server.config, poster_id, attachment_id)
+        self.send_file(
+            path,
+            cache="private, no-store",
+            disposition="inline",
+            head_only=False,
+        )
+
     def read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length") or 0)
         if length > 1_000_000:
@@ -3197,6 +4538,37 @@ class DashboardHandler(BaseHTTPRequestHandler):
             )
         )
 
+    def send_x_oauth_callback(self, query: dict[str, list[str]]) -> None:
+        try:
+            result = save_x_oauth_callback(self.server.config, query)
+        except Exception as error:
+            return self.send_html(
+                oauth_result_html(
+                    "X 授权未完成",
+                    [
+                        str(error),
+                        "请从 /oauth/x/start?account=consumer_main 重新开始授权。",
+                        "确认服务器 .env 已配置 JAGUARTV_X_CLIENT_ID、JAGUARTV_OAUTH_TOKEN_KEY 和正确的 X 回调地址。",
+                    ],
+                    ok=False,
+                ),
+                HTTPStatus.BAD_REQUEST,
+            )
+        return self.send_html(
+            oauth_result_html(
+                "X 授权待确认",
+                [
+                    f"账号配置：{result['account']}",
+                    f"实际授权账号：@{result['username']}",
+                    f"X User ID：{result['x_user_id']}",
+                    f"授权时间：{result['authorized_at']}",
+                    "access token 和 refresh token 已加密保存。",
+                    "请回到发布队列页核对账号后点击确认，确认后才会标记为可发布。",
+                ],
+                ok=True,
+            )
+        )
+
     def send_static(self, requested: str) -> None:
         if requested.startswith("/assets/brand/"):
             path = public_brand_asset_path(requested)
@@ -3252,6 +4624,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(length))
         self.send_header("Cache-Control", cache)
         self.send_header("Accept-Ranges", "bytes")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
         if cookie := self.admin_cookie_header():
             self.send_header("Set-Cookie", cookie)
         if disposition:

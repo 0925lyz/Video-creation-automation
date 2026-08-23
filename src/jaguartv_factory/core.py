@@ -53,6 +53,7 @@ from .workbuddy_adapter import (
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG = ROOT / "config" / "pipeline.yaml"
 LOCALIZABLE_CHINESE_AUDIO_PLATFORMS = {"bilibili", "douyin"}
+DB_SCHEMA_LOCK = threading.RLock()
 
 
 def scoring_config_path(config: dict[str, Any]) -> str | None:
@@ -165,6 +166,11 @@ def workspace_dir(config: dict[str, Any]) -> Path:
 
 
 def connect_db(config: dict[str, Any]) -> sqlite3.Connection:
+    with DB_SCHEMA_LOCK:
+        return _connect_db_unlocked(config)
+
+
+def _connect_db_unlocked(config: dict[str, Any]) -> sqlite3.Connection:
     db_path = workspace_dir(config) / "factory.db"
     connection = sqlite3.connect(db_path, timeout=float(config.get("run", {}).get("sqlite_timeout_sec", 30)))
     connection.row_factory = sqlite3.Row
@@ -355,6 +361,73 @@ def connect_db(config: dict[str, Any]) -> sqlite3.Connection:
         );
         CREATE INDEX IF NOT EXISTS production_outputs_candidate
           ON production_outputs(candidate_id, slice_id, variant);
+        CREATE TABLE IF NOT EXISTS repair_runs (
+          id TEXT PRIMARY KEY,
+          status TEXT NOT NULL,
+          requested_json TEXT NOT NULL DEFAULT '[]',
+          processed_json TEXT NOT NULL DEFAULT '[]',
+          failed_json TEXT NOT NULL DEFAULT '[]',
+          backup_path TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS source_imports (
+          id TEXT PRIMARY KEY,
+          candidate_id TEXT NOT NULL DEFAULT '',
+          source_type TEXT NOT NULL DEFAULT 'source_import',
+          import_method TEXT NOT NULL,
+          source_platform TEXT NOT NULL,
+          normalized_url TEXT NOT NULL DEFAULT '',
+          original_title TEXT NOT NULL DEFAULT '',
+          download_task_id TEXT NOT NULL DEFAULT '',
+          idempotency_key TEXT NOT NULL UNIQUE,
+          download_completed_at TEXT,
+          file_relative_path TEXT NOT NULL DEFAULT '',
+          file_sha256 TEXT NOT NULL DEFAULT '',
+          file_mime_type TEXT NOT NULL DEFAULT '',
+          file_size_bytes INTEGER NOT NULL DEFAULT 0,
+          duration_sec REAL NOT NULL DEFAULT 0,
+          width INTEGER NOT NULL DEFAULT 0,
+          height INTEGER NOT NULL DEFAULT 0,
+          fps REAL NOT NULL DEFAULT 0,
+          has_video INTEGER NOT NULL DEFAULT 0,
+          has_audio INTEGER NOT NULL DEFAULT 0,
+          target_area TEXT NOT NULL DEFAULT 'pending_production',
+          actual_workflow_status TEXT NOT NULL DEFAULT 'IMPORT_PENDING',
+          download_status TEXT NOT NULL DEFAULT 'PENDING',
+          review_source TEXT NOT NULL DEFAULT '',
+          operator_id TEXT NOT NULL DEFAULT '',
+          reviewed_at TEXT,
+          approval_reason TEXT NOT NULL DEFAULT '',
+          error_category TEXT NOT NULL DEFAULT '',
+          error_summary TEXT NOT NULL DEFAULT '',
+          metadata_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS source_imports_candidate
+          ON source_imports(candidate_id) WHERE candidate_id != '';
+        CREATE UNIQUE INDEX IF NOT EXISTS source_imports_normalized_url
+          ON source_imports(source_type,normalized_url) WHERE normalized_url != '';
+        CREATE UNIQUE INDEX IF NOT EXISTS source_imports_file_sha256
+          ON source_imports(file_sha256) WHERE file_sha256 != '';
+        CREATE INDEX IF NOT EXISTS source_imports_status_created
+          ON source_imports(actual_workflow_status,created_at DESC);
+        CREATE TABLE IF NOT EXISTS source_import_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          import_id TEXT NOT NULL,
+          candidate_id TEXT NOT NULL DEFAULT '',
+          event_type TEXT NOT NULL,
+          from_status TEXT NOT NULL DEFAULT '',
+          to_status TEXT NOT NULL DEFAULT '',
+          actor TEXT NOT NULL DEFAULT '',
+          payload_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS source_import_events_import_created
+          ON source_import_events(import_id,created_at DESC,id DESC);
+        CREATE INDEX IF NOT EXISTS source_import_events_candidate_created
+          ON source_import_events(candidate_id,created_at DESC,id DESC);
         CREATE TABLE IF NOT EXISTS conversion_events (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           candidate_id TEXT NOT NULL,
@@ -919,6 +992,14 @@ def candidate_id(platform: str, source_id: str | None, url: str) -> str:
     return hashlib.sha256(stable.encode("utf-8")).hexdigest()[:16]
 
 
+def file_sha256(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(chunk_size):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def seen_source_key(source_id: str | None, url: str) -> str:
     source = str(source_id or "").strip()
     if source:
@@ -1188,12 +1269,23 @@ def discover(
     return stats
 
 
-def list_candidates(config: dict[str, Any], status: str | None = None, limit: int = 50) -> list[sqlite3.Row]:
+def list_candidates(
+    config: dict[str, Any], status: str | None = None, limit: int | None = 50
+) -> list[sqlite3.Row]:
     connection = connect_db(config)
     if status:
+        if limit is None:
+            return connection.execute(
+                "SELECT * FROM candidates WHERE status=? ORDER BY score DESC, created_at DESC",
+                (status,),
+            ).fetchall()
         return connection.execute(
             "SELECT * FROM candidates WHERE status=? ORDER BY score DESC, created_at DESC LIMIT ?",
             (status, limit),
+        ).fetchall()
+    if limit is None:
+        return connection.execute(
+            "SELECT * FROM candidates ORDER BY created_at DESC"
         ).fetchall()
     return connection.execute(
         "SELECT * FROM candidates ORDER BY created_at DESC LIMIT ?", (limit,)
@@ -3066,8 +3158,7 @@ def production_design_config(config: dict[str, Any], options: dict[str, Any]) ->
         raw_layers = design.get("layers") if isinstance(design.get("layers"), list) else []
         raw_variants = design.get("variants") if isinstance(design.get("variants"), list) else ["通用版", "FB版"]
         variants = [str(item).strip() for item in raw_variants if str(item).strip() in {"通用版", "FB版"}]
-        if not variants:
-            variants = ["通用版", "FB版"]
+        variants = ["通用版", "FB版"]
         layers: list[dict[str, Any]] = []
         for index, raw in enumerate(raw_layers):
             if not isinstance(raw, dict):
@@ -3607,7 +3698,7 @@ def render_video_remotion_variant(
             design_layers.append(rendered_layer)
         props["designLayers"] = design_layers
     endcard_class = ""
-    if variant == "通用版" and not custom_design_enabled:
+    if variant == "通用版":
         bottom_banner = configured_remotion_asset(config, "bottom_banner")
         props["imgBottomBanner"] = copy_remotion_public_asset(
             bottom_banner, public_dir, f"bottom_banner{bottom_banner.suffix or '.jpg'}"
@@ -3665,13 +3756,13 @@ def render_video_remotion_variant(
         raise RuntimeError("remotion.render_runner must be renderer_api or cli")
     layout = {
         "mode": "external_bottom_banner"
-        if variant == "通用版" and not custom_design_enabled
+        if variant == "通用版"
         else "existing_fb_layout",
         "banner_asset": str(
             (config.get("remotion", {}).get("dual_variant", {}) or {}).get("bottom_banner") or ""
-        ) if variant == "通用版" and not custom_design_enabled else "",
-        "banner_fit": "contain" if variant == "通用版" and not custom_design_enabled else "",
-        "overlays_removed": variant == "通用版" and not custom_design_enabled,
+        ) if variant == "通用版" else "",
+        "banner_fit": "contain" if variant == "通用版" else "",
+        "overlays_removed": variant == "通用版",
     }
     return {
         "variant": variant,
@@ -3679,7 +3770,7 @@ def render_video_remotion_variant(
         "filename": output.name,
         **runner_info,
         "endcard_class": endcard_class,
-        "endcard_count": 1 if variant == "通用版" and not custom_design_enabled else 0,
+        "endcard_count": 1 if variant == "通用版" else 0,
         "layout": layout,
         "duration": media_duration(output),
         "size": output.stat().st_size,
@@ -3768,10 +3859,6 @@ def short_duration_bounds(config: dict[str, Any]) -> tuple[float, float]:
     return max(12.0, minimum), min(60.0, max(minimum, maximum))
 
 
-def short_video_threshold(config: dict[str, Any]) -> float:
-    return max(45.0, min(90.0, float(config.get("edit", {}).get("short_video_threshold_sec", 75))))
-
-
 def source_duration_limit(config: dict[str, Any]) -> float:
     return max(60.0, float(config.get("selection", {}).get("max_source_duration_sec", 1800)))
 
@@ -3841,300 +3928,6 @@ def edge_rate_from_config(config: dict[str, Any]) -> str:
     return f"{percent:+d}%"
 
 
-def whole_source_segment(source_duration: float, strategy: str) -> dict[str, Any]:
-    return {
-        "start": 0.0,
-        "duration": round(source_duration, 3),
-        "highlight_score": 50.0,
-        "highlight_reasons": ["short_source_no_smart_slice"],
-        "signal_scores": {
-            "audio_peak": 0.0, "audio_surge": 0.0, "motion_peak": 0.0,
-            "scene_change": 0.0, "keyword": 0.0, "replay": 0.0,
-        },
-        "strategy": strategy,
-        "fallback": False,
-        "index": 1,
-        "total": 1,
-        "source_start": 0.0,
-        "source_end": round(source_duration, 3),
-    }
-
-
-def short_segments(config: dict[str, Any], source_duration: float, preferred_duration: float) -> list[dict[str, Any]]:
-    """Build YouTube Shorts/TikTok-compatible segment windows.
-
-    A normal source produces one package. Longer sources can produce multiple
-    review packages, capped so a batch remains practical on a local machine.
-    """
-    minimum, maximum = short_duration_bounds(config)
-    target = max(minimum, min(maximum, preferred_duration, source_duration))
-    if source_duration <= maximum + 2.0:
-        return [{"index": 1, "total": 1, "start": 0.0, "duration": max(minimum, min(maximum, source_duration))}]
-
-    edit = config.get("edit", {})
-    max_segments = max(1, int(edit.get("max_segments_per_source", 3)))
-    overlap = max(0.0, float(edit.get("segment_overlap_sec", 3)))
-    stride = max(5.0, target - overlap)
-    possible = max(1, int(math.ceil((source_duration - target) / stride)) + 1)
-    count = min(max_segments, possible)
-    segments = []
-    for index in range(count):
-        if count == 1:
-            start = 0.0
-        else:
-            start = min(max(0.0, source_duration - target), index * stride)
-        duration = min(target, source_duration - start)
-        if duration >= minimum:
-            segments.append({"index": index + 1, "total": count, "start": start, "duration": duration})
-    return segments or [{"index": 1, "total": 1, "start": 0.0, "duration": min(maximum, source_duration)}]
-
-
-def produce_design_overlay_from_base(
-    config: dict[str, Any],
-    row: sqlite3.Row,
-    options: dict[str, Any],
-    progress: Callable[[int, str], None],
-) -> Path:
-    work = workspace_dir(config) / "jobs" / row["id"]
-    work.mkdir(parents=True, exist_ok=True)
-    progress(12, "正在读取服务器成片底视频")
-    candidate_metadata: dict[str, Any] = {}
-    try:
-        candidate_metadata = json.loads(row["metadata_json"] or "{}")
-    except (json.JSONDecodeError, KeyError):
-        pass
-    date_label = candidate_date_label(row)
-    source_label = source_filename_label(str(row["platform"]))
-    batch_label = batch_label_for_output(options) or "文案设计版"
-    filename_source_label = f"{source_label}-{batch_label}"
-    inventory_index = next_inventory_index(config, date_label, filename_source_label)
-    filename_stem = f"{date_label}-{filename_source_label}-{inventory_index}"
-    variant_outputs: list[dict[str, Any]] = []
-    for variant in remotion_output_variants(config):
-        base_video = remotion_design_base_video(config, variant)
-        if base_video is None:
-            raise RuntimeError("文案设计需要先选择一条服务器成片作为底视频")
-        variant_output = work / f"{filename_stem}-{variant}.mp4"
-        progress(32, f"正在基于服务器成片叠加文案设计：{variant}")
-        info = render_video_remotion_variant(
-            config,
-            base_video,
-            variant_output,
-            variant=variant,
-            subtitles=None,
-            job_id=f"{row['id']}-design",
-            candidate_id=row["id"],
-        )
-        info["duration"] = media_duration(variant_output)
-        info["size"] = variant_output.stat().st_size
-        info["source_label"] = source_label
-        info["batch_label"] = batch_label
-        inventory_dir = inventory_root(config) / batch_label / variant / source_label
-        inventory_dir.mkdir(parents=True, exist_ok=True)
-        inventory_path = inventory_dir / variant_output.name
-        shutil.copy2(variant_output, inventory_path)
-        info["inventory_path"] = str(inventory_path)
-        qa_variant = qa_video(variant_output, config)
-        qa_variant["variant"] = variant
-        info["qa"] = qa_variant
-        if not qa_variant["passed"]:
-            raise RuntimeError(f"QA failed for design overlay {variant}: {qa_variant}")
-        variant_outputs.append(info)
-    output = Path(str(variant_outputs[0]["path"]))
-    review_root = workspace_dir(config) / "ready_for_review"
-    package_id = row["id"]
-    review = review_root / package_id
-    review.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(output, review / "video.mp4")
-    for info in variant_outputs:
-        variant_path = Path(str(info["path"]))
-        if variant_path.is_file():
-            shutil.copy2(variant_path, review / variant_path.name)
-    cover = review / "cover.jpg"
-    cover_source = render_cover_image(config, brand_kit(config), output, cover)
-    duration = media_duration(output)
-    metadata = {
-        "job_id": package_id,
-        "keyword": str(candidate_metadata.get("keyword") or ""),
-        "category": str(candidate_metadata.get("category") or ""),
-        "source": {
-            "candidate_id": row["id"],
-            "platform": row["platform"],
-            "url": row["url"],
-            "title": row["title"],
-            "base_video": str(remotion_design_base_video(config, remotion_output_variants(config)[0]) or ""),
-        },
-        "segment": {
-            "index": 1,
-            "total": 1,
-            "start_sec": 0.0,
-            "duration_sec": duration,
-            "highlight_score": 0,
-            "highlight_reasons": ["design_overlay_on_server_output"],
-        },
-        "strategy": {
-            "content_type": "design_overlay",
-            "segment_strategy": "server_output_overlay",
-            "audio_policy": "preserve_output_audio",
-        },
-        "publishing_text": str(candidate_metadata.get("title") or row["title"] or ""),
-        "tracking": tracking_links(config, package_id),
-        "outputs": {
-            "video": str(output),
-            "cover": str(cover),
-            "cover_source": cover_source,
-            "variants": variant_outputs,
-        },
-        "batch_label": batch_label,
-        "rights_status": str(options.get("rights_status") or "MANUAL_REVIEW"),
-        "rights_note": "Design overlay generated from existing server-produced output.",
-        "qa": variant_outputs[0].get("qa", {}),
-        "created_at": now_iso(),
-    }
-    (review / "metadata.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
-    connection = connect_db(config)
-    connection.execute(
-        "UPDATE candidates SET status='READY_FOR_REVIEW',updated_at=? WHERE id=?",
-        (now_iso(), row["id"]),
-    )
-    append_event(connection, row["id"], "READY_FOR_REVIEW", {"package": package_id, "mode": "design_overlay"})
-    connection.commit()
-    storage_result = archive_review_package(config, package_id, review)
-    append_event(connection, row["id"], "SERVER_ARCHIVED", storage_result)
-    progress(100, "文案设计版已基于服务器成片生成")
-    return review
-
-
-def produce_passthrough_review_package(
-    config: dict[str, Any],
-    row: sqlite3.Row,
-    media: Path,
-    metadata: dict[str, Any],
-    localization_profile: dict[str, Any],
-    source_outro_detection: dict[str, Any],
-    strategy: Any,
-    compliance: dict[str, Any],
-    progress: Callable[[int, str], None],
-) -> Path:
-    progress(62, "第 2 类素材：无中文字幕/中文声音，直接保留原视频")
-    review_root = workspace_dir(config) / "ready_for_review"
-    review = review_root / row["id"]
-    review.mkdir(parents=True, exist_ok=True)
-    output = review / "video.mp4"
-    shutil.copy2(media, output)
-    cover = review / "cover.jpg"
-    cover_source = render_cover_image(config, brand_kit(config), output, cover)
-    duration = media_duration(output)
-    width, height = media_dimensions(output)
-    qa = qa_video(output, config)
-    minimum_duration, _maximum_duration = short_duration_bounds(config)
-    if (
-        duration < minimum_duration
-        and qa.get("playable")
-        and width >= 360
-        and height >= 360
-    ):
-        qa["passed"] = True
-        qa["passthrough_reason"] = "source_shorter_than_output_minimum"
-    links = tracking_links(config, row["id"])
-    variant_outputs = [{
-        "variant": "原视频",
-        "path": str(output),
-        "filename": output.name,
-        "duration": duration,
-        "size": output.stat().st_size,
-        "source_label": source_filename_label(str(row["platform"])),
-        "mobile_format": {
-            "applied": False,
-            "mode": "passthrough_original",
-            "source_width": width,
-            "source_height": height,
-        },
-        "batch_label": "",
-        "qa": qa,
-    }]
-    metadata_payload = {
-        "job_id": row["id"],
-        "source_job_id": row["id"],
-        "keyword": str(metadata.get("keyword") or ""),
-        "category": str(metadata.get("category") or ""),
-        "source": {"platform": row["platform"], "url": row["url"], "title": row["title"]},
-        "content_type": strategy.content_type,
-        "content_type_confidence": strategy.content_type_confidence,
-        "matched_rules": list(strategy.matched_rules),
-        "segment_strategy": "passthrough_original",
-        "audio_policy": "preserve_output_audio",
-        "operator_override": strategy.operator_override,
-        "ptbr_script": "",
-        "youtube": {
-            "title": str(row["title"])[:100],
-            "description": f"{str(row['description'] or '')[:500]}\n\n▶ {links['youtube']}",
-            "hashtags": ["JaguarTV", "Brasil"],
-            "cta_url": links["youtube"],
-        },
-        "tiktok": {"caption": str(row["title"])[:220], "hashtags": ["JaguarTV"], "cta_url": links["tiktok"]},
-        "kwai": {"caption": str(row["title"])[:220], "hashtags": ["JaguarTV"], "cta_url": links["kwai"]},
-        "facebook": {
-            "text": f"{str(row['description'] or row['title'])[:500]}\n\n▶ {links['facebook']}",
-            "hashtags": ["JaguarTV"],
-            "cta_url": links["facebook"],
-        },
-        "brand_kit": brand_kit(config)["_name"],
-        "brand_assets": {"cover_source": cover_source, "watermark": "", "endcard": ""},
-        "output_variants": variant_outputs,
-        "render_engine": "passthrough",
-        "reaction": {"mode": "none"},
-        "compliance": compliance,
-        "tracking_links": links,
-        "audio": {
-            "mode": "preserve_source",
-            "reason": f"localization_class_2:{localization_profile.get('reason')}",
-            "source_audio_removed": False,
-            "source_audio_preserved": True,
-            "voice": "",
-            "bgm": "",
-            "bgm_source": "source_music",
-        },
-        "localization_profile": localization_profile,
-        "visual_cleanup": {
-            "layout_mode": "passthrough_original",
-            "source_subtitle_mode": "off",
-            "source_subtitle_crop_bottom_ratio": 0,
-            "ocr": {"used": False, "regions": [], "reason": "class_2_passthrough", "media": str(output)},
-        },
-        "source_outro_trim": source_outro_detection,
-        "source_outro_trim_summary": review_source_outro_summary(source_outro_detection),
-        "qa": qa,
-    }
-    (review / "metadata.json").write_text(json.dumps(metadata_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    (review / "review.json").write_text(
-        json.dumps({"decision": "pending", "note": "", "reviewed_at": ""}, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    manifest = {
-        "job_id": row["id"],
-        "status": "READY_FOR_REVIEW",
-        "created_at": now_iso(),
-        "mode": "passthrough_original",
-        "assets": {"source": str(media), "reviews": [str(review)]},
-        "localization_profile": localization_profile,
-        "qa": [qa],
-        "source_outro_trim": source_outro_detection,
-    }
-    work = workspace_dir(config) / "jobs" / row["id"]
-    (work / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-    storage_result = archive_review_package(config, row["id"], review)
-    connection = connect_db(config)
-    connection.execute(
-        "UPDATE candidates SET status='READY_FOR_REVIEW',metadata_json=?,updated_at=? WHERE id=?",
-        (json.dumps(metadata_payload, ensure_ascii=False), now_iso(), row["id"]),
-    )
-    append_event(connection, row["id"], "READY_FOR_REVIEW", manifest)
-    append_event(connection, row["id"], "SERVER_ARCHIVED", storage_result)
-    connection.commit()
-    progress(100, "第 2 类原视频审核包已生成")
-    return review
-
-
 def produce_candidate(
     config: dict[str, Any], row: sqlite3.Row,
     progress_callback: Callable[[int, str], None] | None = None,
@@ -4148,17 +3941,45 @@ def produce_candidate(
     require_binary("ffprobe")
     options = options or {}
     config = production_design_config(config, options)
-    custom_design = ((config.get("remotion", {}) or {}).get("custom_design", {}) or {})
-    if custom_design.get("enabled") and (
-        custom_design.get("base_video_path") or custom_design.get("base_asset_id") or custom_design.get("base_asset_ids")
-    ):
-        return produce_design_overlay_from_base(config, row, options, progress)
+    production_run_id = str(options.get("_production_run_id") or "").strip()
+    owns_production_run = not production_run_id
+    if owns_production_run:
+        production_run_id = hashlib.sha256(
+            f"direct\x1f{row['id']}\x1f{now_iso()}".encode("utf-8")
+        ).hexdigest()[:24]
+        timestamp = now_iso()
+        connection = connect_db(config)
+        connection.execute(
+            """
+            INSERT INTO production_runs(
+              id,candidate_id,trigger_source,idempotency_key,contract_version,contract_hash,
+              status,stage,options_json,created_at,updated_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                production_run_id, row["id"], "test", f"direct:{production_run_id}",
+                "candidate-production-v1", "direct", "RUNNING", "INPUT_VALIDATION",
+                json.dumps({}, ensure_ascii=False), timestamp, timestamp,
+            ),
+        )
+        connection.execute(
+            "UPDATE candidates SET status='PRODUCTION_RUNNING',updated_at=? WHERE id=?",
+            (timestamp, row["id"]),
+        )
+        connection.commit()
     progress(5, "正在读取源素材")
     work = workspace_dir(config) / "jobs" / row["id"]
+    work.mkdir(parents=True, exist_ok=True)
     media = next((path for path in work.glob("source.*") if path.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov"}), None)
+    custom_design = ((config.get("remotion", {}) or {}).get("custom_design", {}) or {})
+    if not media and custom_design.get("enabled"):
+        design_base = remotion_design_base_video(config, "通用版") or remotion_design_base_video(config, "FB版")
+        if design_base and design_base.is_file():
+            media = work / f"source{design_base.suffix.lower() or '.mp4'}"
+            shutil.copy2(design_base, media)
     if not media:
         raise RuntimeError(f"No downloaded media for {row['id']}")
-    original_media = media
+    original_media = media.resolve()
     try:
         candidate_metadata = json.loads(row["metadata_json"] or "{}")
     except (json.JSONDecodeError, KeyError):
@@ -4201,23 +4022,6 @@ def produce_candidate(
     audio_mode = render_audio_mode(strategy.audio_policy)
     localization_profile = localization_profile_for_candidate(row, candidate_metadata, work, media, config)
     audio_override = str(options.get("audio_policy") or "auto").strip().lower() != "auto"
-    if (
-        not audio_override
-        and localization_class_id(localization_profile) == 2
-        and bool(config.get("edit", {}).get("passthrough_clean_sources", True))
-        and reaction.mode == "none"
-    ):
-        return produce_passthrough_review_package(
-            config,
-            row,
-            original_media,
-            candidate_metadata,
-            localization_profile,
-            source_outro_detection,
-            strategy,
-            compliance,
-            progress,
-        )
     if not audio_override:
         audio_mode = str(localization_profile["audio_mode"])
     transcript = ""
@@ -4326,20 +4130,18 @@ def produce_candidate(
     enforce_dual_variant_remotion(config)
     transcript_file = next(iter(sorted([*work.glob("source*.srt"), *work.glob("source*.vtt")])), None)
     custom_design = ((config.get("remotion", {}) or {}).get("custom_design", {}) or {})
-    if bool(custom_design.get("enabled")) and bool(custom_design.get("whole_source")):
-        segments = [whole_source_segment(source_duration, "whole_source_design")]
-    elif source_duration <= short_video_threshold(config):
-        segment_duration = min(source_duration, max(float(short_duration_bounds(config)[1]), preferred_duration))
-        segments = [whole_source_segment(segment_duration, strategy.segment_strategy)]
-    else:
-        segments = analyze_video(
-            media,
-            source_duration=source_duration,
-            max_segments=strategy.max_segments,
-            max_duration=min(strategy.max_duration, preferred_duration),
-            strategy=strategy.segment_strategy,
-            transcript_path=transcript_file,
-        )
+    segments = analyze_video(
+        media,
+        source_duration=source_duration,
+        max_segments=strategy.max_segments,
+        max_duration=min(strategy.max_duration, preferred_duration),
+        strategy=strategy.segment_strategy,
+        transcript_path=transcript_file,
+    )
+    if not segments or any(bool(segment.get("fallback")) for segment in segments):
+        from .production import SliceAnalysisError
+
+        raise SliceAnalysisError("smart analysis did not produce a qualified slice; manual slicing is required")
     (work / "analysis.json").write_text(
         json.dumps({"strategy": strategy.to_dict(), "segments": segments}, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -4353,13 +4155,11 @@ def produce_candidate(
     reviews: list[Path] = []
     qa_results: list[dict[str, Any]] = []
     review_root = workspace_dir(config) / "ready_for_review"
-    stale_single_review = review_root / row["id"]
-    if len(segments) > 1 and stale_single_review.exists():
-        shutil.rmtree(stale_single_review)
-    if len(segments) == 1:
-        for stale_part in review_root.glob(f"{row['id']}_part*"):
-            if stale_part.is_dir():
-                shutil.rmtree(stale_part)
+    staging_root = workspace_dir(config) / "production_staging" / production_run_id
+    if staging_root.exists():
+        shutil.rmtree(staging_root)
+    staging_root.mkdir(parents=True, exist_ok=True)
+    package_records: list[dict[str, Any]] = []
     for segment in segments:
         segment_index = int(segment["index"])
         segment_total = int(segment["total"])
@@ -4503,9 +4303,7 @@ def produce_candidate(
                 info["duration"] = media_duration(variant_output)
                 info["size"] = variant_output.stat().st_size
                 inventory_dir = inventory_root(config) / batch_label / variant / source_label if batch_label else inventory_root(config) / variant / source_label
-                inventory_dir.mkdir(parents=True, exist_ok=True)
                 inventory_path = inventory_dir / variant_output.name
-                shutil.copy2(variant_output, inventory_path)
                 qa_variant = qa_video(variant_output, config)
                 qa_variant["variant"] = variant
                 info.update({
@@ -4576,13 +4374,25 @@ def produce_candidate(
         )
         if not qa["passed"]:
             raise RuntimeError(f"QA failed for {package_id}: {qa}")
-        review = review_root / package_id
+        final_review = review_root / package_id
+        review = staging_root / package_id
         review.mkdir(parents=True, exist_ok=True)
         shutil.copy2(output, review / "video.mp4")
+        persisted_outputs: list[dict[str, Any]] = []
+        gate_outputs: list[dict[str, Any]] = []
         for info in variant_outputs:
             variant_path = Path(str(info["path"]))
             if variant_path.is_file():
-                shutil.copy2(variant_path, review / variant_path.name)
+                staged_variant = review / variant_path.name
+                shutil.copy2(variant_path, staged_variant)
+                final_variant = final_review / variant_path.name
+                persisted = {**info, "path": str(final_variant), "filename": variant_path.name}
+                persisted_outputs.append(persisted)
+                gate_outputs.append({**persisted, "path": str(staged_variant)})
+        from .production import validate_output_pair
+
+        slice_id = f"{production_run_id}:slice:{segment_index:02d}"
+        validate_output_pair(config, original_media, slice_id, gate_outputs)
         cover = review / "cover.jpg"
         active_kit = brand_kit(config)
         cover_source = render_cover_image(config, active_kit, output, cover)
@@ -4601,6 +4411,7 @@ def produce_candidate(
             "audio_policy": strategy.audio_policy,
             "operator_override": strategy.operator_override,
             "segment": {
+                "slice_id": slice_id,
                 "index": segment_index,
                 "total": segment_total,
                 "start_sec": segment["start"],
@@ -4633,7 +4444,9 @@ def produce_candidate(
                 "watermark": str(brand_kit(config).get("watermark", {}).get("image") or ""),
                 "endcard": str(brand_kit(config).get("endcard", {}).get("image") or ""),
             },
-            "output_variants": variant_outputs,
+            "production_contract": "candidate-production-v1",
+            "production_run_id": production_run_id,
+            "output_variants": persisted_outputs,
             "hyperframes_package": hyperframes_package,
             "render_engine": render_engine,
             "reaction": reaction.to_dict(),
@@ -4663,30 +4476,55 @@ def produce_candidate(
         (review / "review.json").write_text(
             json.dumps({"decision": "pending", "note": "", "reviewed_at": ""}, ensure_ascii=False, indent=2), encoding="utf-8"
         )
-        storage_result = archive_review_package(config, package_id, review)
-        append_event(connect_db(config), row["id"], "SERVER_ARCHIVED", storage_result)
-        reviews.append(review)
-
-        if segment_total > 1:
-            conn = connect_db(config)
-            child_title = f"{row['title']} (Slice {segment_index})"
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO candidates
-                (id, parent_id, platform, source_id, url, title, description, duration, status, metadata_json, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'READY_FOR_REVIEW', ?, ?, ?)
-                """,
-                (
-                    package_id, row["id"], row["platform"], f"{row['source_id']}_slice{segment_index}",
-                    row["url"], child_title, row["description"], segment["duration"],
-                    json.dumps(metadata, ensure_ascii=False), now_iso(), now_iso()
-                )
-            )
-            conn.commit()
+        package_records.append({
+            "package_id": package_id,
+            "slice_id": slice_id,
+            "segment": dict(segment),
+            "metadata": metadata,
+            "staged_review": review,
+            "final_review": final_review,
+            "outputs": persisted_outputs,
+        })
 
     progress(94, "质量检查通过，正在打包")
+    quarantine_root = workspace_dir(config) / "review_quarantine" / f"pre-{production_run_id}"
+    moved_existing: list[tuple[Path, Path]] = []
+    try:
+        for record in package_records:
+            staged_review = Path(record["staged_review"])
+            final_review = Path(record["final_review"])
+            final_review.parent.mkdir(parents=True, exist_ok=True)
+            if final_review.exists():
+                quarantine_root.mkdir(parents=True, exist_ok=True)
+                quarantined = quarantine_root / final_review.name
+                if quarantined.exists():
+                    shutil.rmtree(quarantined)
+                final_review.replace(quarantined)
+                moved_existing.append((quarantined, final_review))
+            staged_review.replace(final_review)
+            reviews.append(final_review)
+            for output_info in record["outputs"]:
+                final_output = Path(str(output_info["path"]))
+                inventory_path = Path(str(output_info.get("inventory_path") or ""))
+                if inventory_path:
+                    inventory_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(final_output, inventory_path)
+            storage_result = archive_review_package(config, str(record["package_id"]), final_review)
+            record["storage_result"] = storage_result
+    except Exception:
+        for record in package_records:
+            final_review = Path(record["final_review"])
+            if final_review.exists():
+                shutil.rmtree(final_review)
+        for quarantined, original in reversed(moved_existing):
+            if quarantined.exists():
+                quarantined.replace(original)
+        raise
+
     manifest = {
-        "job_id": row["id"], "status": "READY_FOR_REVIEW", "created_at": now_iso(),
+        "job_id": row["id"], "status": "OUTPUTS_COMPLETE", "created_at": now_iso(),
+        "production_contract": "candidate-production-v1",
+        "production_run_id": production_run_id,
         "assets": {
             "source": str(media),
             "original_source": str(original_media),
@@ -4709,8 +4547,121 @@ def produce_candidate(
     }
     (work / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     connection = connect_db(config)
-    connection.execute("UPDATE candidates SET status='READY_FOR_REVIEW',updated_at=? WHERE id=?", (now_iso(), row["id"]))
-    append_event(connection, row["id"], "READY_FOR_REVIEW", manifest)
+    timestamp = now_iso()
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        connection.execute(
+            "DELETE FROM production_outputs WHERE production_run_id=?",
+            (production_run_id,),
+        )
+        connection.execute(
+            "DELETE FROM production_slices WHERE production_run_id=?",
+            (production_run_id,),
+        )
+        for record in package_records:
+            segment = record["segment"]
+            slice_id = str(record["slice_id"])
+            connection.execute(
+                """
+                INSERT INTO production_slices(
+                  id,production_run_id,candidate_id,slice_index,start_sec,end_sec,duration_sec,
+                  status,analysis_json,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    slice_id, production_run_id, row["id"], int(segment["index"]),
+                    float(segment["start"]), float(segment["start"]) + float(segment["duration"]),
+                    float(segment["duration"]), "COMPLETED",
+                    json.dumps(segment, ensure_ascii=False), timestamp, timestamp,
+                ),
+            )
+            for output_info in record["outputs"]:
+                output_path = Path(str(output_info["path"])).resolve()
+                qa_payload = output_info.get("qa") if isinstance(output_info.get("qa"), dict) else {}
+                variant = str(output_info["variant"])
+                output_id = f"{slice_id}:{'generic' if variant == '通用版' else 'facebook'}"
+                connection.execute(
+                    """
+                    INSERT INTO production_outputs(
+                      id,production_run_id,slice_id,candidate_id,variant,status,path,sha256,
+                      source_sha256,size_bytes,duration_sec,width,height,fps,has_video,has_audio,
+                      render_job_id,endcard_count,layout_json,qa_json,created_at,updated_at
+                    ) VALUES(?,?,?,?,?,'COMPLETED',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        output_id, production_run_id, slice_id, row["id"], variant,
+                        str(output_path), file_sha256(output_path),
+                        file_sha256(original_media), output_path.stat().st_size,
+                        float(qa_payload.get("duration") or output_info.get("duration") or 0),
+                        int(qa_payload.get("width") or 0), int(qa_payload.get("height") or 0),
+                        float(qa_payload.get("fps") or 0), int(bool(qa_payload.get("has_video", True))),
+                        int(bool(qa_payload.get("has_audio", True))), str(output_info.get("render_job_id") or ""),
+                        int(output_info.get("endcard_count") or 0),
+                        json.dumps(output_info.get("layout") or {}, ensure_ascii=False),
+                        json.dumps(qa_payload, ensure_ascii=False), timestamp, timestamp,
+                    ),
+                )
+            if int(segment["total"]) > 1:
+                metadata = record["metadata"]
+                package_id = str(record["package_id"])
+                child_title = f"{row['title']} (Slice {int(segment['index'])})"
+                connection.execute(
+                    """
+                    INSERT OR REPLACE INTO candidates(
+                      id,parent_id,platform,source_id,url,title,description,duration,status,
+                      metadata_json,created_at,updated_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        package_id, row["id"], row["platform"],
+                        f"{row['source_id']}_slice{int(segment['index'])}", row["url"], child_title,
+                        row["description"], float(segment["duration"]), "PRODUCTION_STAGED",
+                        json.dumps(metadata, ensure_ascii=False), timestamp, timestamp,
+                    ),
+                )
+        parent_metadata = dict(candidate_metadata)
+        parent_metadata["production"] = {
+            "contract": "candidate-production-v1",
+            "run_id": production_run_id,
+            "slice_ids": [str(record["slice_id"]) for record in package_records],
+            "packages": [str(record["package_id"]) for record in package_records],
+        }
+        connection.execute(
+            "UPDATE candidates SET status='PRODUCTION_RUNNING',metadata_json=?,updated_at=? WHERE id=?",
+            (json.dumps(parent_metadata, ensure_ascii=False), timestamp, row["id"]),
+        )
+        connection.execute(
+            "UPDATE production_runs SET status='OUTPUTS_COMPLETE',stage='QUALITY_GATE',updated_at=? WHERE id=?",
+            (timestamp, production_run_id),
+        )
+        append_event(connection, row["id"], "PRODUCTION_OUTPUTS_COMPLETE", manifest, commit=False)
+        for record in package_records:
+            append_event(
+                connection,
+                row["id"],
+                "SERVER_ARCHIVED",
+                record.get("storage_result") or {},
+                commit=False,
+            )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    if owns_production_run:
+        from .production import assert_candidate_ready_for_review
+
+        gate = assert_candidate_ready_for_review(config, row["id"], run_id=production_run_id)
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            "UPDATE production_runs SET status='SUCCEEDED',stage='READY_FOR_REVIEW',updated_at=? WHERE id=?",
+            (now_iso(), production_run_id),
+        )
+        connection.execute(
+            "UPDATE candidates SET status='READY_FOR_REVIEW',updated_at=? WHERE id=? OR parent_id=?",
+            (now_iso(), row["id"], row["id"]),
+        )
+        append_event(connection, row["id"], "READY_FOR_REVIEW", {"run_id": production_run_id, "gate": gate}, commit=False)
+        connection.commit()
     progress(100, "审核包已生成")
     return reviews[0]
 
@@ -4745,17 +4696,16 @@ def analyze_candidate(
             f"source duration {source_duration:.1f}s exceeds max_source_duration_sec={source_duration_limit(config):.0f}"
         )
     transcript_file = next(iter(sorted([*work.glob("source*.srt"), *work.glob("source*.vtt")])), None)
-    if source_duration <= short_video_threshold(config):
-        segments = [whole_source_segment(min(source_duration, strategy.max_duration), strategy.segment_strategy)]
-    else:
-        segments = analyze_video(
-            media,
-            source_duration=source_duration,
-            max_segments=strategy.max_segments,
-            max_duration=strategy.max_duration,
-            strategy=strategy.segment_strategy,
-            transcript_path=transcript_file,
-        )
+    segments = analyze_video(
+        media,
+        source_duration=source_duration,
+        max_segments=strategy.max_segments,
+        max_duration=strategy.max_duration,
+        strategy=strategy.segment_strategy,
+        transcript_path=transcript_file,
+    )
+    if not segments or any(bool(segment.get("fallback")) for segment in segments):
+        raise RuntimeError("smart analysis did not produce a qualified slice; manual slicing is required")
     result = {
         "candidate_id": row["id"],
         "media": str(media),
@@ -4792,6 +4742,8 @@ def produce_top(
     progress_callback: Callable[[int, str], None] | None = None,
     options: dict[str, Any] | None = None,
 ) -> dict[str, int]:
+    from .production import CandidateProductionService
+
     connection = connect_db(config)
     if candidate:
         rows = connection.execute("SELECT * FROM candidates WHERE id=?", (candidate,)).fetchall()
@@ -4800,19 +4752,20 @@ def produce_top(
             "SELECT * FROM candidates WHERE status IN ('DOWNLOADED','PRODUCTION_FAILED') ORDER BY score DESC LIMIT ?", (limit,)
         ).fetchall()
     stats = {"selected": len(rows), "produced": 0, "failed": 0}
+    service = CandidateProductionService(config)
+    requested_options = dict(options or {})
+    trigger_source = str(requested_options.pop("trigger_source", "cli") or "cli")
     for row in rows:
         try:
-            produce_candidate(config, row, progress_callback=progress_callback, options=options)
+            service.run(
+                str(row["id"]),
+                trigger_source=trigger_source,
+                options=requested_options,
+                progress_callback=progress_callback,
+            )
             stats["produced"] += 1
         except Exception as error:
             stats["failed"] += 1
-            blocked = isinstance(error, PermissionError) and str(error).startswith("BLOCKED_RIGHTS")
-            status = "BLOCKED_RIGHTS" if blocked else "PRODUCTION_FAILED"
-            if not blocked and candidate_has_review_outputs(config, row["id"]):
-                status = "READY_FOR_REVIEW"
-            connection.execute("UPDATE candidates SET status=?,updated_at=? WHERE id=?", (status, now_iso(), row["id"]))
-            event_type = "PRODUCTION_PARTIAL_FAILED" if status == "READY_FOR_REVIEW" else status
-            append_event(connection, row["id"], event_type, {"error": str(error)})
             print(f"WARN produce {row['id']}: {error}")
     return stats
 

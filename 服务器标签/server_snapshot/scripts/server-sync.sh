@@ -48,6 +48,11 @@ echo "==> Updating Python package"
 "$PYTHON_BIN" -m pip install --upgrade pip setuptools wheel
 "$PYTHON_BIN" -m pip install -e "$APP_DIR[test]"
 
+if [[ -f "$APP_DIR/workspace/factory.db" ]]; then
+  echo "==> Applying compatible database migration"
+  "$PYTHON_BIN" "$APP_DIR/scripts/migrate_db.py" "$APP_DIR/workspace/factory.db" --verify-rollback
+fi
+
 echo "==> Updating Node helper packages"
 npm --prefix "$APP_DIR" install --no-audit --no-fund
 npm --prefix "$APP_DIR/src/jaguartv_factory/remotion_template" install --no-audit --no-fund
@@ -75,6 +80,7 @@ npm --prefix "$APP_DIR" run build
 
 echo "==> Restarting service"
 bash "$APP_DIR/scripts/install-source-services.sh"
+bash "$APP_DIR/scripts/install-youtube-analytics-worker.sh"
 sudo systemctl restart "$SERVICE_NAME"
 sudo systemctl status "$SERVICE_NAME" --no-pager
 

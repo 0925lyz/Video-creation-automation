@@ -2,7 +2,7 @@ run:
   timezone: Asia/Shanghai
   output_language: pt-BR
   workspace: workspace
-  timeout_sec: 360
+  timeout_sec: 900
   source_search_timeout_sec: 90
   source_download_timeout_sec: 300
 
@@ -96,7 +96,6 @@ source_outro_trim:
 edit:
   render_engine: remotion           # dual-variant overlays/endcards require Remotion
   output_duration_sec: [12, 60]
-  short_video_threshold_sec: 75       # <= about 1 minute: keep full video, no smart slicing
   max_segments_per_source: 3
   segment_overlap_sec: 3
   layout_mode: original            # original | vertical
@@ -106,22 +105,26 @@ edit:
   ocr_backend: auto                    # auto | tesseract | paddleocr
   source_subtitle_crop_bottom_ratio: 0.18
   ocr_use_fallback_regions: false
-  ocr_auto_lower_third_fallback: true
+  ocr_auto_lower_third_fallback: false
   ocr_lower_third_fallback_regions:
     - [0.04, 0.04, 0.42, 0.20]
     - [0.0, 0.68, 1.0, 0.96]
-  ocr_blur_sigma: 28
+  ocr_blur_sigma: 52
   default_segment_strategy: auto
 
 localization:
   target: pt-BR
-  asr_enabled: false
-  whisper_model: tiny
+  asr_enabled: true
+  chinese_audio_detection_enabled: true
+  chinese_audio_detection_model: tiny
+  chinese_audio_threshold: 3
+  whisper_model: small
   voice_enabled: true                  # only Bilibili/Douyin Chinese narration is replaced with pt-BR voice
   tts_provider: auto                 # edge -> local system voice fallback
   edge_tts_voice: pt-BR-AntonioNeural # energetic Brazilian Portuguese male voice
   speech_style: excited_sports_male
-  preserve_backing_track: false     # true requires optional Demucs install
+  preserve_backing_track: true      # Bilibili/Douyin localized clips must keep separated no-vocals backing
+  require_backing_track: true
   tts_voice: energetic_male
   tts_rate: 1.08
   # Hook variants for A/B testing; tracking.hook_version selects the active one
@@ -159,7 +162,7 @@ audio:
   bgm_path: ""
 
 remotion:
-  render_runner: renderer_api
+  render_runner: cli
   promo_duration_sec: 1.5
   overlay_max_width_ratio: 0.18
   mobile_overlay_left_width_ratio: 0.22
@@ -172,6 +175,7 @@ remotion:
     facebook_label: FB版
     tu_yi: assets/brand/overlay_tu_yi.jpg
     tu_er: assets/brand/overlay_tu_er.png
+    bottom_banner: assets/brand/generic_bottom_banner.jpg
     lv_tu: assets/brand/endcard_portrait_green_v2.png
     lan_tu: assets/brand/endcard_landscape_blue_v2.png
   add_bgm_under_source: false
@@ -182,9 +186,9 @@ remotion:
     variants: [通用版]
     position: bottom
     max_width_ratio: 0.82
-    font_size_ratio: 0.044
+    font_size_ratio: 0.052
     background_opacity: 0.74
-    max_lines: 3
+    max_lines: 2
     text_color: "#ffffff"
     background_color: "#050505"
     accent_color: "#f2d14b"
@@ -244,9 +248,39 @@ brand:
           - ["Futebol Total", "Canais premium 100% liberados"]
           - ["Sinal Raiz", "Servidores dedicados, sem intermediários"]
 
+publishing:
+  enabled: true
+  timezone: America/Sao_Paulo
+  youtube_category_accounts:
+    足球类: jaguartv_vivo
+  accounts:
+    jaguartv_vivo:
+      platform: youtube
+      label: jaguartv vivo
+      channel_id: UC8gCZXc5wbnjuZeco7qbKug
+      channel_key: 8gCZXc5wbnjuZeco7qbKug
+      authorized_email: miirandapache@gmail.com
+      daily_limit: 3
+      schedule_times:
+        - "11:00"
+        - "15:30"
+        - "19:00"
+      allowed_source_platforms:
+        - tiktok
+        - douyin
+        - facebook
+        - bilibili
+      blocked_source_platforms:
+        - youtube
+      content_tags:
+        - 足球类
+      default_privacy_status: public
+      enabled: true
+
 storage:
   provider: factory_server
   root: workspace/server_media
+  poster_subdir: posters
   public_base_url: https://factory.jarg.top/media
   remote_review_host: 43.134.128.197
   remote_review_user: ubuntu
@@ -286,3 +320,9 @@ tracking:
   utm_medium: organic_social
   campaign: hoje_sports
   hook_version: A
+
+youtube_analytics:
+  poll_interval_minutes: 60
+  channel_import_interval_minutes: 5
+  batch_size: 50
+  backfill_rate_limit_per_minute: 6

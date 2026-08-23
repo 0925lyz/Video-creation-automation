@@ -69,9 +69,27 @@
       <div id="taskProgressPanel" class="task-progress-panel" hidden></div>
       <div class="toolbar">
         <div class="segmented" id="statusFilters">
-          <button class="active" data-status="">全部</button><button data-status="DISCOVERED">待筛选</button><button data-status="DOWNLOADED">待制作</button><button data-status="READY_FOR_REVIEW">待审核</button><button data-status="APPROVED">审核通过</button><button data-status="DOWNLOAD_FAILED">下载失败</button><button data-status="PRODUCTION_FAILED">制作失败</button>
+          <button class="active" data-status="">全部</button><button data-status="DISCOVERED">待筛选</button><button data-status="DOWNLOADED">待制作</button><button data-status="READY_FOR_REVIEW">待审核</button><button data-status="APPROVED">审核通过</button><button data-status="IMPORT_FAILED">导入失败</button><button data-status="DOWNLOAD_FAILED">下载失败</button><button data-status="PRODUCTION_FAILED">制作失败</button>
         </div>
         <span class="muted" id="inventoryCount"></span>
+      </div>
+      <div class="inventory-source-toolbar">
+        <div class="segmented" id="sourceFilters" aria-label="来源筛选">
+          <button class="active" data-source-type="" type="button">全部来源 <span id="allSourceCount">0</span></button>
+          <button data-source-type="source_import" type="button">导入视频 <span id="sourceImportCount">0</span></button>
+        </div>
+        <label class="compact-select">来源平台
+          <select id="inventoryPlatformFilter">
+            <option value="">全部平台</option>
+            <option value="youtube">YouTube</option>
+            <option value="bilibili">Bilibili</option>
+            <option value="douyin">抖音</option>
+            <option value="xiaohongshu">小红书</option>
+            <option value="tiktok">TikTok</option>
+            <option value="facebook">Facebook</option>
+            <option value="server_upload">本地上传</option>
+          </select>
+        </label>
       </div>
       <div class="category-filter-bar" id="categoryFilters" aria-label="初步分类筛选"></div>
       <div class="batch-toolbar">
@@ -79,7 +97,12 @@
         <span id="selectionCount">已选 0 条</span>
         <div class="batch-actions"><button class="secondary-button" id="batchDownload" type="button" disabled>批量下载</button><button class="secondary-button" id="batchProduce" type="button" disabled>批量制作</button><button class="secondary-button danger-button" id="batchDelete" type="button" disabled>删除所选</button></div>
       </div>
-      <div class="table-wrap inventory-table"><table><thead><tr><th class="check-column"></th><th>内容</th><th>平台</th><th>类型 / 策略</th><th>精彩度</th><th>评分</th><th>状态</th><th>更新时间</th><th></th></tr></thead><tbody id="inventoryTable"></tbody></table></div>
+      <div class="table-wrap inventory-table"><table><thead><tr><th class="check-column"></th><th>内容</th><th>平台</th><th>类型 / 策略</th><th>导入 / 目标</th><th>精彩度</th><th>评分</th><th>实际状态</th><th>更新时间</th><th></th></tr></thead><tbody id="inventoryTable"></tbody></table></div>
+      <div class="inventory-pagination" id="inventoryPagination" hidden>
+        <button class="secondary-button" id="inventoryPreviousPage" type="button">上一页</button>
+        <span class="muted" id="inventoryPageSummary"></span>
+        <button class="secondary-button" id="inventoryNextPage" type="button">下一页</button>
+      </div>
     </section>
 
     <section class="view" id="view-posters">
@@ -423,6 +446,15 @@
         <label>上传源视频<input id="discoverUploadFile" type="file" accept="video/mp4,video/quicktime,video/webm,.mkv,.m4v"></label>
         <div class="upload-progress compact-progress" id="discoverUploadProgress" hidden><div><span id="discoverUploadMessage">准备上传</span><strong id="discoverUploadPercent">0%</strong></div><div class="progress-track"><span id="discoverUploadBar" style="width:0%"></span></div></div>
       </div>
+      <fieldset class="import-target-field" id="discoverTargetField">
+        <legend>下载后放入</legend>
+        <div class="target-segmented" role="radiogroup" aria-label="下载后放入">
+          <label><input type="radio" name="discoverTarget" value="pending_production" checked><span>待制作</span></label>
+          <label id="discoverApprovedTarget"><input type="radio" name="discoverTarget" value="approved"><span>审核通过</span></label>
+        </div>
+        <p class="dialog-note warning-note" id="discoverApprovalWarning" hidden>该文件将作为已完成成片直接进入审核通过，不再执行智能切片和双版本制作。请确认导入的不是待二创原始素材。</p>
+        <p class="dialog-note" id="discoverApprovalPermission" hidden>当前账号没有直接导入审核通过成片的后台权限。</p>
+      </fieldset>
       <p class="dialog-note" id="discoverPlatformNote">粘贴单条视频 URL 后会进入待筛选；超过 30 分钟的素材只允许删除，不会进入下载制作。</p>
       <div class="dialog-actions"><button class="secondary-button" id="cancelDiscoverDialog" type="button">取消</button><button class="primary-button" id="submitDiscovery" type="submit">开始运行</button></div>
     </form>
@@ -534,6 +566,6 @@
   </dialog>
 
   <div class="toast" id="toast" role="status"></div>
-  <script src="/app.js?v=20260822-poster-import-v1"></script>
+  <script src="/app.js?v=20260822-source-import-v1"></script>
 </body>
 </html>

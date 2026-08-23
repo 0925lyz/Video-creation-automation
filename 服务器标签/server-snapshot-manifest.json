@@ -1,517 +1,679 @@
 {
-  "name": "服务器标签功能包",
-  "version": "2026-08-15-category-labels-v2",
-  "generated_at": "2026-08-18T17:18:36.134131+00:00",
-  "source": "JaguarTV Content Factory local/server synchronized snapshot",
-  "folder": "服务器标签",
-  "file_count": 98,
-  "excluded": [
-    ".env and environment secrets",
-    "workspace/factory.db and runtime SQLite files",
-    "downloaded source videos and rendered media",
-    "browser/session cookies and OAuth refresh-token database rows",
-    "SSH private keys and local-only config/pipeline.yaml",
-    "node_modules, .venv, caches, and __pycache__"
-  ],
-  "entry_points": [
-    "server_snapshot/src/jaguartv_factory/dashboard.py",
-    "server_snapshot/src/jaguartv_factory/web/app.js",
-    "server_snapshot/src/jaguartv_factory/web/index.html",
-    "server_snapshot/scripts/server-install.sh",
-    "server_snapshot/scripts/server-deploy.sh",
-    "scripts/import_daily_keywords.py",
-    "data/category_labels.json"
+  "name": "服务器标签",
+  "snapshot_date": "2026-08-23",
+  "source_host": "43.134.128.197",
+  "source_path": "/opt/jaguartv-content-factory-vnext",
+  "file_count": 128,
+  "generated_at": "2026-08-23T09:34:34.649548+00:00",
+  "refresh_note": "2026-08-23 refresh keeps the 18 category labels plus 未分类 and adds the import-video source filter implementation snapshot.",
+  "important_feature_paths": {
+    "labels": "data/category_labels.json",
+    "source_imports": "server_snapshot/src/jaguartv_factory/source_imports.py",
+    "daily_keyword_scripts": "scripts",
+    "dashboard_frontend": "server_snapshot/src/jaguartv_factory/web"
+  },
+  "excluded_patterns": [
+    ".git/",
+    ".env",
+    ".venv/",
+    "node_modules/",
+    "workspace/",
+    ".pytest_cache/",
+    "__pycache__/",
+    "*.pyc",
+    "*.sqlite",
+    "*.db",
+    "*.pem",
+    "*.key",
+    "cookies.txt",
+    "*.mp4",
+    "*.mov",
+    "*.mkv",
+    "*.webm",
+    "*.wav",
+    "*.mp3",
+    "uv.lock"
   ],
   "files": [
     {
-      "path": "server_snapshot/.agents/skills/jaguartv-content-factory/SKILL.md",
-      "sha256": "e2382207017943049d04c8f584ce2af2eb26b8abb73a8341c6bb130a01b681d1",
-      "bytes": 2889
+      "path": ".agents/skills/jaguartv-content-factory/SKILL.md",
+      "bytes": 2889,
+      "sha256": "e2382207017943049d04c8f584ce2af2eb26b8abb73a8341c6bb130a01b681d1"
     },
     {
-      "path": "server_snapshot/.agents/skills/jaguartv-content-factory/agents/openai.yaml",
-      "sha256": "86012eadb7bdaecccfb0ccdb0d6f6766bfba4ea1263bc07a84e44334e17f130c",
-      "bytes": 259
+      "path": ".agents/skills/jaguartv-content-factory/agents/openai.yaml",
+      "bytes": 259,
+      "sha256": "86012eadb7bdaecccfb0ccdb0d6f6766bfba4ea1263bc07a84e44334e17f130c"
     },
     {
-      "path": "server_snapshot/.agents/skills/jaguartv-content-factory/references/pipeline.md",
-      "sha256": "40db4a33ecd382ccece02669ad37ddb570941d250c94b88152a41d3df0737dc6",
-      "bytes": 2457
+      "path": ".agents/skills/jaguartv-content-factory/references/pipeline.md",
+      "bytes": 2457,
+      "sha256": "40db4a33ecd382ccece02669ad37ddb570941d250c94b88152a41d3df0737dc6"
     },
     {
-      "path": "server_snapshot/.agents/skills/jaguartv-content-factory/scripts/factory.sh",
-      "sha256": "8fa2929b976dcddd84dc7ed318a7a3ab1c769720e0b7ab5ac5d9fa746ab6ac5f",
-      "bytes": 1131
+      "path": ".agents/skills/jaguartv-content-factory/scripts/factory.sh",
+      "bytes": 1452,
+      "sha256": "6ca6cb365b80ef54c52a73562f95cf5dd7694b3397b184437dfb803fa5074a33"
     },
     {
-      "path": "server_snapshot/.pytest_cache/.gitignore",
-      "sha256": "3ed731b65d06150c138e2dadb0be0697550888a6b47eb8c45ecc9adba8b8e9bd",
-      "bytes": 37
+      "path": ".gitignore",
+      "bytes": 665,
+      "sha256": "190df6df6d01f23d1f32070effb26c40180bbac1c6c0d876294dd5af4ad13617"
     },
     {
-      "path": "server_snapshot/.pytest_cache/CACHEDIR.TAG",
-      "sha256": "37dc88ef9a0abeddbe81053a6dd8fdfb13afb613045ea1eb4a5c815a74a3bde4",
-      "bytes": 191
+      "path": "AGENTS.md",
+      "bytes": 2900,
+      "sha256": "849ef090eef7b69d56818e6b364efceb158824ae071c529d5ae191097013e13c"
     },
     {
-      "path": "server_snapshot/.pytest_cache/README.md",
-      "sha256": "73fd6fccdd802c419a6b2d983d6c3173b7da97558ac4b589edec2dfe443db9ad",
-      "bytes": 302
+      "path": "README.md",
+      "bytes": 4974,
+      "sha256": "7872058e22c68584fb91ef2d7094487b89ba979668a2c2e8fee12dd46730f6ca"
     },
     {
-      "path": "server_snapshot/.pytest_cache/v/cache/nodeids",
-      "sha256": "0bc48bb1aea51064c1013e89ce01cb63803229ef27022618c9683bc03d27c193",
-      "bytes": 12054
+      "path": "assets/bgm/.gitkeep",
+      "bytes": 1,
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     },
     {
-      "path": "server_snapshot/AGENTS.md",
-      "sha256": "849ef090eef7b69d56818e6b364efceb158824ae071c529d5ae191097013e13c",
-      "bytes": 2900
+      "path": "assets/brand/endcard_landscape_blue.png",
+      "bytes": 1460493,
+      "sha256": "2013cecddd6f798cd909bf23c12bfae04b671511d95f97cac7fdacd7c132b00f"
     },
     {
-      "path": "server_snapshot/README.md",
-      "sha256": "7872058e22c68584fb91ef2d7094487b89ba979668a2c2e8fee12dd46730f6ca",
-      "bytes": 4974
+      "path": "assets/brand/endcard_landscape_blue_v2.png",
+      "bytes": 548987,
+      "sha256": "75c026b31693f4fc922974942743aa081fd26d20c19e87dc059f2595281f05e2"
     },
     {
-      "path": "server_snapshot/assets/bgm/.gitkeep",
-      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
-      "bytes": 1
+      "path": "assets/brand/endcard_portrait_green.png",
+      "bytes": 1733166,
+      "sha256": "2335114289ffad15958688e62e2c2b7d641338b6fcef5f986dc00509b0394e42"
     },
     {
-      "path": "server_snapshot/assets/brand/endcard_landscape_blue.png",
-      "sha256": "2013cecddd6f798cd909bf23c12bfae04b671511d95f97cac7fdacd7c132b00f",
-      "bytes": 1460493
+      "path": "assets/brand/endcard_portrait_green_v2.png",
+      "bytes": 825552,
+      "sha256": "c75487462bb9df9c7f4101c810119d06587fe159528c8e26b315bf2f31984879"
     },
     {
-      "path": "server_snapshot/assets/brand/endcard_landscape_blue_v2.png",
-      "sha256": "75c026b31693f4fc922974942743aa081fd26d20c19e87dc059f2595281f05e2",
-      "bytes": 548987
+      "path": "assets/brand/generic_bottom_banner.jpg",
+      "bytes": 16381,
+      "sha256": "2611e5e3902c3cb2d28709329a3f43d3832feeda1cb45a051a6d29919f11a02e"
     },
     {
-      "path": "server_snapshot/assets/brand/endcard_portrait_green.png",
-      "sha256": "2335114289ffad15958688e62e2c2b7d641338b6fcef5f986dc00509b0394e42",
-      "bytes": 1733166
+      "path": "assets/brand/overlay_tu_er.png",
+      "bytes": 296300,
+      "sha256": "d0af5ec93d86e50badf338aaf013e586fbffe8607d4d48273f7906af0a717e7a"
     },
     {
-      "path": "server_snapshot/assets/brand/endcard_portrait_green_v2.png",
-      "sha256": "c75487462bb9df9c7f4101c810119d06587fe159528c8e26b315bf2f31984879",
-      "bytes": 825552
+      "path": "assets/brand/overlay_tu_yi.jpg",
+      "bytes": 22056,
+      "sha256": "120988983e16f2002a22b0cb5141aa81686dbab1f2998e46351296653e0c980a"
     },
     {
-      "path": "server_snapshot/assets/brand/overlay_tu_er.png",
-      "sha256": "d0af5ec93d86e50badf338aaf013e586fbffe8607d4d48273f7906af0a717e7a",
-      "bytes": 296300
+      "path": "config/accounts.example.yaml",
+      "bytes": 3606,
+      "sha256": "a60706b3514963f63648b2a6d13b6e85205d7e1b111cc15c214f3ac89730493b"
     },
     {
-      "path": "server_snapshot/assets/brand/overlay_tu_yi.jpg",
-      "sha256": "120988983e16f2002a22b0cb5141aa81686dbab1f2998e46351296653e0c980a",
-      "bytes": 22056
+      "path": "config/candidates.example.csv",
+      "bytes": 349,
+      "sha256": "79307b1e02875a4d8c24397d125c9b3d3ee5ebad8f227f19d0b9ff0d1e227b9c"
     },
     {
-      "path": "server_snapshot/config/accounts.example.yaml",
-      "sha256": "a60706b3514963f63648b2a6d13b6e85205d7e1b111cc15c214f3ac89730493b",
-      "bytes": 3606
+      "path": "config/creators.example.yaml",
+      "bytes": 91,
+      "sha256": "1e09003815196bfabe19a02fad9b8f7d8b25f39612d8eca8d2dcc5a6961fb446"
     },
     {
-      "path": "server_snapshot/config/candidates.example.csv",
-      "sha256": "79307b1e02875a4d8c24397d125c9b3d3ee5ebad8f227f19d0b9ff0d1e227b9c",
-      "bytes": 349
+      "path": "config/integrations.yaml",
+      "bytes": 2615,
+      "sha256": "17f0d884a77c8cee617503d3c86ba8fb12631111a744bf4aa7600c735868e753"
     },
     {
-      "path": "server_snapshot/config/creators.example.yaml",
-      "sha256": "1e09003815196bfabe19a02fad9b8f7d8b25f39612d8eca8d2dcc5a6961fb446",
-      "bytes": 91
+      "path": "config/keywords.brazil.yaml",
+      "bytes": 5224,
+      "sha256": "0cc9a368510fbd0333e98eb8d31b83fe6bfad2fb02afadb625809d38434c4517"
     },
     {
-      "path": "server_snapshot/config/keywords.brazil.yaml",
-      "sha256": "d38aa90b351a45bc53260c49956dfa31cff8d744e4b24e6caf22a38964ec1e97",
-      "bytes": 5246
+      "path": "config/keywords.demo.yaml",
+      "bytes": 721,
+      "sha256": "8bb0e9a29eb4cf45e1205d96c182e58f30172aaea43bd3e552c87e035d918286"
     },
     {
-      "path": "server_snapshot/config/keywords.demo.yaml",
-      "sha256": "8bb0e9a29eb4cf45e1205d96c182e58f30172aaea43bd3e552c87e035d918286",
-      "bytes": 721
+      "path": "config/keywords.example.yaml",
+      "bytes": 729,
+      "sha256": "cbbdb4152b2010d59ab521e93967fcd0d360b079443d8cf3e4c9a2374a82cedf"
     },
     {
-      "path": "server_snapshot/config/keywords.example.yaml",
-      "sha256": "cbbdb4152b2010d59ab521e93967fcd0d360b079443d8cf3e4c9a2374a82cedf",
-      "bytes": 729
+      "path": "config/pipeline.example.yaml",
+      "bytes": 3220,
+      "sha256": "2cb54e54ca6a2bc68fff491cdd39c201b5e7f8e35568a0128dadc596d6a0b9c6"
     },
     {
-      "path": "server_snapshot/config/pipeline.example.yaml",
-      "sha256": "64bed86a7efb814fe5acfa250352c405085fc0234b1d43a4d48e9bb3b1cbe15e",
-      "bytes": 2690
+      "path": "config/scoring.yaml",
+      "bytes": 1493,
+      "sha256": "3a61a2c18cc4a628ac28d75fa2c3f97d149ec3755b0429c7d1d76825ecdce54c"
     },
     {
-      "path": "server_snapshot/config/scoring.yaml",
-      "sha256": "3a61a2c18cc4a628ac28d75fa2c3f97d149ec3755b0429c7d1d76825ecdce54c",
-      "bytes": 1493
+      "path": "config/sources.example.yaml",
+      "bytes": 762,
+      "sha256": "c3c74771560d9acd376a7d4514567591ac476fdc11b60d59b145c0724a61d529"
     },
     {
-      "path": "server_snapshot/config/sources.example.yaml",
-      "sha256": "c3c74771560d9acd376a7d4514567591ac476fdc11b60d59b145c0724a61d529",
-      "bytes": 762
+      "path": "config/team.example.yaml",
+      "bytes": 500,
+      "sha256": "f6097bbd9a18976cd22b9dee7efa8fd4e7a2c54f21bca62231a7801cf99cbeec"
     },
     {
-      "path": "server_snapshot/config/team.example.yaml",
-      "sha256": "f6097bbd9a18976cd22b9dee7efa8fd4e7a2c54f21bca62231a7801cf99cbeec",
-      "bytes": 500
+      "path": "docs/INTEGRATIONS.md",
+      "bytes": 3014,
+      "sha256": "37233fb2c39f03b712cba8871004abffc40c36831d02a178a99e964a378e0240"
     },
     {
-      "path": "server_snapshot/docs/JaguarTV_vNEXT_产品需求文档.md",
-      "sha256": "01a0d64b58a2dd4d07bf670857eb5c7507456c0bb9d8339d4e1dfae94aba0aed",
-      "bytes": 28892
+      "path": "docs/JaguarTV_vNEXT_产品需求文档.md",
+      "bytes": 28892,
+      "sha256": "01a0d64b58a2dd4d07bf670857eb5c7507456c0bb9d8339d4e1dfae94aba0aed"
     },
     {
-      "path": "server_snapshot/docs/双工具评估与融合实施报告.md",
-      "sha256": "4ede067249f3fb3378c0e38e835a436963df2d2f0e83b47ba8f14d0cb22d4a2f",
-      "bytes": 17645
+      "path": "docs/双工具评估与融合实施报告.md",
+      "bytes": 17645,
+      "sha256": "4ede067249f3fb3378c0e38e835a436963df2d2f0e83b47ba8f14d0cb22d4a2f"
     },
     {
-      "path": "server_snapshot/docs/当前工作流程_服务器审核版.md",
-      "sha256": "a7e2511a7ae6b893564b301a0342075c39371cf7a1d115a5156575dc4ff07930",
-      "bytes": 6052
+      "path": "docs/当前工作流程_服务器审核版.md",
+      "bytes": 6052,
+      "sha256": "a7e2511a7ae6b893564b301a0342075c39371cf7a1d115a5156575dc4ff07930"
     },
     {
-      "path": "server_snapshot/manifest.json",
-      "sha256": "4558e8f097b6389392e3c8cdd01fea0c91faada80d1ff9ffe0039e04bf142806",
-      "bytes": 3379
+      "path": "manifest.json",
+      "bytes": 3379,
+      "sha256": "4558e8f097b6389392e3c8cdd01fea0c91faada80d1ff9ffe0039e04bf142806"
     },
     {
-      "path": "server_snapshot/package.json",
-      "sha256": "5d5a17fc80b775fc90f4b3bf3ac2cec7043b35f64c91a47e8268f1f9f30807f1",
-      "bytes": 254
+      "path": "package-lock.json",
+      "bytes": 8823,
+      "sha256": "791807c6343dccf42693f7e81ac296ad85b0ec8863fa9028bde545749db02819"
     },
     {
-      "path": "server_snapshot/prompts/WORKBUDDY_VNEXT_SYSTEM_PROMPT.md",
-      "sha256": "86a0a7a8edc80b784d31cd04702cd19c8c9a46727eb5ca4416be55bc359f5321",
-      "bytes": 7133
+      "path": "package.json",
+      "bytes": 254,
+      "sha256": "5d5a17fc80b775fc90f4b3bf3ac2cec7043b35f64c91a47e8268f1f9f30807f1"
     },
     {
-      "path": "server_snapshot/pyproject.toml",
-      "sha256": "7f0f86d4bd6ea0a7214c5175d697c738944ec7dd4e5fb80bf23d7a06b9ae252e",
-      "bytes": 1057
+      "path": "prompts/WORKBUDDY_VNEXT_SYSTEM_PROMPT.md",
+      "bytes": 7133,
+      "sha256": "86a0a7a8edc80b784d31cd04702cd19c8c9a46727eb5ca4416be55bc359f5321"
     },
     {
-      "path": "server_snapshot/scripts/bootstrap.sh",
-      "sha256": "12b3f183b0c22220a382110b30cd3127fc18503c45656fb330063f10a0769e69",
-      "bytes": 1794
+      "path": "pyproject.toml",
+      "bytes": 1057,
+      "sha256": "7f0f86d4bd6ea0a7214c5175d697c738944ec7dd4e5fb80bf23d7a06b9ae252e"
     },
     {
-      "path": "server_snapshot/scripts/build-remotion-template.cjs",
-      "sha256": "a996889260ced0bb153b3f3a8231a1fcb3f790044a0acc66a715c27064066dfc",
-      "bytes": 809
+      "path": "scripts/bootstrap.sh",
+      "bytes": 1794,
+      "sha256": "12b3f183b0c22220a382110b30cd3127fc18503c45656fb330063f10a0769e69"
     },
     {
-      "path": "server_snapshot/scripts/cleanup-bilibili-inventory.py",
-      "sha256": "c801ae356e206b662d473111b140f6d83de31419d176e1db6d4195a9f59c54eb",
-      "bytes": 10666
+      "path": "scripts/build-remotion-template.cjs",
+      "bytes": 809,
+      "sha256": "a996889260ced0bb153b3f3a8231a1fcb3f790044a0acc66a715c27064066dfc"
     },
     {
-      "path": "server_snapshot/scripts/design-endcard-landscape.py",
-      "sha256": "8e1cbd3dec27cfc9feb679c31f54c84905aafa1b4cc66f6c68487f0f68eff194",
-      "bytes": 8708
+      "path": "scripts/cleanup-bilibili-inventory.py",
+      "bytes": 10666,
+      "sha256": "c801ae356e206b662d473111b140f6d83de31419d176e1db6d4195a9f59c54eb"
     },
     {
-      "path": "server_snapshot/scripts/design-endcard-portrait.py",
-      "sha256": "964a1641f67068c87c8a4ae5d30d3f46f1749915914a0c263eb01f3d445af55d",
-      "bytes": 8809
+      "path": "scripts/design-endcard-landscape.py",
+      "bytes": 8708,
+      "sha256": "8e1cbd3dec27cfc9feb679c31f54c84905aafa1b4cc66f6c68487f0f68eff194"
     },
     {
-      "path": "server_snapshot/scripts/generate-expert-avatars.py",
-      "sha256": "1c31c291a526dbab88a1528fe36dd1ac818c5ee3d1810a7f70c193cbb9c9f5b6",
-      "bytes": 1261
+      "path": "scripts/design-endcard-portrait.py",
+      "bytes": 8809,
+      "sha256": "964a1641f67068c87c8a4ae5d30d3f46f1749915914a0c263eb01f3d445af55d"
     },
     {
-      "path": "server_snapshot/scripts/install-agent-skill.sh",
-      "sha256": "ab9ffe42363a17422819a57cdb4a366fe1ce5150f4ad357c3f20e7a426629485",
-      "bytes": 579
+      "path": "scripts/generate-expert-avatars.py",
+      "bytes": 1261,
+      "sha256": "1c31c291a526dbab88a1528fe36dd1ac818c5ee3d1810a7f70c193cbb9c9f5b6"
     },
     {
-      "path": "server_snapshot/scripts/install-source-services.sh",
-      "sha256": "4c6e678fed875b3577f253553f6bde6795b59f65910bee8bebaa170811b40ce0",
-      "bytes": 1470
+      "path": "scripts/install-agent-skill.sh",
+      "bytes": 579,
+      "sha256": "ab9ffe42363a17422819a57cdb4a366fe1ce5150f4ad357c3f20e7a426629485"
     },
     {
-      "path": "server_snapshot/scripts/migrate_db.py",
-      "sha256": "8e4639c008f06079b7a46f37d039acdd68c7b3bc0ab93534fa7d845e6f64b810",
-      "bytes": 627
+      "path": "scripts/install-external-integrations.sh",
+      "bytes": 380,
+      "sha256": "5c39d3b243f9de8d78fa239bb3514c01a1c4bad10f970ae2e5c4705373ca2dde"
     },
     {
-      "path": "server_snapshot/scripts/package-project.sh",
-      "sha256": "d6884d79d66b1e57e3ba10373ff6b4e4a6600004a9df148aa8c7436793c03200",
-      "bytes": 472
+      "path": "scripts/install-source-services.sh",
+      "bytes": 1470,
+      "sha256": "4c6e678fed875b3577f253553f6bde6795b59f65910bee8bebaa170811b40ce0"
     },
     {
-      "path": "server_snapshot/scripts/remotion-smoke.sh",
-      "sha256": "2e168eeb5619e70018facdc476bd68080541493b2552713e379bcd830218f21d",
-      "bytes": 1142
+      "path": "scripts/install-youtube-analytics-worker.sh",
+      "bytes": 1047,
+      "sha256": "19536c3f9713ce1428bed8c4abab0b777fc44e2c8a5528dea49b34d0713d85e1"
     },
     {
-      "path": "server_snapshot/scripts/server-crawl.sh",
-      "sha256": "6a38e265964aa006c6ae1bc0adff0547985d0f1b9758ee9d2ea4e223254c7881",
-      "bytes": 1958
+      "path": "scripts/migrate_db.py",
+      "bytes": 3398,
+      "sha256": "1cf6eb5e1a7fece229bfeff9b37205b1549a97bf5647839b4b76b3a0e867fc98"
     },
     {
-      "path": "server_snapshot/scripts/server-deploy.sh",
-      "sha256": "aeea725e43b9ff1194320177fefdc638b534e55f834810cea755b39da8261aaf",
-      "bytes": 2256
+      "path": "scripts/package-project.sh",
+      "bytes": 472,
+      "sha256": "d6884d79d66b1e57e3ba10373ff6b4e4a6600004a9df148aa8c7436793c03200"
     },
     {
-      "path": "server_snapshot/scripts/server-install.sh",
-      "sha256": "504d382b833ab71467707ec8c280319110de6df6a5df7cc1cc63fd41065b89df",
-      "bytes": 6493
+      "path": "scripts/remotion-smoke.sh",
+      "bytes": 3953,
+      "sha256": "3c4fbd882749be55284a23799b2b7d1f34d2d2962300ddd4df50be561e106bcc"
     },
     {
-      "path": "server_snapshot/scripts/server-sync.sh",
-      "sha256": "5757ab67549d538181b0ca9d50eae370851ddc17ef278fd7d9ecb917bc5d8bec",
-      "bytes": 3334
+      "path": "scripts/server-crawl.sh",
+      "bytes": 1958,
+      "sha256": "6a38e265964aa006c6ae1bc0adff0547985d0f1b9758ee9d2ea4e223254c7881"
     },
     {
-      "path": "server_snapshot/scripts/server-upload-handoff.sh",
-      "sha256": "32bfd4deb475f57dc831c0f971d74289b65361af495fafcf9bfdf22ecddb4fc3",
-      "bytes": 2149
+      "path": "scripts/server-deploy.sh",
+      "bytes": 2256,
+      "sha256": "aeea725e43b9ff1194320177fefdc638b534e55f834810cea755b39da8261aaf"
     },
     {
-      "path": "server_snapshot/scripts/server_produce_missing.py",
-      "sha256": "a9b23a1d94ceddd064685d09195185f4b8f0cfae3e9e36977c2d439be94b76f7",
-      "bytes": 11338
+      "path": "scripts/server-install.sh",
+      "bytes": 6590,
+      "sha256": "aef785ee5afae6366e4ac5d023a5f3e72879c7eea2393bf720d57c500d841ad8"
     },
     {
-      "path": "server_snapshot/src/jaguartv_factory/__init__.py",
-      "sha256": "b09987cf34be89064f327a27392efb8748bb156410883d96ffd413f0f600cfb5",
-      "bytes": 61
+      "path": "scripts/server-sync.sh",
+      "bytes": 3599,
+      "sha256": "4d54fad4b6522bf7a55d1a00d6563c06cae416ff9d71773726e4605151cfe995"
     },
     {
-      "path": "server_snapshot/src/jaguartv_factory/ai_services/paddle_ocr_engine.py",
-      "sha256": "da3ad3f6a0d10c286592a05df7c1d226655c732850ce613cea892eee585a5a3b",
-      "bytes": 6078
+      "path": "scripts/server-upload-handoff.sh",
+      "bytes": 2149,
+      "sha256": "32bfd4deb475f57dc831c0f971d74289b65361af495fafcf9bfdf22ecddb4fc3"
     },
     {
-      "path": "server_snapshot/src/jaguartv_factory/browser_scraper.py",
-      "sha256": "d5b8d54eee97a19a5e35c141ae868c0a818b7e270191ae9d39105d4c57429913",
-      "bytes": 21711
+      "path": "scripts/server_produce_missing.py",
+      "bytes": 10984,
+      "sha256": "2b06793c85c992ec0ea60d38515b352e6d9f8f5a19bc087c68f629a50b078966"
     },
     {
-      "path": "server_snapshot/src/jaguartv_factory/cli.py",
-      "sha256": "393d283e59ddfa4e9a24594fa5c19db37ca14edbf062ad41ab61f066e26d0094",
-      "bytes": 11993
+      "path": "skills-lock.json",
+      "bytes": 18330,
+      "sha256": "51cc058a51e4c86fbe8de8e714cc3d969383cb8439468d6364e8cc205b85f809"
     },
     {
-      "path": "server_snapshot/src/jaguartv_factory/compliance.py",
-      "sha256": "936d03eb92ddf5ee5c75f57b4b781eade3545ead491d41763dbc69ddcb3c2317",
-      "bytes": 2384
+      "path": "src/jaguartv_content_factory_vnext.egg-info/PKG-INFO",
+      "bytes": 770,
+      "sha256": "0c172633cc535bcca9fd60b6c4498622f124bd26191234821361bd59794e5b9d"
     },
     {
-      "path": "server_snapshot/src/jaguartv_factory/core.py",
-      "sha256": "315296a9d63ed8de99f447194a46fb23040abaa90223cfe3a3f1a88d67b60042",
-      "bytes": 179018
+      "path": "src/jaguartv_content_factory_vnext.egg-info/SOURCES.txt",
+      "bytes": 2105,
+      "sha256": "a7f5480c719eacf70b83e3b08801f144f5947a67434b83ec2f9c12276f85537c"
     },
     {
-      "path": "server_snapshot/src/jaguartv_factory/dashboard.py",
-      "sha256": "7972a591b462796b3bfacabb655ea97386da6ea81e7202ffc1edd8a526876929",
-      "bytes": 149995
+      "path": "src/jaguartv_content_factory_vnext.egg-info/dependency_links.txt",
+      "bytes": 1,
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     },
     {
-      "path": "server_snapshot/src/jaguartv_factory/highlight.py",
-      "sha256": "7c788627236705d9112a95efe32cace251c4e9d022789b4f59b84461c639308d",
-      "bytes": 13502
+      "path": "src/jaguartv_content_factory_vnext.egg-info/entry_points.txt",
+      "bytes": 93,
+      "sha256": "740c5abfe1b5ac088afd33b9df1acf8f1fadbd73e4461edad67b235521b669f1"
     },
     {
-      "path": "server_snapshot/src/jaguartv_factory/mediacrawler.py",
-      "sha256": "9023fd61c2c5ca6843b7d48f75e24fa294dbabdb0ca8f1eb99a3b3caa78844a0",
-      "bytes": 6715
+      "path": "src/jaguartv_content_factory_vnext.egg-info/requires.txt",
+      "bytes": 250,
+      "sha256": "b58fe122eafb27f20be89e91d37e338c7d2a06077781dde965bd20f9221b01c1"
     },
     {
-      "path": "server_snapshot/src/jaguartv_factory/pipeline/download.py",
-      "sha256": "a4a94c8b528bf62eb2a24fa8d470f71d593f972eb2a095e1b1634255b2ca2786",
-      "bytes": 2757
+      "path": "src/jaguartv_content_factory_vnext.egg-info/top_level.txt",
+      "bytes": 17,
+      "sha256": "66f481666440cd503fc4ef461e573ceb1a5add0678bde388f275d8c960ff903c"
     },
     {
-      "path": "server_snapshot/src/jaguartv_factory/publish_worker.py",
-      "sha256": "68535b0a033c62100fd07c8bdc8f4189999af6e9b36540a7e60c4d303997fe2b",
-      "bytes": 5340
+      "path": "src/jaguartv_factory/__init__.py",
+      "bytes": 61,
+      "sha256": "b09987cf34be89064f327a27392efb8748bb156410883d96ffd413f0f600cfb5"
     },
     {
-      "path": "server_snapshot/src/jaguartv_factory/publisher.py",
-      "sha256": "18062c2531e4c6004561bbe5c2b9bde0849848ca29927983bed1f95f27b4d32b",
-      "bytes": 21450
+      "path": "src/jaguartv_factory/ai_services/paddle_ocr_engine.py",
+      "bytes": 6078,
+      "sha256": "da3ad3f6a0d10c286592a05df7c1d226655c732850ce613cea892eee585a5a3b"
     },
     {
-      "path": "server_snapshot/src/jaguartv_factory/pyvideotrans_adapter.py",
-      "sha256": "9cbc6d088b9bfacefc9b0c0d6a5e5051dd4c0d920f62c54807aa83d6caeb8f22",
-      "bytes": 9322
+      "path": "src/jaguartv_factory/audit.py",
+      "bytes": 18962,
+      "sha256": "98195ef4968e1e62e28980ae84b0a55b15156bd33912f034a131b5a8df80b5c5"
     },
     {
-      "path": "server_snapshot/src/jaguartv_factory/reaction.py",
-      "sha256": "b6c0b67ab0a3f9c93d7afacbd22fcf5aad16d5e547fe898624a27e754e666202",
-      "bytes": 7452
+      "path": "src/jaguartv_factory/browser_scraper.py",
+      "bytes": 21711,
+      "sha256": "d5b8d54eee97a19a5e35c141ae868c0a818b7e270191ae9d39105d4c57429913"
     },
     {
-      "path": "server_snapshot/src/jaguartv_factory/remotion_template/package.json",
-      "sha256": "6df39517bee4a6a7c1d9d7e9f7091631a33279d73db2577e4c6e2f11665429d2",
-      "bytes": 570
+      "path": "src/jaguartv_factory/cli.py",
+      "bytes": 15127,
+      "sha256": "d8142e848433f3a8201fa365c3636460773bea467c93f49c9df2cca03a6c92e1"
     },
     {
-      "path": "server_snapshot/src/jaguartv_factory/remotion_template/scripts/render.mjs",
-      "sha256": "9f950ffc209c83e91a498ae3cadfa8f7ee65a745eeeb8793060923794d68ba06",
-      "bytes": 2893
+      "path": "src/jaguartv_factory/compliance.py",
+      "bytes": 2384,
+      "sha256": "936d03eb92ddf5ee5c75f57b4b781eade3545ead491d41763dbc69ddcb3c2317"
     },
     {
-      "path": "server_snapshot/src/jaguartv_factory/remotion_template/src/index.tsx",
-      "sha256": "f1557d872424a6b3bb8c504e5d370e04d54c2f4aa46ec9796755d59d8046123d",
-      "bytes": 13728
+      "path": "src/jaguartv_factory/core.py",
+      "bytes": 214309,
+      "sha256": "476222f67df06835bd2bde73c6ad99f70066e77edf409bbae1c4a896d319590c"
     },
     {
-      "path": "server_snapshot/src/jaguartv_factory/scoring.py",
-      "sha256": "33be7f7de4edee46e0ce75ce80d21838598860fe1b3b2eb60796f8dff017a090",
-      "bytes": 7137
+      "path": "src/jaguartv_factory/dashboard.py",
+      "bytes": 210733,
+      "sha256": "63cf24c2195df5e07728a04c8f4b1eb60df4f8c43dcac1a8ba1ff9d85a9ccf30"
     },
     {
-      "path": "server_snapshot/src/jaguartv_factory/server_store.py",
-      "sha256": "e1d1d6fb97cefe8280921036cfec0a84e0ab9f25c58cb1e76718ac804e68c351",
-      "bytes": 15555
+      "path": "src/jaguartv_factory/highlight.py",
+      "bytes": 13199,
+      "sha256": "05079f838e0f4c3a70d4a765bcd58330235837a0793c223ebbb6ebbc31aa873d"
     },
     {
-      "path": "server_snapshot/src/jaguartv_factory/session_login.py",
-      "sha256": "2d4f4f46f54c65bc923db8de4172cef4b47624aaac512e4e3154ec8fe0842dc8",
-      "bytes": 2683
+      "path": "src/jaguartv_factory/integrations.py",
+      "bytes": 5896,
+      "sha256": "4d688282ccd9d6980e6056d7d040bc86bc4638455fcf4f8f4294f6bdf75ee3b0"
     },
     {
-      "path": "server_snapshot/src/jaguartv_factory/sessions.py",
-      "sha256": "3d7def9c085305601363c1cbad7b747dfd1979febe53ae1b69fd33c50b6d29ab",
-      "bytes": 16825
+      "path": "src/jaguartv_factory/mediacrawler.py",
+      "bytes": 6715,
+      "sha256": "9023fd61c2c5ca6843b7d48f75e24fa294dbabdb0ca8f1eb99a3b3caa78844a0"
     },
     {
-      "path": "server_snapshot/src/jaguartv_factory/source_outro.py",
-      "sha256": "08983b757aa4b9f8558c6b221a21b2a420f85d1eea7bb928ee3233eaae00856b",
-      "bytes": 19054
+      "path": "src/jaguartv_factory/pipeline/download.py",
+      "bytes": 2757,
+      "sha256": "a4a94c8b528bf62eb2a24fa8d470f71d593f972eb2a095e1b1634255b2ca2786"
     },
     {
-      "path": "server_snapshot/src/jaguartv_factory/source_service.py",
-      "sha256": "730bf0bd414498cb16a0def23721a3040edad0e20a35a28fb57c6ef9fa119c79",
-      "bytes": 7347
+      "path": "src/jaguartv_factory/posters.py",
+      "bytes": 40715,
+      "sha256": "39144fbc006ba1b4ad8bd817234a677f08db4d1c93f7aa0e408752bd2b78bdf1"
     },
     {
-      "path": "server_snapshot/src/jaguartv_factory/sources.py",
-      "sha256": "e464401e9d2714b19bad631af48538dedaeb11c2c5613e378e8effc503db3291",
-      "bytes": 20066
+      "path": "src/jaguartv_factory/production.py",
+      "bytes": 20658,
+      "sha256": "2330ca4b136d9b9a181a4b0fc1bf7ea69e58e5ef98f3687440bb8477e46cb240"
     },
     {
-      "path": "server_snapshot/src/jaguartv_factory/strategy.py",
-      "sha256": "422346374003858206fae9322ce46b7c1d6affd97a88c80c92d9c51270453619",
-      "bytes": 7471
+      "path": "src/jaguartv_factory/publish_flow.py",
+      "bytes": 24643,
+      "sha256": "fa061a65594c5001f90c34b05a1c51d483dd40deb48cf88f691af1ce668d8fee"
     },
     {
-      "path": "server_snapshot/src/jaguartv_factory/trends.py",
-      "sha256": "f20cdfc8ec40c7d0bcc533518fd8ef6d82a359079b89d67c5dfef8f3d6eb8ac2",
-      "bytes": 8259
+      "path": "src/jaguartv_factory/publish_worker.py",
+      "bytes": 10068,
+      "sha256": "28b7c98b2b0e32c78150764ac559b66dce239e5bc651588c99f2447790e17a43"
     },
     {
-      "path": "server_snapshot/src/jaguartv_factory/web/app.js",
-      "sha256": "1ab4bdf383710146767043c9eed416f274dd1eb27dc26ae9fe232d8544184645",
-      "bytes": 86940
+      "path": "src/jaguartv_factory/publisher.py",
+      "bytes": 25158,
+      "sha256": "26b7b2a56830c8e3844d526dc67ebd9d4c85927590a20b168e92569c0f3fa188"
     },
     {
-      "path": "server_snapshot/src/jaguartv_factory/web/copywriter.css",
-      "sha256": "f81a81750cb6d3a7fa1c0a862827f1ec3f1109792a9a672ce943b8a4d09df0ff",
-      "bytes": 10454
+      "path": "src/jaguartv_factory/publishing_copywriter.py",
+      "bytes": 15338,
+      "sha256": "7b2c6fb006a62ac0f5e5ab37e4eb86c7b9b5475a10945d848d3d70112c919f22"
     },
     {
-      "path": "server_snapshot/src/jaguartv_factory/web/copywriter.html",
-      "sha256": "f7e4d81b8f89aefa1787ea849fb6dceb2d4b715e6c00327e6215d7f71a13a5d9",
-      "bytes": 6074
+      "path": "src/jaguartv_factory/pyvideotrans_adapter.py",
+      "bytes": 9322,
+      "sha256": "9cbc6d088b9bfacefc9b0c0d6a5e5051dd4c0d920f62c54807aa83d6caeb8f22"
     },
     {
-      "path": "server_snapshot/src/jaguartv_factory/web/copywriter.js",
-      "sha256": "310cd42d202f57032e855f131772a751a43b3cb7e32aa6de4ec3a4110fd3ad84",
-      "bytes": 44539
+      "path": "src/jaguartv_factory/reaction.py",
+      "bytes": 7452,
+      "sha256": "b6c0b67ab0a3f9c93d7afacbd22fcf5aad16d5e547fe898624a27e754e666202"
     },
     {
-      "path": "server_snapshot/src/jaguartv_factory/web/index.html",
-      "sha256": "3c5a59e9cf25c9548e10de55c5aaa54ebe8c8d85b4fad5ee7319e961157ead7a",
-      "bytes": 30966
+      "path": "src/jaguartv_factory/remotion_template/package-lock.json",
+      "bytes": 136714,
+      "sha256": "9c3fd796a3641edf78f58e10be0ca941d22b022414beb60101100559910ecc6f"
     },
     {
-      "path": "server_snapshot/src/jaguartv_factory/web/landing.css",
-      "sha256": "b063560f3c4ee3019db23696116c198b57cd665fb64d1186316d44a252070867",
-      "bytes": 13616
+      "path": "src/jaguartv_factory/remotion_template/package.json",
+      "bytes": 570,
+      "sha256": "6df39517bee4a6a7c1d9d7e9f7091631a33279d73db2577e4c6e2f11665429d2"
     },
     {
-      "path": "server_snapshot/src/jaguartv_factory/web/landing.html",
-      "sha256": "6ce8d0e25a4e9b2e1d5bb8e7364e04de896c0e03da0b5fc95a140f93837029db",
-      "bytes": 10369
+      "path": "src/jaguartv_factory/remotion_template/scripts/render.mjs",
+      "bytes": 3069,
+      "sha256": "ab1850b6fc8562f057ae1f4a6550a1ceb8d17051ff8b069af6728fe553f9c691"
     },
     {
-      "path": "server_snapshot/src/jaguartv_factory/web/styles.css",
-      "sha256": "f72b089022f8e978806d99e8853bf0c55a25c302518218952fba6332228f6d4a",
-      "bytes": 29983
+      "path": "src/jaguartv_factory/remotion_template/src/index.tsx",
+      "bytes": 13534,
+      "sha256": "e162a949c1360cbcd6f64041d6b89e8fb38d6316bdedccc86592fc1f36a10d0f"
     },
     {
-      "path": "server_snapshot/src/jaguartv_factory/workbuddy_adapter.py",
-      "sha256": "1e05e330707a0df52f3bad90c05ddab8da9ef8f992cb731be2475dc69ae0eb9f",
-      "bytes": 17489
+      "path": "src/jaguartv_factory/scoring.py",
+      "bytes": 7137,
+      "sha256": "33be7f7de4edee46e0ce75ce80d21838598860fe1b3b2eb60796f8dff017a090"
     },
     {
-      "path": "server_snapshot/src/jaguartv_factory/youtube_publisher.py",
-      "sha256": "f8838fffa0080c11837aa86c8af047d56956587a65034f840846af9109d17add",
-      "bytes": 8110
+      "path": "src/jaguartv_factory/server_store.py",
+      "bytes": 15555,
+      "sha256": "e1d1d6fb97cefe8280921036cfec0a84e0ab9f25c58cb1e76718ac804e68c351"
     },
     {
-      "path": "server_snapshot/tests/test_attribution.py",
-      "sha256": "a1ba56411fa9d4be2da144c5c01ffcb07e58d4264a5d0f61328935939d27f298",
-      "bytes": 6210
+      "path": "src/jaguartv_factory/session_login.py",
+      "bytes": 2683,
+      "sha256": "2d4f4f46f54c65bc923db8de4172cef4b47624aaac512e4e3154ec8fe0842dc8"
     },
     {
-      "path": "server_snapshot/tests/test_core.py",
-      "sha256": "432cd6a1a2ea6e62be14a084e4ad3672a52a07c578658997ff096f7baa7c6216",
-      "bytes": 34605
+      "path": "src/jaguartv_factory/sessions.py",
+      "bytes": 16825,
+      "sha256": "3d7def9c085305601363c1cbad7b747dfd1979febe53ae1b69fd33c50b6d29ab"
     },
     {
-      "path": "server_snapshot/tests/test_dashboard.py",
-      "sha256": "b878a81d21aa2fe3bc3679453a9890c73ab237be5cf0f1b3df058518fce22322",
-      "bytes": 25916
+      "path": "src/jaguartv_factory/source_imports.py",
+      "bytes": 33335,
+      "sha256": "a50721add1f1bc76ab3b107cf7f39aff74d16f2d930d555ac278de33f84158c2"
     },
     {
-      "path": "server_snapshot/tests/test_platform_and_brand.py",
-      "sha256": "788be56d293d6ffc218fa289d6cf53288dec3885517a72ffa6be3332240e26c5",
-      "bytes": 44432
+      "path": "src/jaguartv_factory/source_outro.py",
+      "bytes": 19054,
+      "sha256": "08983b757aa4b9f8558c6b221a21b2a420f85d1eea7bb928ee3233eaae00856b"
     },
     {
-      "path": "server_snapshot/tests/test_publisher.py",
-      "sha256": "f3fcbe4ad59f385d5374da0921f30ff31c54b8ff790b3d04bfa4e4a0671cd774",
-      "bytes": 9088
+      "path": "src/jaguartv_factory/source_service.py",
+      "bytes": 7347,
+      "sha256": "730bf0bd414498cb16a0def23721a3040edad0e20a35a28fb57c6ef9fa119c79"
     },
     {
-      "path": "server_snapshot/tests/test_pyvideotrans_adapter.py",
-      "sha256": "9dcf8f4e0f99b1558ceb83ab804537f233e8a8189645d64cc0cdb9f376c566ab",
-      "bytes": 2986
+      "path": "src/jaguartv_factory/sources.py",
+      "bytes": 20066,
+      "sha256": "e464401e9d2714b19bad631af48538dedaeb11c2c5613e378e8effc503db3291"
     },
     {
-      "path": "server_snapshot/tests/test_pyvideotrans_core.py",
-      "sha256": "b444a6f6596e672413ba847106f0ae1593dbc38204e1f33dd2747399f2c7b12b",
-      "bytes": 603
+      "path": "src/jaguartv_factory/strategy.py",
+      "bytes": 7471,
+      "sha256": "422346374003858206fae9322ce46b7c1d6affd97a88c80c92d9c51270453619"
     },
     {
-      "path": "server_snapshot/tests/test_reaction.py",
-      "sha256": "1ab850227aa1ab5ab2bdcb70e4318ffef1b683833eed13a609ee4601e67fec3e",
-      "bytes": 1710
+      "path": "src/jaguartv_factory/trends.py",
+      "bytes": 8259,
+      "sha256": "f20cdfc8ec40c7d0bcc533518fd8ef6d82a359079b89d67c5dfef8f3d6eb8ac2"
     },
     {
-      "path": "server_snapshot/tests/test_strategy_and_highlight.py",
-      "sha256": "f83d0165811b0fff38039157ff177b918feaf7b0dc0877c64b2be7bfce13b076",
-      "bytes": 4365
+      "path": "src/jaguartv_factory/web/app.js",
+      "bytes": 157998,
+      "sha256": "94b9b5838ee4eecbe8c824c687e6642af2ee0ef368d259f14bbacb345a51596a"
     },
     {
-      "path": "server_snapshot/tests/test_trends.py",
-      "sha256": "5a501883d50595ff7f0fda676dc3a16b4dc7b0287ab3f30b62c436a3413edd10",
-      "bytes": 1559
+      "path": "src/jaguartv_factory/web/copywriter.css",
+      "bytes": 10454,
+      "sha256": "f81a81750cb6d3a7fa1c0a862827f1ec3f1109792a9a672ce943b8a4d09df0ff"
     },
     {
-      "path": "server_snapshot/tests/test_workbuddy_integration.py",
-      "sha256": "bbaab510a9d072cff5737fbb64b0e48d51342eb68c238f097c4b77e0cf136305",
-      "bytes": 4842
+      "path": "src/jaguartv_factory/web/copywriter.html",
+      "bytes": 6074,
+      "sha256": "f7e4d81b8f89aefa1787ea849fb6dceb2d4b715e6c00327e6215d7f71a13a5d9"
+    },
+    {
+      "path": "src/jaguartv_factory/web/copywriter.js",
+      "bytes": 44539,
+      "sha256": "310cd42d202f57032e855f131772a751a43b3cb7e32aa6de4ec3a4110fd3ad84"
+    },
+    {
+      "path": "src/jaguartv_factory/web/index.html",
+      "bytes": 46498,
+      "sha256": "a565ff1de71eb81fd20496b78e8de2347a533b3eea5498947d02e8cbbf99d031"
+    },
+    {
+      "path": "src/jaguartv_factory/web/landing.css",
+      "bytes": 13616,
+      "sha256": "b063560f3c4ee3019db23696116c198b57cd665fb64d1186316d44a252070867"
+    },
+    {
+      "path": "src/jaguartv_factory/web/landing.html",
+      "bytes": 10369,
+      "sha256": "6ce8d0e25a4e9b2e1d5bb8e7364e04de896c0e03da0b5fc95a140f93837029db"
+    },
+    {
+      "path": "src/jaguartv_factory/web/styles.css",
+      "bytes": 49802,
+      "sha256": "f42a0a0ebd742aa4e99a6e64ea85d5e031ff42fa3aa1792a75c24e56c9e2855f"
+    },
+    {
+      "path": "src/jaguartv_factory/workbuddy_adapter.py",
+      "bytes": 25194,
+      "sha256": "b40b1b523ce446c339cc77efafa71b6863a05cc4a5bbcee97d60562138c5697a"
+    },
+    {
+      "path": "src/jaguartv_factory/youtube_analytics.py",
+      "bytes": 76463,
+      "sha256": "3b4bd7e4c810579c4f8ca66dfe344227c518a229ae30ece015b7b860cc724043"
+    },
+    {
+      "path": "src/jaguartv_factory/youtube_publisher.py",
+      "bytes": 8556,
+      "sha256": "0c1c5111d0ea9cfb89fccc06be61183dbf549cc80b261a05f8e359fa4e596f66"
+    },
+    {
+      "path": "tests/test_attribution.py",
+      "bytes": 6210,
+      "sha256": "a1ba56411fa9d4be2da144c5c01ffcb07e58d4264a5d0f61328935939d27f298"
+    },
+    {
+      "path": "tests/test_core.py",
+      "bytes": 40727,
+      "sha256": "edc5e2aacbfa782b225d12482891b1407e83e592f4604b4c776bdf695f801af9"
+    },
+    {
+      "path": "tests/test_dashboard.py",
+      "bytes": 37701,
+      "sha256": "4b58e05b3eb472591f8243d6c59a37d041dd1efb6c5e16caef9a8366d6bc727f"
+    },
+    {
+      "path": "tests/test_integrations.py",
+      "bytes": 3144,
+      "sha256": "347d006f44415209a4dd508ae3f6e6d7f8f9561f1b6a0bcc89c88bb4b7c414f6"
+    },
+    {
+      "path": "tests/test_platform_and_brand.py",
+      "bytes": 54995,
+      "sha256": "767fed67fa927e0aead34f0f19fbc28553ba104b5f033ad578d2713e71dee3d9"
+    },
+    {
+      "path": "tests/test_posters.py",
+      "bytes": 28659,
+      "sha256": "6010be19c1d1039cca7e197fe327187fa4aa80bde568eae55da7e0710d6e7908"
+    },
+    {
+      "path": "tests/test_production_service.py",
+      "bytes": 15149,
+      "sha256": "7c92f7ce86491289391688bb89ba0e11faa59bfde538ab2578e2aac871c82478"
+    },
+    {
+      "path": "tests/test_publish_flow.py",
+      "bytes": 9236,
+      "sha256": "c8e8e8a268b7032cb5e94460ed101ffbc0223f6f5203502b7fbf9c169411035d"
+    },
+    {
+      "path": "tests/test_publisher.py",
+      "bytes": 12483,
+      "sha256": "93521db730243a3e5b4e243c66d9d297d80c11e01679326f92064747cb8f0fa6"
+    },
+    {
+      "path": "tests/test_pyvideotrans_adapter.py",
+      "bytes": 2986,
+      "sha256": "9dcf8f4e0f99b1558ceb83ab804537f233e8a8189645d64cc0cdb9f376c566ab"
+    },
+    {
+      "path": "tests/test_pyvideotrans_core.py",
+      "bytes": 603,
+      "sha256": "b444a6f6596e672413ba847106f0ae1593dbc38204e1f33dd2747399f2c7b12b"
+    },
+    {
+      "path": "tests/test_reaction.py",
+      "bytes": 1710,
+      "sha256": "1ab850227aa1ab5ab2bdcb70e4318ffef1b683833eed13a609ee4601e67fec3e"
+    },
+    {
+      "path": "tests/test_remotion_layout_contract.py",
+      "bytes": 881,
+      "sha256": "a22f8e21ced9fef3559873391cfc68b2251479d66b93c77d8b2da4cfcf4e4d64"
+    },
+    {
+      "path": "tests/test_review_audit.py",
+      "bytes": 8811,
+      "sha256": "481bffae0b128d373eac4e885cd1da5baa8debed6d16f2c93904b82e83ca0eaf"
+    },
+    {
+      "path": "tests/test_source_import_api.py",
+      "bytes": 3491,
+      "sha256": "b6c8c788b16aad19943fef72e124e2af6fab3403466cdb02dd0c1758563ac389"
+    },
+    {
+      "path": "tests/test_source_import_e2e.py",
+      "bytes": 4338,
+      "sha256": "840f866ba1d677d86ddd6c0da31d57499a9700ca831cbd0dd812216b82c0f8c8"
+    },
+    {
+      "path": "tests/test_source_imports.py",
+      "bytes": 19264,
+      "sha256": "e2aab6f223b3bee7997526f82211169182043217d25314ced4164626efbf6bd6"
+    },
+    {
+      "path": "tests/test_strategy_and_highlight.py",
+      "bytes": 4232,
+      "sha256": "9ac826e959709644176fc1345c03f721e9c2142286e0c02d0c1329fe3ebc3d0a"
+    },
+    {
+      "path": "tests/test_trends.py",
+      "bytes": 1559,
+      "sha256": "5a501883d50595ff7f0fda676dc3a16b4dc7b0287ab3f30b62c436a3413edd10"
+    },
+    {
+      "path": "tests/test_workbuddy_integration.py",
+      "bytes": 5918,
+      "sha256": "8eeb280dc4ed8a513fec43c0fc0bac78f9d783669afc607aefbb867269de5238"
+    },
+    {
+      "path": "tests/test_youtube_analytics.py",
+      "bytes": 56732,
+      "sha256": "a5c9df7db88423aab5b66167f52623a1f2e28e017007e921ea332c6527046a97"
+    },
+    {
+      "path": "tests/test_youtube_analytics_e2e.py",
+      "bytes": 8950,
+      "sha256": "828ce628ed3614e6e0874a62b02660877de3490581f6b332fb736979a8b63b81"
     }
   ]
 }

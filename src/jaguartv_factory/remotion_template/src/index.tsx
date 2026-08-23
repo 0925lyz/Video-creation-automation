@@ -139,7 +139,7 @@ function JaguarTVVariant(props: BrandProps) {
   return (
     <AbsoluteFill style={{backgroundColor: "#000"}}>
       <Sequence durationInFrames={contentFrames}>
-        {isGeneric && !p.customDesign ? (
+        {isGeneric ? (
           <GenericContentLayout {...p} />
         ) : p.sourceVideo ? (
           <OffthreadVideo src={assetSrc(p.sourceVideo)} style={{width, height, objectFit: p.sourceFit || "cover"}} muted={false} />
@@ -150,7 +150,7 @@ function JaguarTVVariant(props: BrandProps) {
           style={p.captionStyle || fallbackProps.captionStyle}
           sourceFit={p.sourceFit || "cover"}
           sourceAspectRatio={p.sourceAspectRatio || width / height}
-          frameRect={isGeneric && !p.customDesign ? genericContentRects(p, width, height).video : undefined}
+          frameRect={isGeneric ? genericContentRects(p, width, height).video : undefined}
         />
       </Sequence>
       {isGeneric && p.imgEndcard ? (

@@ -3,8 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="icon" type="image/png" href="/assets/brand/overlay_tu_er.png">
   <title>JaguarTV Content OS</title>
-  <link rel="stylesheet" href="/styles.css?v=20260815-category-labels-v2">
+  <link rel="stylesheet" href="/styles.css?v=20260822-youtube-growth-v2">
 </head>
 <body>
   <aside class="sidebar">
@@ -15,6 +16,7 @@
     <nav aria-label="主导航">
       <button class="nav-item active" data-view="overview"><span>总览</span><small>01</small></button>
       <button class="nav-item" data-view="inventory"><span>内容库存</span><small id="navInventory">0</small></button>
+      <button class="nav-item" data-view="posters"><span>海报库存</span><small id="navPosters">0</small></button>
       <button class="nav-item" data-view="publishing"><span>发布队列</span><small id="navQueue">0</small></button>
       <button class="nav-item" data-view="analytics"><span>增长分析</span><small>04</small></button>
       <button class="nav-item" data-view="nodes"><span>运行节点</span><small id="navNodes">0</small></button>
@@ -67,9 +69,27 @@
       <div id="taskProgressPanel" class="task-progress-panel" hidden></div>
       <div class="toolbar">
         <div class="segmented" id="statusFilters">
-          <button class="active" data-status="">全部</button><button data-status="DISCOVERED">待筛选</button><button data-status="DOWNLOADED">待制作</button><button data-status="READY_FOR_REVIEW">待审核</button><button data-status="APPROVED">审核通过</button><button data-status="DOWNLOAD_FAILED">下载失败</button><button data-status="PRODUCTION_FAILED">制作失败</button>
+          <button class="active" data-status="">全部</button><button data-status="DISCOVERED">待筛选</button><button data-status="DOWNLOADED">待制作</button><button data-status="READY_FOR_REVIEW">待审核</button><button data-status="APPROVED">审核通过</button><button data-status="IMPORT_FAILED">导入失败</button><button data-status="DOWNLOAD_FAILED">下载失败</button><button data-status="PRODUCTION_FAILED">制作失败</button>
         </div>
         <span class="muted" id="inventoryCount"></span>
+      </div>
+      <div class="inventory-source-toolbar">
+        <div class="segmented" id="sourceFilters" aria-label="来源筛选">
+          <button class="active" data-source-type="" type="button">全部来源 <span id="allSourceCount">0</span></button>
+          <button data-source-type="source_import" type="button">导入视频 <span id="sourceImportCount">0</span></button>
+        </div>
+        <label class="compact-select">来源平台
+          <select id="inventoryPlatformFilter">
+            <option value="">全部平台</option>
+            <option value="youtube">YouTube</option>
+            <option value="bilibili">Bilibili</option>
+            <option value="douyin">抖音</option>
+            <option value="xiaohongshu">小红书</option>
+            <option value="tiktok">TikTok</option>
+            <option value="facebook">Facebook</option>
+            <option value="server_upload">本地上传</option>
+          </select>
+        </label>
       </div>
       <div class="category-filter-bar" id="categoryFilters" aria-label="初步分类筛选"></div>
       <div class="batch-toolbar">
@@ -77,7 +97,36 @@
         <span id="selectionCount">已选 0 条</span>
         <div class="batch-actions"><button class="secondary-button" id="batchDownload" type="button" disabled>批量下载</button><button class="secondary-button" id="batchProduce" type="button" disabled>批量制作</button><button class="secondary-button danger-button" id="batchDelete" type="button" disabled>删除所选</button></div>
       </div>
-      <div class="table-wrap inventory-table"><table><thead><tr><th class="check-column"></th><th>内容</th><th>平台</th><th>类型 / 策略</th><th>精彩度</th><th>评分</th><th>状态</th><th>更新时间</th><th></th></tr></thead><tbody id="inventoryTable"></tbody></table></div>
+      <div class="table-wrap inventory-table"><table><thead><tr><th class="check-column"></th><th>内容</th><th>平台</th><th>类型 / 策略</th><th>导入 / 目标</th><th>精彩度</th><th>评分</th><th>实际状态</th><th>更新时间</th><th></th></tr></thead><tbody id="inventoryTable"></tbody></table></div>
+      <div class="inventory-pagination" id="inventoryPagination" hidden>
+        <button class="secondary-button" id="inventoryPreviousPage" type="button">上一页</button>
+        <span class="muted" id="inventoryPageSummary"></span>
+        <button class="secondary-button" id="inventoryNextPage" type="button">下一页</button>
+      </div>
+    </section>
+
+    <section class="view" id="view-posters">
+      <div class="toolbar poster-toolbar">
+        <div class="segmented" id="posterStatusFilters" aria-label="海报状态筛选">
+          <button class="active" data-poster-status="">全部 <span data-poster-count="ALL">0</span></button>
+          <button data-poster-status="PENDING_SCREENING">待筛选 <span data-poster-count="PENDING_SCREENING">0</span></button>
+          <button data-poster-status="PENDING_REVIEW">待审核 <span data-poster-count="PENDING_REVIEW">0</span></button>
+          <button data-poster-status="APPROVED">审核通过 <span data-poster-count="APPROVED">0</span></button>
+        </div>
+        <div class="poster-toolbar-actions"><span class="muted" id="posterInventoryCount">0 张海报</span><button class="primary-button" id="openPosterImport" type="button">＋ 导入海报</button></div>
+      </div>
+      <div class="category-filter-bar" id="posterCategoryFilters" aria-label="海报分类筛选"></div>
+      <div class="table-wrap poster-table-wrap">
+        <table class="poster-table">
+          <thead><tr><th>海报</th><th>分类</th><th>状态</th><th>创建时间</th><th>审核时间</th><th>操作</th></tr></thead>
+          <tbody id="posterInventoryTable"><tr><td colspan="6"><div class="empty-state">正在加载海报</div></td></tr></tbody>
+        </table>
+      </div>
+      <div class="poster-pagination" id="posterPagination" hidden>
+        <button class="secondary-button" id="posterPreviousPage" type="button">上一页</button>
+        <span class="muted" id="posterPageSummary"></span>
+        <button class="secondary-button" id="posterNextPage" type="button">下一页</button>
+      </div>
     </section>
 
     <section class="view" id="view-publishing">
@@ -85,20 +134,91 @@
         <div><p class="eyebrow">SCHEDULER</p><h2>安排多平台发布</h2><p>当前建立队列和交接合同；平台授权接入后由发布节点领取执行。</p></div>
         <form id="scheduleForm">
           <select id="scheduleCandidate" required><option value="">选择成片</option></select>
-          <select id="schedulePlatform" required><option value="youtube">YouTube</option><option value="facebook">Facebook</option><option value="tiktok">TikTok</option><option value="kwai">Kwai</option></select>
+          <select id="schedulePlatform" required><option value="youtube">YouTube</option><option value="x">X</option><option value="facebook">Facebook</option><option value="tiktok">TikTok</option><option value="kwai">Kwai</option></select>
           <input id="scheduleAccount" placeholder="账号名称">
           <input id="scheduleTime" type="datetime-local">
           <button class="primary-button" type="submit">加入队列</button>
         </form>
       </div>
+      <section class="settings-panel auth-panel">
+        <div class="section-heading compact">
+          <div><p class="eyebrow">X AUTHORIZATION</p><h2>X 账号授权中心</h2><p>每个账号单独授权；授权后核对 X User ID，再确认可发布。</p></div>
+          <form id="xAuthForm" class="inline-auth-form">
+            <select id="xAuthAccount" required></select>
+            <button class="secondary-button" type="submit">发起 X 授权</button>
+          </form>
+        </div>
+        <div class="table-wrap"><table><thead><tr><th>账号配置</th><th>X 账号</th><th>User ID</th><th>权限</th><th>状态</th><th>更新时间</th><th></th></tr></thead><tbody id="xAuthTable"></tbody></table></div>
+      </section>
       <div class="section-heading"><div><p class="eyebrow">QUEUE</p><h2>发布任务</h2></div></div>
       <div class="table-wrap"><table><thead><tr><th>内容</th><th>平台</th><th>账号</th><th>计划时间</th><th>状态</th></tr></thead><tbody id="publicationTable"></tbody></table></div>
     </section>
 
     <section class="view" id="view-analytics">
+      <section class="youtube-growth-section" aria-labelledby="youtubeGrowthTitle">
+        <div class="section-heading compact youtube-growth-heading">
+          <div>
+            <p class="eyebrow">YOUTUBE GROWTH</p>
+            <h2 id="youtubeGrowthTitle">发布后数据与增长分析</h2>
+            <p class="muted">已授权频道的公开视频每60分钟自动导入并更新；平台数据存在处理延迟，统计按视频在圣保罗的公开发布时间筛选。</p>
+          </div>
+          <span class="muted" id="youtubeGrowthFreshness">正在加载数据新鲜度</span>
+        </div>
+        <form class="youtube-growth-filters" id="youtubeGrowthFilters">
+          <label>时间范围
+            <select id="youtubeGrowthRange">
+              <option value="30d" selected>近30天</option>
+              <option value="7d">近7天</option>
+              <option value="all">全部</option>
+              <option value="custom">自定义</option>
+            </select>
+          </label>
+          <label class="youtube-custom-date" hidden>开始日期
+            <input id="youtubeGrowthStart" type="date">
+          </label>
+          <label class="youtube-custom-date" hidden>结束日期
+            <input id="youtubeGrowthEnd" type="date">
+          </label>
+          <label>发布账号
+            <select id="youtubeGrowthAccount"><option value="">全部账号</option></select>
+          </label>
+          <label>排行榜指标
+            <select id="youtubeGrowthMetric">
+              <option value="views" selected>观看次数</option>
+              <option value="comments">评论数</option>
+              <option value="likes">点赞量</option>
+              <option value="average_view_duration">平均观看时长</option>
+              <option value="completion_rate">完播率估算</option>
+              <option value="shares">分享数量</option>
+            </select>
+          </label>
+          <button class="primary-button" type="submit">应用筛选</button>
+        </form>
+        <div class="youtube-growth-summary" id="youtubeGrowthSummary" aria-live="polite"></div>
+        <p class="youtube-completion-note">完播率是基于视频末段留存的完播率估算。由于存在重复观看，原始 audienceWatchRatio 及估算结果可能超过 100%，系统不会截断原始值；留存不可用时显示“暂不可用”。观看数遵循 YouTube Data API 当前口径，Shorts 的开始播放与重播可计入观看数。</p>
+
+        <div class="section-heading youtube-ranking-heading">
+          <div><p class="eyebrow">VIDEO RANKING</p><h2>系统发布视频排行榜</h2></div>
+          <span class="muted" id="youtubeGrowthPageStatus"></span>
+        </div>
+        <div class="youtube-growth-state" id="youtubeGrowthLoading">正在加载 YouTube 数据</div>
+        <div class="youtube-growth-state error" id="youtubeGrowthError" hidden>
+          <span>数据加载失败</span><button class="secondary-button" id="youtubeGrowthRetry" type="button">重试</button>
+        </div>
+        <div class="youtube-growth-state" id="youtubeGrowthEmpty" hidden>当前筛选范围内暂无系统发布的公开视频</div>
+        <div class="table-wrap youtube-growth-table" id="youtubeGrowthTable" hidden>
+          <table>
+            <thead><tr><th>视频</th><th>账号</th><th>Channel ID</th><th>圣保罗发布时间</th><th>来源</th><th>分类</th><th>关键词</th><th>观看</th><th>评论</th><th>点赞</th><th>平均观看</th><th>完播率估算</th><th>分享</th><th>数据新鲜度</th><th>同步状态</th></tr></thead>
+            <tbody id="youtubeRankingBody"></tbody>
+          </table>
+        </div>
+        <div class="youtube-growth-pagination" id="youtubeGrowthPagination" hidden>
+          <button class="secondary-button" id="youtubeGrowthPrevious" type="button">上一页</button>
+          <button class="secondary-button" id="youtubeGrowthNext" type="button">下一页</button>
+        </div>
+      </section>
+      <div class="section-heading"><div><p class="eyebrow">FUNNEL SIGNALS</p><h2>其他增长信号</h2></div></div>
       <div class="analytics-summary" id="analyticsSummary"></div>
-      <div class="section-heading"><div><p class="eyebrow">GOOGLE TRENDS</p><h2>巴西今日热词</h2></div><button class="secondary-button" id="runTrendsNow" type="button">立即同步</button></div>
-      <div class="hot-keyword-strip" id="hotKeywordStrip"></div>
       <section class="data-section daily-category-section">
         <div class="section-heading compact">
           <div><p class="eyebrow">DAILY TAG MAP</p><h2>当日分类关键词</h2></div>
@@ -309,12 +429,6 @@
               </div>
             </div>
           </div>
-          <details class="design-production-options">
-            <summary>制作选项</summary>
-            <div class="design-control-grid">
-              <label>视频版本<select id="designVariant"><option value="both" selected>通用版 + FB版</option><option value="generic">通用版</option><option value="fb">FB版</option></select></label>
-            </div>
-          </details>
           <div class="upload-progress compact-progress" id="designUploadProgress" hidden><div><span id="designUploadMessage">准备上传</span><strong id="designUploadPercent">0%</strong></div><div class="progress-track"><span id="designUploadBar" style="width:0%"></span></div></div>
         </section>
       </div>
@@ -332,22 +446,39 @@
         <label>上传源视频<input id="discoverUploadFile" type="file" accept="video/mp4,video/quicktime,video/webm,.mkv,.m4v"></label>
         <div class="upload-progress compact-progress" id="discoverUploadProgress" hidden><div><span id="discoverUploadMessage">准备上传</span><strong id="discoverUploadPercent">0%</strong></div><div class="progress-track"><span id="discoverUploadBar" style="width:0%"></span></div></div>
       </div>
+      <fieldset class="import-target-field" id="discoverTargetField">
+        <legend>下载后放入</legend>
+        <div class="target-segmented" role="radiogroup" aria-label="下载后放入">
+          <label><input type="radio" name="discoverTarget" value="pending_production" checked><span>待制作</span></label>
+          <label id="discoverApprovedTarget"><input type="radio" name="discoverTarget" value="approved"><span>审核通过</span></label>
+        </div>
+        <p class="dialog-note warning-note" id="discoverApprovalWarning" hidden>该文件将作为已完成成片直接进入审核通过，不再执行智能切片和双版本制作。请确认导入的不是待二创原始素材。</p>
+        <p class="dialog-note" id="discoverApprovalPermission" hidden>当前账号没有直接导入审核通过成片的后台权限。</p>
+      </fieldset>
       <p class="dialog-note" id="discoverPlatformNote">粘贴单条视频 URL 后会进入待筛选；超过 30 分钟的素材只允许删除，不会进入下载制作。</p>
       <div class="dialog-actions"><button class="secondary-button" id="cancelDiscoverDialog" type="button">取消</button><button class="primary-button" id="submitDiscovery" type="submit">开始运行</button></div>
     </form>
   </dialog>
 
-  <dialog id="downloadClaimDialog">
-    <form method="dialog" id="downloadClaimForm">
-      <div class="dialog-heading"><div><p class="eyebrow">DOWNLOAD CLAIM</p><h2>登记下载人</h2></div><button class="icon-button" id="closeDownloadClaimDialog" type="button" title="关闭" aria-label="关闭">×</button></div>
-      <p class="dialog-note">成片：<strong id="downloadClaimAsset">成片</strong></p>
+  <dialog id="publishDialog">
+    <form method="dialog" id="publishForm">
+      <div class="dialog-heading"><div><p class="eyebrow">PUBLISH WIZARD</p><h2>发布</h2></div><button class="icon-button" id="closePublishDialog" type="button" title="关闭" aria-label="关闭">×</button></div>
+      <p class="dialog-note" id="publishAssetSummary">未选择成片</p>
       <div class="settings-grid">
-        <label>下载人 / 发布人<input id="downloadClaimPublisher" placeholder="例如 Lucas" required></label>
-        <label>计划发布平台<select id="downloadClaimPlatform"><option value="facebook">Facebook</option><option value="tiktok">TikTok</option><option value="youtube">YouTube</option><option value="kwai">Kwai</option><option value="instagram">Instagram</option><option value="other">其他</option></select></label>
-        <label>备注<input id="downloadClaimNote" placeholder="账号、发布时间或其他说明"></label>
+        <label>发布平台<select id="publishPlatform"><option value="youtube">YouTube</option><option value="tiktok">TikTok</option><option value="facebook">Facebook</option><option value="douyin">抖音</option><option value="bilibili">B站</option><option value="kwai">Kwai</option><option value="instagram">Instagram</option><option value="other">其他</option></select></label>
+        <label>平台授权账号<select id="publishAccount"></select></label>
+        <label>发布时间<select id="publishScheduleMode"><option value="now">立即发布</option><option value="scheduled">预约发布</option></select></label>
+        <label id="publishScheduleField">圣保罗时间<input id="publishScheduledLocal" type="datetime-local"></label>
+        <label>公开范围<input id="publishVisibility" value="public" readonly></label>
       </div>
-      <p class="dialog-note">登记后才会开始下载；后续播放量、点击和注册由下载人负责回传。</p>
-      <div class="dialog-actions"><button class="secondary-button" id="cancelDownloadClaimDialog" type="button">取消</button><button class="primary-button" type="submit">登记并下载</button></div>
+      <p class="dialog-note warning-note" id="publishCapabilityNotice"></p>
+      <div class="settings-grid">
+        <label>AI 标题<input id="publishTitle" maxlength="100" required></label>
+        <label>AI 标签<input id="publishTags" placeholder="逗号分隔" required></label>
+        <label class="wide-field">AI 文案<textarea id="publishDescription" required></textarea></label>
+      </div>
+      <div class="publish-preview" id="publishPreview"></div>
+      <div class="dialog-actions"><button class="secondary-button" id="regeneratePublishCopy" type="button">重新生成</button><button class="secondary-button" id="cancelPublishDialog" type="button">取消</button><button class="primary-button" type="submit">确认创建</button></div>
     </form>
   </dialog>
 
@@ -365,7 +496,76 @@
     </form>
   </dialog>
 
+  <dialog id="posterPreviewDialog" aria-labelledby="posterPreviewTitle">
+    <div class="poster-preview-dialog">
+      <div class="dialog-heading poster-preview-heading">
+        <div><p class="eyebrow">POSTER PREVIEW</p><h2 id="posterPreviewTitle">海报预览</h2><p class="poster-preview-meta" id="posterPreviewMeta"></p></div>
+        <button class="icon-button" id="closePosterPreview" type="button" title="关闭" aria-label="关闭">×</button>
+      </div>
+      <div class="poster-preview-stage" id="posterPreviewStage">
+        <div class="poster-preview-message" id="posterPreviewMessage">正在加载图片</div>
+        <img id="posterPreviewImage" alt="" draggable="false">
+      </div>
+      <div class="poster-preview-controls" aria-label="预览控制">
+        <button class="icon-button" id="posterPreviewPrevious" type="button" title="上一张" aria-label="上一张">‹</button>
+        <div class="poster-zoom-controls">
+          <button class="icon-button" id="posterZoomOut" type="button" title="缩小" aria-label="缩小">−</button>
+          <output id="posterZoomValue">100%</output>
+          <button class="icon-button" id="posterZoomIn" type="button" title="放大" aria-label="放大">＋</button>
+          <button class="icon-button" id="posterZoomReset" type="button" title="恢复尺寸" aria-label="恢复尺寸">↺</button>
+        </div>
+        <button class="icon-button" id="posterPreviewNext" type="button" title="下一张" aria-label="下一张">›</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="posterImportDialog" aria-labelledby="posterImportTitle">
+    <form id="posterImportForm">
+      <div class="dialog-heading"><div><p class="eyebrow">POSTER IMPORT</p><h2 id="posterImportTitle">导入海报</h2><p class="dialog-note">导入成功后固定进入待审核，可逐张查看处理结果。</p></div><button class="icon-button" id="closePosterImport" type="button" title="关闭" aria-label="关闭">×</button></div>
+      <label>海报分类<select id="posterImportCategory" required><option value="">请选择分类</option><option value="time_location">时间地点</option><option value="factor_analysis">因素分析</option><option value="match_prediction">预测比赛</option><option value="multi_schedule">多赛程</option><option value="star_fans">球星球迷</option></select></label>
+      <div class="poster-dropzone" id="posterDropzone" tabindex="0" role="button" aria-label="选择或拖入海报图片">
+        <strong>点击选择或拖入图片</strong><span>JPEG、PNG、WebP · 支持批量导入</span>
+        <input id="posterImportFiles" type="file" accept="image/jpeg,image/png,image/webp" multiple hidden>
+      </div>
+      <div class="poster-import-limits muted" id="posterImportLimits">正在读取上传限制</div>
+      <div class="poster-import-list" id="posterImportList"><div class="design-empty-list">尚未选择图片</div></div>
+      <div class="poster-import-summary" id="posterImportSummary" aria-live="polite"></div>
+      <div class="dialog-actions"><button class="secondary-button" id="cancelPosterImport" type="button">关闭</button><button class="primary-button" id="submitPosterImport" type="submit" disabled>开始导入</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="posterContentDialog" aria-labelledby="posterContentTitle">
+    <form id="posterContentForm">
+      <div class="dialog-heading"><div><p class="eyebrow">COPY DESIGN</p><h2 id="posterContentTitle">海报文案设计</h2><p class="dialog-note" id="posterContentMeta"></p></div><button class="icon-button" id="closePosterContent" type="button" title="关闭" aria-label="关闭">×</button></div>
+      <div class="poster-content-workspace">
+        <div class="poster-content-main poster-media-frame"><span class="poster-image-loading">正在加载主海报</span><img id="posterContentMainImage" alt=""></div>
+        <div class="poster-content-fields">
+          <label>标题<input id="posterContentTitleInput" maxlength="200" placeholder="输入海报标题"></label>
+          <label>文案<textarea id="posterContentCopy" maxlength="10000" rows="7" placeholder="输入配套文案"></textarea></label>
+          <label>标签<input id="posterContentTags" placeholder="多个标签用逗号分隔"></label>
+        </div>
+      </div>
+      <div class="poster-attachment-heading"><div><strong>相关图片</strong><span class="muted">支持预览、替换、删除和调整顺序</span></div><label class="design-file-button">添加图片<input id="posterAttachmentFiles" type="file" accept="image/jpeg,image/png,image/webp" multiple></label></div>
+      <div class="poster-attachment-list" id="posterAttachmentList"><div class="design-empty-list">尚未添加相关图片</div></div>
+      <div class="poster-content-status muted" id="posterContentStatus" aria-live="polite"></div>
+      <input id="posterAttachmentReplaceFile" type="file" accept="image/jpeg,image/png,image/webp" hidden>
+      <div class="dialog-actions"><button class="secondary-button" id="cancelPosterContent" type="button">关闭</button><button class="primary-button" id="submitPosterContent" type="submit">保存文案与顺序</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="posterAssetDialog" aria-label="附加图片预览">
+    <div class="poster-asset-preview"><button class="icon-button" id="closePosterAsset" type="button" title="关闭" aria-label="关闭">×</button><div class="poster-media-frame"><span id="posterAssetMessage">正在加载图片</span><img id="posterAssetImage" alt=""></div></div>
+  </dialog>
+
+  <dialog id="posterDeleteDialog">
+    <form method="dialog" id="posterDeleteForm">
+      <div class="dialog-heading"><div><p class="eyebrow">DELETE POSTER</p><h2>确认删除海报</h2></div><button class="icon-button" id="closePosterDelete" type="button" title="关闭" aria-label="关闭">×</button></div>
+      <div class="poster-delete-summary"><img id="posterDeleteThumbnail" alt=""><div><strong id="posterDeleteName"></strong><small>删除后将从海报库存隐藏，并按受控媒体清理策略处理文件。</small></div></div>
+      <div class="dialog-actions"><button class="secondary-button" id="cancelPosterDelete" type="button">取消</button><button class="primary-button poster-delete-confirm" id="confirmPosterDelete" type="submit">确认删除</button></div>
+    </form>
+  </dialog>
+
   <div class="toast" id="toast" role="status"></div>
-  <script src="/app.js?v=20260815-category-labels-v2"></script>
+  <script src="/app.js?v=20260822-source-import-v1"></script>
 </body>
 </html>

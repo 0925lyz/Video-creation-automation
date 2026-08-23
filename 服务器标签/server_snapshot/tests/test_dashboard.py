@@ -1,5 +1,7 @@
 import json
+import http.client
 import threading
+import time
 import urllib.error
 import urllib.request
 from urllib.parse import parse_qs, urlparse
@@ -26,8 +28,15 @@ from jaguartv_factory.dashboard import (
     save_metrics,
     save_publication,
     save_review,
+    save_x_oauth_callback,
     save_youtube_oauth_callback,
     upload_kind_requires_token,
+    update_x_auth,
+    x_auth_rows,
+    x_oauth_start_url,
+    sign_youtube_auth_link,
+    youtube_auth_link,
+    youtube_auth_link_is_valid,
     youtube_oauth_start_url,
 )
 from jaguartv_factory.sessions import check_session, list_sessions, save_session
@@ -93,6 +102,20 @@ def insert_publish_candidate(
         ),
     )
     connection.commit()
+
+
+def write_review_package(config: dict, package_id: str, *, source_job_id: str = "") -> None:
+    package = Path(str(config["_root"])) / "workspace" / "server_media" / "review" / package_id
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "video.mp4").write_bytes(b"video")
+    (package / "metadata.json").write_text(
+        json.dumps({
+            "job_id": package_id,
+            "source_job_id": source_job_id,
+            "source": {"platform": "facebook", "title": "Athletico-PR 1-1 RB Bragantino"},
+        }),
+        encoding="utf-8",
+    )
 
 
 def test_copywriter_request_validates_mode_and_count():
@@ -385,6 +408,86 @@ def test_child_candidate_inherits_parent_initial_category(tmp_path: Path):
     assert dashboard_overview(config)["kpis"]["inventory"] == 1
 
 
+def test_candidate_rows_collapses_review_slice_children_under_parent(tmp_path: Path):
+    config = dashboard_config(tmp_path)
+    insert_publish_candidate(
+        config,
+        candidate_id="source-facebook",
+        platform="facebook",
+        keyword="Brasileirão",
+        status="APPROVED",
+    )
+    for part in ("source-facebook_part01", "source-facebook_part02", "source-facebook_part03"):
+        insert_publish_candidate(
+            config,
+            candidate_id=part,
+            platform="facebook",
+            keyword="Brasileirão",
+            status="READY_FOR_REVIEW",
+            parent_id="source-facebook",
+        )
+        write_review_package(config, part, source_job_id="source-facebook")
+
+    pending_rows = candidate_rows(config, "READY_FOR_REVIEW", 20)
+    approved_rows = candidate_rows(config, "APPROVED", 20)
+
+    assert [row["id"] for row in pending_rows] == []
+    parent = next(row for row in approved_rows if row["id"] == "source-facebook")
+    assert parent["output_count"] == 3
+    assert [asset["label"] for asset in parent["output_assets"]] == [
+        "片段 01 · 通用版",
+        "片段 02 · 通用版",
+        "片段 03 · 通用版",
+    ]
+
+
+def test_save_review_syncs_slice_child_statuses(tmp_path: Path):
+    config = dashboard_config(tmp_path)
+    insert_publish_candidate(
+        config,
+        candidate_id="source-facebook",
+        platform="facebook",
+        keyword="Brasileirão",
+        status="READY_FOR_REVIEW",
+    )
+    insert_publish_candidate(
+        config,
+        candidate_id="source-facebook_part01",
+        platform="facebook",
+        keyword="Brasileirão",
+        status="READY_FOR_REVIEW",
+        parent_id="source-facebook",
+    )
+    insert_publish_candidate(
+        config,
+        candidate_id="source-facebook_part02",
+        platform="facebook",
+        keyword="Brasileirão",
+        status="READY_FOR_REVIEW",
+        parent_id="source-facebook",
+    )
+
+    result = save_review(config, {
+        "candidate_id": "source-facebook",
+        "decision": "APPROVED",
+        "reviewer": "tester",
+    })
+
+    connection = connect_db(config)
+    statuses = {
+        row["id"]: row["status"]
+        for row in connection.execute(
+            "SELECT id,status FROM candidates WHERE id LIKE 'source-facebook%' ORDER BY id"
+        )
+    }
+    assert result["synced_children"] == ["source-facebook_part01", "source-facebook_part02"]
+    assert statuses == {
+        "source-facebook": "APPROVED",
+        "source-facebook_part01": "APPROVED",
+        "source-facebook_part02": "APPROVED",
+    }
+
+
 def test_dashboard_schema_and_overview(tmp_path: Path):
     config = dashboard_config(tmp_path)
     insert_candidate(config)
@@ -502,6 +605,70 @@ def test_youtube_oauth_start_url_includes_offline_state(tmp_path: Path, monkeypa
     assert query["state"][0]
 
 
+def test_signed_youtube_auth_link_allows_known_account_until_expiry(tmp_path: Path, monkeypatch):
+    config = dashboard_config(tmp_path)
+    monkeypatch.setenv("JAGUARTV_GOOGLE_REDIRECT_URI", "https://factory.jarg.top/oauth/youtube/callback")
+    monkeypatch.setenv("JAGUARTV_OAUTH_STATE_SECRET", "state-secret")
+    expires_at = 1_800_000_000
+
+    url = youtube_auth_link(config, "partner_embaixador", expires_at=expires_at)
+    query = parse_qs(urlparse(url).query)
+
+    assert url.startswith("https://factory.jarg.top/oauth/youtube/start?")
+    assert query["account"] == ["partner_embaixador"]
+    assert youtube_auth_link_is_valid(query, now=expires_at - 60)
+    assert not youtube_auth_link_is_valid(query, now=expires_at)
+
+
+def test_signed_youtube_auth_link_rejects_tampering_unknown_accounts_and_long_ttl(monkeypatch):
+    monkeypatch.setenv("JAGUARTV_OAUTH_STATE_SECRET", "state-secret")
+    expires_at = 1_800_000_000
+    signature = sign_youtube_auth_link("consumer_main", expires_at)
+
+    assert not youtube_auth_link_is_valid({
+        "account": ["consumer_football"],
+        "expires": [str(expires_at)],
+        "signature": [signature],
+    }, now=expires_at - 60)
+    assert not youtube_auth_link_is_valid({
+        "account": ["unknown_account"],
+        "expires": [str(expires_at)],
+        "signature": [signature],
+    }, now=expires_at - 60)
+    assert not youtube_auth_link_is_valid({
+        "account": ["consumer_main"],
+        "expires": [str(expires_at)],
+        "signature": [signature],
+    }, now=expires_at - (8 * 24 * 3600))
+
+
+def test_signed_youtube_auth_link_bypasses_admin_cookie_for_oauth_start(tmp_path: Path, monkeypatch):
+    config = dashboard_config(tmp_path)
+    monkeypatch.setenv("JAGUARTV_DASHBOARD_TOKEN", "dashboard-secret")
+    monkeypatch.setenv("JAGUARTV_DASHBOARD_PUBLIC", "0")
+    monkeypatch.setenv("JAGUARTV_GOOGLE_CLIENT_ID", "client-id")
+    monkeypatch.setenv("JAGUARTV_GOOGLE_CLIENT_SECRET", "client-secret")
+    monkeypatch.setenv("JAGUARTV_GOOGLE_REDIRECT_URI", "https://factory.jarg.top/oauth/youtube/callback")
+    monkeypatch.setenv("JAGUARTV_OAUTH_TOKEN_KEY", "token-encryption-key")
+    monkeypatch.setenv("JAGUARTV_OAUTH_STATE_SECRET", "state-secret")
+    app = DashboardApplication(("127.0.0.1", 0), config)
+    thread = threading.Thread(target=app.serve_forever, daemon=True)
+    thread.start()
+    try:
+        link = youtube_auth_link(config, "consumer_guide", expires_at=int(time.time()) + 300)
+        parsed = urlparse(link)
+        connection = http.client.HTTPConnection("127.0.0.1", app.server_address[1], timeout=5)
+        connection.request("GET", f"{parsed.path}?{parsed.query}")
+        response = connection.getresponse()
+        assert response.status == 302
+        assert response.getheader("Location", "").startswith("https://accounts.google.com/")
+        connection.close()
+    finally:
+        app.shutdown()
+        thread.join(timeout=5)
+        app.server_close()
+
+
 def test_youtube_oauth_callback_encrypts_refresh_token(tmp_path: Path, monkeypatch):
     from jaguartv_factory.dashboard import make_oauth_state
 
@@ -540,6 +707,122 @@ def test_youtube_oauth_callback_encrypts_refresh_token(tmp_path: Path, monkeypat
     row = connection.execute("SELECT * FROM youtube_channel_auths WHERE account='consumer_football'").fetchone()
     assert row["channel_title"] == "jaguartv vivo"
     assert "refresh-token-secret" not in row["encrypted_refresh_token"]
+
+
+def test_x_oauth_start_url_uses_pkce_and_expected_scopes(tmp_path: Path, monkeypatch):
+    config = dashboard_config(tmp_path)
+    monkeypatch.setenv("JAGUARTV_X_CLIENT_ID", "x-client-id")
+    monkeypatch.setenv("JAGUARTV_X_REDIRECT_URI", "https://factory.jarg.top/oauth/x/callback")
+    monkeypatch.setenv("JAGUARTV_OAUTH_TOKEN_KEY", "token-encryption-key")
+
+    url = x_oauth_start_url(config, "consumer_football")
+    query = parse_qs(urlparse(url).query)
+
+    assert query["client_id"] == ["x-client-id"]
+    assert query["redirect_uri"] == ["https://factory.jarg.top/oauth/x/callback"]
+    assert query["code_challenge_method"] == ["S256"]
+    assert "tweet.write" in query["scope"][0]
+    assert "media.write" not in query["scope"][0]
+    assert "offline.access" in query["scope"][0]
+    assert "scope=tweet.read%20users.read%20tweet.write%20offline.access" in url
+    connection = connect_db(config)
+    row = connection.execute("SELECT account,code_verifier FROM x_oauth_states WHERE state=?", (query["state"][0],)).fetchone()
+    assert row["account"] == "consumer_football"
+    assert len(row["code_verifier"]) >= 43
+
+
+def test_x_oauth_start_url_can_use_configured_scopes(tmp_path: Path, monkeypatch):
+    config = dashboard_config(tmp_path)
+    monkeypatch.setenv("JAGUARTV_X_CLIENT_ID", "x-client-id")
+    monkeypatch.setenv("JAGUARTV_OAUTH_TOKEN_KEY", "token-encryption-key")
+    monkeypatch.setenv("JAGUARTV_X_SCOPES", "tweet.read users.read tweet.write media.write offline.access")
+
+    url = x_oauth_start_url(config, "consumer_football")
+    query = parse_qs(urlparse(url).query)
+
+    assert query["scope"] == ["tweet.read users.read tweet.write media.write offline.access"]
+
+
+def test_x_auth_rows_creates_missing_auth_table(tmp_path: Path):
+    config = dashboard_config(tmp_path)
+    connection = connect_db(config)
+    connection.execute("DROP TABLE x_account_auths")
+    connection.commit()
+
+    assert x_auth_rows(config) == []
+    row = connect_db(config).execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='x_account_auths'"
+    ).fetchone()
+    assert row["name"] == "x_account_auths"
+
+
+def test_x_oauth_callback_saves_pending_confirmation_without_plain_tokens(tmp_path: Path, monkeypatch):
+    config = dashboard_config(tmp_path)
+    monkeypatch.setenv("JAGUARTV_X_CLIENT_ID", "x-client-id")
+    monkeypatch.setenv("JAGUARTV_X_REDIRECT_URI", "https://factory.jarg.top/oauth/x/callback")
+    monkeypatch.setenv("JAGUARTV_OAUTH_TOKEN_KEY", "token-encryption-key")
+    url = x_oauth_start_url(config, "consumer_football")
+    state = parse_qs(urlparse(url).query)["state"][0]
+
+    def fake_post_form_json(url, form, *, timeout=20, headers=None):
+        assert form["code"] == "x-auth-code"
+        assert form["grant_type"] == "authorization_code"
+        assert form["code_verifier"]
+        return {
+            "access_token": "x-access-token-secret",
+            "refresh_token": "x-refresh-token-secret",
+            "token_type": "bearer",
+            "expires_in": 7200,
+            "scope": "tweet.read users.read tweet.write media.write offline.access",
+        }
+
+    monkeypatch.setattr("jaguartv_factory.dashboard.post_form_json", fake_post_form_json)
+    monkeypatch.setattr(
+        "jaguartv_factory.dashboard.get_authorized_x_user",
+        lambda access_token: {"x_user_id": "123456", "username": "JaguarTVFutebol", "display_name": "JaguarTV Futebol"},
+    )
+
+    result = save_x_oauth_callback(config, {"code": ["x-auth-code"], "state": [state]})
+
+    assert result["account"] == "consumer_football"
+    assert result["status"] == "PENDING_CONFIRMATION"
+    rows = x_auth_rows(config)
+    assert rows[0]["username"] == "JaguarTVFutebol"
+    assert rows[0]["status"] == "PENDING_CONFIRMATION"
+    connection = connect_db(config)
+    row = connection.execute("SELECT * FROM x_account_auths WHERE account='consumer_football'").fetchone()
+    assert "x-access-token-secret" not in row["encrypted_access_token"]
+    assert "x-refresh-token-secret" not in row["encrypted_refresh_token"]
+
+
+def test_x_auth_can_be_confirmed_and_revoked(tmp_path: Path, monkeypatch):
+    config = dashboard_config(tmp_path)
+    monkeypatch.setenv("JAGUARTV_X_CLIENT_ID", "x-client-id")
+    monkeypatch.setenv("JAGUARTV_OAUTH_TOKEN_KEY", "token-encryption-key")
+    timestamp = now_iso()
+    connection = connect_db(config)
+    connection.execute(
+        """
+        INSERT INTO x_account_auths(
+          account,x_user_id,username,display_name,scopes,encrypted_access_token,
+          encrypted_refresh_token,token_type,expires_in,status,authorized_at,updated_at
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            "consumer_main", "42", "JaguarTVHoje", "JaguarTV Hoje",
+            "tweet.write offline.access", "encrypted-access", "encrypted-refresh",
+            "bearer", 7200, "PENDING_CONFIRMATION", timestamp, timestamp,
+        ),
+    )
+    connection.commit()
+
+    confirmed = update_x_auth(config, {"account": "consumer_main", "action": "confirm"})
+    assert confirmed["status"] == "AUTHORIZED"
+    revoked = update_x_auth(config, {"account": "consumer_main", "action": "revoke"})
+    assert revoked["status"] == "REVOKED"
+    row = connect_db(config).execute("SELECT encrypted_access_token,encrypted_refresh_token FROM x_account_auths WHERE account='consumer_main'").fetchone()
+    assert row["encrypted_access_token"] == ""
+    assert row["encrypted_refresh_token"] == ""
 
 
 def test_render_job_rows_include_candidate_title_and_metadata(tmp_path: Path):

@@ -6,6 +6,7 @@ import shutil
 import sys
 from pathlib import Path
 
+from .audit import audit_review_inventory, repair_review_inventory, set_repair_run_status
 from .pyvideotrans_adapter import pyvideotrans_available
 from .core import (
     analyze_candidate,
@@ -22,6 +23,7 @@ from .core import (
 from .mediacrawler import ingest_mediacrawler_jsonl
 from .publisher import dry_run_approved_queue, enqueue_approved_publication
 from .publish_worker import publish_due_once, run_publish_worker
+from .youtube_analytics import backfill_report, run_analytics_worker, set_backfill_status
 from .reaction import REACTION_MODES
 from .server_store import save_upload
 from .strategy import AUDIO_POLICIES, CONTENT_TYPES, SEGMENT_STRATEGIES
@@ -109,7 +111,7 @@ def strategy_options(args: argparse.Namespace) -> dict[str, object]:
     fields = (
         "content_type", "segment_strategy", "audio_policy", "max_segments", "max_duration",
         "reaction_mode", "reaction_source", "source_volume", "reaction_volume", "reaction_position",
-        "batch_label", "rights_status",
+        "batch_label", "rights_status", "trigger_source",
     )
     return {field: getattr(args, field) for field in fields if getattr(args, field, None) is not None}
 
@@ -146,6 +148,11 @@ def build_parser() -> argparse.ArgumentParser:
     produce_parser = subparsers.add_parser("produce")
     produce_parser.add_argument("--limit", type=int, default=1)
     produce_parser.add_argument("--candidate")
+    produce_parser.add_argument(
+        "--trigger-source",
+        default="cli",
+        choices=("cli", "ai_agent", "scheduled_worker", "history_repair"),
+    )
     add_strategy_arguments(produce_parser)
 
     analyze_parser = subparsers.add_parser("analyze")
@@ -163,6 +170,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("review")
 
+    audit_parser = subparsers.add_parser("audit-review")
+    audit_parser.add_argument("--status", default="READY_FOR_REVIEW")
+    audit_parser.add_argument("--limit", type=int, default=0)
+
+    repair_parser = subparsers.add_parser("repair-review")
+    repair_parser.add_argument("--candidate", action="append")
+    repair_parser.add_argument("--limit", type=int, default=1)
+    repair_parser.add_argument("--execute", action="store_true")
+    repair_parser.add_argument("--run-id")
+    repair_parser.add_argument("--action", choices=("pause", "resume"))
+
     ui_parser = subparsers.add_parser("ui")
     ui_parser.add_argument("--host", default="127.0.0.1")
     ui_parser.add_argument("--port", type=int, default=8787)
@@ -176,6 +194,17 @@ def build_parser() -> argparse.ArgumentParser:
     publish_worker_parser.add_argument("--dry-run", action="store_true")
     publish_worker_parser.add_argument("--sleep", type=int, default=60)
     publish_worker_parser.add_argument("--limit", type=int, default=3)
+
+    analytics_worker_parser = subparsers.add_parser("youtube-analytics-worker")
+    analytics_worker_parser.add_argument("--once", action="store_true")
+    analytics_worker_parser.add_argument("--sleep", type=int, default=60)
+    analytics_worker_parser.add_argument("--limit", type=int, default=50)
+
+    analytics_backfill_parser = subparsers.add_parser("youtube-analytics-backfill")
+    analytics_backfill_parser.add_argument("--execute", action="store_true")
+    analytics_backfill_parser.add_argument("--rate-limit-per-minute", type=int, default=6)
+    analytics_backfill_parser.add_argument("--run-id", type=int)
+    analytics_backfill_parser.add_argument("--action", choices=("pause", "resume", "cancel"))
 
     publish_parser = subparsers.add_parser("publish")
     publish_parser.add_argument("--candidate")
@@ -252,6 +281,24 @@ def main(argv: list[str] | None = None) -> int:
         })
     elif args.command == "review":
         print(generate_review_index(config))
+    elif args.command == "audit-review":
+        print_json(audit_review_inventory(config, status=args.status, limit=args.limit, dry_run=True))
+    elif args.command == "repair-review":
+        if args.action:
+            if not args.run_id:
+                raise ValueError("--run-id is required with --action")
+            result = set_repair_run_status(config, args.run_id, args.action)
+            if args.action == "resume" and args.execute:
+                result = repair_review_inventory(config, execute=True, run_id=args.run_id, limit=args.limit)
+            print_json(result)
+        else:
+            print_json(repair_review_inventory(
+                config,
+                candidate_ids=args.candidate,
+                limit=args.limit,
+                execute=args.execute,
+                run_id=args.run_id or "",
+            ))
     elif args.command == "ui":
         from .dashboard import serve_dashboard
 
@@ -266,6 +313,19 @@ def main(argv: list[str] | None = None) -> int:
             print_json(publish_due_once(config, limit=args.limit, dry_run=True))
         else:
             run_publish_worker(config, once=args.once, sleep_sec=args.sleep, limit=args.limit)
+    elif args.command == "youtube-analytics-worker":
+        run_analytics_worker(config, once=args.once, sleep_sec=args.sleep, limit=args.limit)
+    elif args.command == "youtube-analytics-backfill":
+        if args.run_id or args.action:
+            if not args.run_id or not args.action:
+                raise ValueError("--run-id and --action must be provided together")
+            print_json(set_backfill_status(config, args.run_id, args.action))
+        else:
+            print_json(backfill_report(
+                config,
+                dry_run=not args.execute,
+                rate_limit_per_minute=args.rate_limit_per_minute,
+            ))
     elif args.command == "publish":
         if not args.candidate:
             raise ValueError("--candidate is required")

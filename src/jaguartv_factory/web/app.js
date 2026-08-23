@@ -17,8 +17,17 @@ const state = {
   tasks: [],
   selectedCandidates: new Set(),
   status: "",
+  sourceFilter: "",
+  platformFilter: "",
   categoryFilter: "",
   search: "",
+  inventoryLoading: false,
+  inventoryError: "",
+  inventoryRequestSerial: 0,
+  inventoryPagination: { page: 1, page_size: 50, total: 0, pages: 0 },
+  inventorySourceCounts: { all: 0, source_import: 0 },
+  importCapabilities: { default_target_area: "pending_production", can_direct_approve: false },
+  discoverIdempotencyKey: "",
   pendingProductionIds: [],
   pendingPublishAsset: null,
   pendingPublishItem: null,
@@ -81,6 +90,7 @@ const statusLabels = {
   SCHEDULED: "已计划",
   PUBLISHED: "已发布",
   FAILED: "失败",
+  IMPORT_FAILED: "导入失败",
 };
 
 const scoreDimensionLabels = {
@@ -150,12 +160,26 @@ async function refreshAll(showToast = false) {
   const button = document.querySelector("#refreshButton");
   button.disabled = true;
   try {
-    const [overview, candidates, publications, xAuths, workers, feedback, downloadClaims, keywordGroups, categoryKeywords, tasks, settings, sessions, health, capabilities, uploads, posterCounts] = await Promise.all([
-      api("/api/overview"), api("/api/candidates?limit=200"), api("/api/publications"), api("/api/x-auths"), api("/api/workers"), api("/api/feedback"), api("/api/download-claims"), api("/api/keywords"), api("/api/category-keywords?date=today"), api("/api/tasks"), api("/api/settings"), api("/api/sessions"), api("/api/health"), api("/api/publish/capabilities"),
+    const [overview, candidatePage, publications, xAuths, workers, feedback, downloadClaims, keywordGroups, categoryKeywords, tasks, settings, sessions, health, capabilities, uploads, posterCounts, importCapabilities] = await Promise.all([
+      api("/api/overview"), api(inventoryApiPath()), api("/api/publications"), api("/api/x-auths"), api("/api/workers"), api("/api/feedback"), api("/api/download-claims"), api("/api/keywords"), api("/api/category-keywords?date=today"), api("/api/tasks"), api("/api/settings"), api("/api/sessions"), api("/api/health"), api("/api/publish/capabilities"),
       api("/api/uploads").catch(() => []),
       api("/api/posters/counts"),
+      api("/api/import-capabilities").catch(() => ({ default_target_area: "pending_production", can_direct_approve: false })),
     ]);
-    Object.assign(state, { overview, candidates, publications, xAuths, workers, feedback, downloadClaims, keywordGroups, categoryKeywords, tasks, settings, sessions, health, publishCapabilities: capabilities, uploads, posterCounts });
+    Object.assign(state, {
+      overview,
+      candidates: candidatePage.items || [],
+      inventoryPagination: {
+        page: candidatePage.page || 1,
+        page_size: candidatePage.page_size || 50,
+        total: candidatePage.total || 0,
+        pages: candidatePage.pages || 0,
+      },
+      inventorySourceCounts: candidatePage.source_counts || { all: 0, source_import: 0 },
+      importCapabilities,
+      publications, xAuths, workers, feedback, downloadClaims, keywordGroups, categoryKeywords,
+      tasks, settings, sessions, health, publishCapabilities: capabilities, uploads, posterCounts,
+    });
     renderAll();
     if (document.querySelector("#view-posters").classList.contains("active")) await loadPosters();
     if (document.querySelector("#view-analytics").classList.contains("active")) await loadYouTubeAnalytics();
@@ -165,6 +189,49 @@ async function refreshAll(showToast = false) {
     toast(`刷新失败：${error.message}`, "error");
   } finally {
     button.disabled = false;
+  }
+}
+
+function inventoryApiPath() {
+  const params = new URLSearchParams({
+    paginated: "1",
+    page: String(state.inventoryPagination.page || 1),
+    page_size: String(state.inventoryPagination.page_size || 50),
+  });
+  if (state.status) params.set("status", state.status);
+  if (state.sourceFilter) params.set("source_type", state.sourceFilter);
+  if (state.platformFilter) params.set("platform", state.platformFilter);
+  if (state.categoryFilter) params.set("category", state.categoryFilter);
+  if (state.search) params.set("search", state.search);
+  return `/api/candidates?${params}`;
+}
+
+async function loadInventory({ resetPage = false } = {}) {
+  if (resetPage) state.inventoryPagination.page = 1;
+  const serial = ++state.inventoryRequestSerial;
+  state.inventoryLoading = true;
+  state.inventoryError = "";
+  renderInventory();
+  try {
+    const payload = await api(inventoryApiPath());
+    if (serial !== state.inventoryRequestSerial) return;
+    state.candidates = payload.items || [];
+    state.inventoryPagination = {
+      page: payload.page || 1,
+      page_size: payload.page_size || 50,
+      total: payload.total || 0,
+      pages: payload.pages || 0,
+    };
+    state.inventorySourceCounts = payload.source_counts || { all: 0, source_import: 0 };
+  } catch (error) {
+    if (serial !== state.inventoryRequestSerial) return;
+    state.inventoryError = error.message;
+  } finally {
+    if (serial === state.inventoryRequestSerial) {
+      state.inventoryLoading = false;
+      renderInventory();
+      fillCandidateSelects();
+    }
   }
 }
 
@@ -319,28 +386,62 @@ function inventoryRows() {
 function renderInventory() {
   const rows = filteredCandidates();
   renderCategoryFilters();
-  document.querySelector("#inventoryCount").textContent = `${rows.length} 条内容`;
+  document.querySelector("#inventoryCount").textContent = `${state.inventoryPagination.total || 0} 条内容`;
+  document.querySelector("#allSourceCount").textContent = number(state.inventorySourceCounts.all || 0);
+  document.querySelector("#sourceImportCount").textContent = number(state.inventorySourceCounts.source_import || 0);
+  document.querySelectorAll("#statusFilters [data-status]").forEach((button) => {
+    button.classList.toggle("active", (button.dataset.status || "") === state.status);
+  });
+  document.querySelectorAll("#sourceFilters [data-source-type]").forEach((button) => {
+    button.classList.toggle("active", (button.dataset.sourceType || "") === state.sourceFilter);
+  });
+  document.querySelector("#inventoryPlatformFilter").value = state.platformFilter;
+  const pagination = document.querySelector("#inventoryPagination");
+  pagination.hidden = state.inventoryLoading || !!state.inventoryError || state.inventoryPagination.pages <= 1;
+  document.querySelector("#inventoryPageSummary").textContent = state.inventoryPagination.pages
+    ? `第 ${state.inventoryPagination.page} / ${state.inventoryPagination.pages} 页 · 共 ${state.inventoryPagination.total} 条`
+    : "暂无内容";
+  document.querySelector("#inventoryPreviousPage").disabled = state.inventoryPagination.page <= 1;
+  document.querySelector("#inventoryNextPage").disabled = state.inventoryPagination.page >= state.inventoryPagination.pages;
+  if (state.inventoryLoading) {
+    document.querySelector("#inventoryTable").innerHTML = `<tr><td colspan="10"><div class="empty-state">正在加载内容库存</div></td></tr>`;
+    updateBatchToolbar();
+    return;
+  }
+  if (state.inventoryError) {
+    document.querySelector("#inventoryTable").innerHTML = `<tr><td colspan="10"><div class="empty-state inventory-error-state"><span>加载失败：${escapeHtml(state.inventoryError)}</span><button class="secondary-button" id="retryInventory" type="button">重试</button></div></td></tr>`;
+    document.querySelector("#retryInventory").addEventListener("click", () => loadInventory());
+    updateBatchToolbar();
+    return;
+  }
   document.querySelector("#inventoryTable").innerHTML = rows.length ? rows.map((item) => {
     const thumb = item.cover_url || item.thumbnail_url;
     const task = activeTaskFor(item.id);
     const status = task ? `${task.action === "download" ? "下载" : task.action === "produce" ? "制作" : "处理"}中` : (statusLabels[item.status] || item.status);
-    const failure = item.failure_detail ? `<small class="failure-reason" title="${escapeHtml(item.failure_detail)}">${escapeHtml(failureReason(item.failure_detail))}</small>` : "";
+    const failureDetail = item.import_error_summary || item.failure_detail || "";
+    const failure = failureDetail ? `<small class="failure-reason" title="${escapeHtml(failureDetail)}">${escapeHtml(failureReason(failureDetail))}</small>` : "";
     const outro = sourceOutroText(item.source_outro_trim);
     const publicationNote = publicationStateText(item.publication_state);
     const isChild = !!item.is_child;
     const isParent = !!item.is_parent;
+    const importInfo = item.source_type === "source_import" ? `
+      <strong><span class="source-import-pill">导入视频</span></strong>
+      <small>目标区域：${escapeHtml(item.target_area_label || "待制作")}</small>
+      <small>下载：${escapeHtml(item.download_status || "未知")} · ${escapeHtml(item.import_operator || item.review_source || "dashboard")}</small>
+    ` : `<span class="muted">非导入</span>`;
     return `
     <tr class="${isChild ? 'child-slice-row' : ''}" style="${isChild ? 'background-color: var(--surface-hover);' : ''}">
       <td class="check-column"><input class="candidate-checkbox" type="checkbox" data-candidate-select="${item.id}" ${state.selectedCandidates.has(item.id) ? "checked" : ""} aria-label="选择 ${escapeHtml(item.display_title || item.title || item.id)}"></td>
-      <td style="${isChild ? 'padding-left: 2rem;' : ''}"><div class="content-cell">${thumb ? `<img class="mini-cover" src="${thumb}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<div class="mini-cover"></div>`}<div><strong title="${escapeHtml(item.display_title || item.title)}">${escapeHtml(item.display_title || item.title || "未命名内容")}${item.published_flag ? `<span class="badge-published">Published</span>` : ""}<span class="category-pill">${escapeHtml(item.initial_category || "未分类")}</span></strong><small>${escapeHtml(item.platform)} · ${item.id}${item.initial_keyword ? ` · ${escapeHtml(item.initial_keyword)}` : item.keyword ? ` · ${escapeHtml(item.keyword)}` : ""}</small></div></div></td>
+      <td style="${isChild ? 'padding-left: 2rem;' : ''}"><div class="content-cell">${thumb ? `<img class="mini-cover" src="${thumb}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<div class="mini-cover"></div>`}<div><strong title="${escapeHtml(item.display_title || item.title)}">${escapeHtml(item.display_title || item.title || "未命名内容")}${item.published_flag ? `<span class="badge-published">Published</span>` : ""}<span class="category-pill">${escapeHtml(item.initial_category || "未分类")}</span></strong><small>${escapeHtml(item.platform)} · ${item.id}${item.initial_keyword ? ` · ${escapeHtml(item.initial_keyword)}` : item.keyword ? ` · ${escapeHtml(item.keyword)}` : ""}</small>${item.source_type === "source_import" ? `<small>导入时间：${dateText(item.imported_at)}</small>` : ""}</div></div></td>
       <td>${escapeHtml(item.platform)}</td>
       <td><strong>${escapeHtml(item.content_type || "unknown")}</strong><small>${escapeHtml(item.segment_strategy || "未分析")} · ${escapeHtml(item.audio_policy || "自动")}</small>${outro}</td>
+      <td class="import-info-cell">${importInfo}</td>
       <td>${Number(item.highlight_score || 0).toFixed(1)}</td>
       <td><span title="${escapeHtml(scoreTooltip(item.score_breakdown))}">${Number(item.score || 0).toFixed(1)}</span></td>
       <td><span class="status-pill ${task ? "running" : statusClass(item.status)}">${status}</span>${publicationNote}${failure}</td><td>${dateText(item.updated_at)}</td>
       <td>${task ? `<span class="row-progress">${task.progress || 0}%</span>` : candidateAction(item) + (isParent && item.status !== 'DOWNLOAD_FAILED' ? ` <button class="secondary-button" style="margin-top: 4px;" onclick="openProductionDialog('${item.id}')">手动切片</button>` : '')}</td>
     </tr>`;
-  }).join("") : `<tr><td colspan="9"><div class="empty-state">没有符合条件的内容</div></td></tr>`;
+  }).join("") : `<tr><td colspan="10"><div class="empty-state">${state.sourceFilter === "source_import" ? "还没有导入视频" : "没有符合条件的内容"}</div></td></tr>`;
   document.querySelectorAll("[data-candidate-select]").forEach((checkbox) => checkbox.addEventListener("change", () => {
     if (checkbox.checked) state.selectedCandidates.add(checkbox.dataset.candidateSelect);
     else state.selectedCandidates.delete(checkbox.dataset.candidateSelect);
@@ -351,6 +452,7 @@ function renderInventory() {
   document.querySelectorAll("[data-review-decision]").forEach((button) => button.addEventListener("click", () => submitReview(button.dataset.reviewDecision, button.dataset.candidateId)));
   document.querySelectorAll("[data-publish-asset]").forEach((button) => button.addEventListener("click", () => openPublishDialog(button.dataset.publishAsset, button.dataset.publishCandidate || "")));
   document.querySelectorAll("[data-design-id]").forEach((button) => button.addEventListener("click", () => openDesignDialog(button.dataset.designId, button.dataset.designAssets || "")));
+  document.querySelectorAll("[data-import-retry]").forEach((button) => button.addEventListener("click", () => retrySourceImport(button.dataset.importRetry)));
   updateBatchToolbar();
 }
 
@@ -863,7 +965,7 @@ function renderCategoryFilters() {
   container.querySelectorAll("[data-category-filter]").forEach((button) => button.addEventListener("click", () => {
     state.categoryFilter = button.dataset.categoryFilter || "";
     state.selectedCandidates.clear();
-    renderInventory();
+    loadInventory({ resetPage: true });
   }));
 }
 
@@ -919,7 +1021,7 @@ function renderTasks() {
   const tasks = state.tasks.filter((task) => task.status === "RUNNING" || Date.now() - new Date(task.finished_at || 0).getTime() < 120000);
   panel.hidden = tasks.length === 0;
   panel.innerHTML = tasks.map((task) => `<div class="task-progress-item">
-    <div><strong>${escapeHtml({discover:"发现素材",ingest:"导入素材",download:"下载素材",produce:"制作成片"}[task.action] || task.action)}</strong><span>${escapeHtml(task.message || "处理中")}${task.total > 1 ? ` · ${task.completed || 0}/${task.total}` : ""}</span></div>
+    <div><strong>${escapeHtml({discover:"发现素材",ingest:"导入素材",download:"下载素材",produce:"制作成片"}[task.action] || task.action)}</strong><span>${escapeHtml(task.message || "处理中")}${task.target_area_label ? ` · 目标：${escapeHtml(task.target_area_label)}` : ""}${task.total > 1 ? ` · ${task.completed || 0}/${task.total}` : ""}</span></div>
     <div class="progress-track"><span style="width:${Math.max(2, Number(task.progress || 0))}%"></span></div><b>${Number(task.progress || 0)}%</b>
   </div>`).join("");
 }
@@ -988,8 +1090,10 @@ function approvedOutputActions(item) {
 function candidateAction(item) {
   const sourceLink = item.url ? `<button class="table-action" onclick="window.open('${escapeHtml(item.url)}','_blank')">源页</button>` : "";
   const deleteButton = `<button class="table-action danger-action" data-delete-id="${item.id}">删除</button>`;
+  if (item.source_import_placeholder) return item.status === "IMPORT_FAILED" ? `${sourceLink}<button class="table-action" data-import-retry="${escapeHtml(item.source_import_id)}" type="button">重试导入</button>` : sourceLink;
   if (item.status === "DISCOVERED") return `${sourceLink}<button class="table-action" data-candidate-action="download" data-candidate-id="${item.id}">下载</button><button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">制作</button>${deleteButton}`;
   if (item.status === "DOWNLOAD_FAILED") return `${sourceLink}<button class="table-action" data-candidate-action="download" data-candidate-id="${item.id}">重新下载</button><button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">下载并制作</button>${deleteButton}`;
+  if (item.status === "IMPORT_FAILED" && item.source_import_id) return `${sourceLink}<button class="table-action" data-import-retry="${escapeHtml(item.source_import_id)}" type="button">重试导入</button>${deleteButton}`;
   if (item.status === "PRODUCTION_FAILED") return `${sourceLink}<button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">重新制作</button>${deleteButton}`;
   if (["DOWNLOADED", "REVISION_REQUIRED", "BLOCKED_RIGHTS"].includes(item.status)) return `<button class="table-action" data-candidate-action="produce" data-candidate-id="${item.id}">制作</button>${deleteButton}`;
   if (item.status === "READY_FOR_REVIEW") {
@@ -997,6 +1101,27 @@ function candidateAction(item) {
   }
   if (item.status === "APPROVED") return `${approvedOutputActions(item)}${deleteButton}`;
   return `${deleteButton}`;
+}
+
+async function retrySourceImport(importId) {
+  const item = state.candidates.find((candidate) => candidate.source_import_id === importId);
+  if (!item) return toast("找不到导入记录", "error");
+  try {
+    const result = await api("/api/actions", {
+      method: "POST",
+      headers: { "X-Idempotency-Key": item.source_import_id },
+      body: JSON.stringify({
+        action: "ingest",
+        platform: item.platform,
+        url: item.url,
+        target_area: item.target_area || "pending_production",
+      }),
+    });
+    toast(`导入重试任务 ${result.task_id} 已启动`);
+    pollTask(result.task_id);
+  } catch (error) {
+    toast(`重试失败：${error.message}`, "error");
+  }
 }
 
 async function submitReview(decision, candidateId) {
@@ -1063,9 +1188,10 @@ async function pollTask(taskId) {
     }
     else {
       if (task.action === "ingest") {
-        state.status = "DOWNLOAD_FAILED";
+        state.status = "IMPORT_FAILED";
+        state.sourceFilter = "source_import";
         await refreshAll();
-        toast("导入失败，已放入下载失败列表；请查看该行失败原因", "error");
+        toast("导入失败，已放入导入失败列表；请查看原因并重试", "error");
         return;
       }
       toast(`任务失败：${task.error}`, "error");
@@ -1645,7 +1771,7 @@ async function parseUploadResponse(response) {
   return payload;
 }
 
-async function uploadServerFile(file, kind, token, onProgress = () => {}) {
+async function uploadServerFile(file, kind, token, onProgress = () => {}, completeOptions = {}) {
   const init = await api("/api/uploads/init", {
     method: "POST",
     body: JSON.stringify({ filename: file.name, kind, size: file.size }),
@@ -1666,9 +1792,11 @@ async function uploadServerFile(file, kind, token, onProgress = () => {}) {
   onProgress(97, "服务器正在合并文件");
   const completed = await api("/api/uploads/complete", {
     method: "POST",
-    body: JSON.stringify({ upload_id: init.id }),
+    headers: completeOptions.idempotency_key ? { "X-Idempotency-Key": completeOptions.idempotency_key } : {},
+    body: JSON.stringify({ upload_id: init.id, ...completeOptions }),
   });
-  onProgress(100, kind === "source" ? "上传完成，已进入待制作库存" : kind === "design_image" ? "图片上传完成" : "Reaction 上传完成");
+  const targetLabel = completed.target_area_label || (completeOptions.target_area === "approved" ? "审核通过" : "待制作");
+  onProgress(100, kind === "source" ? `上传完成，目标区域：${targetLabel}` : kind === "design_image" ? "图片上传完成" : "Reaction 上传完成");
   return completed;
 }
 
@@ -2091,7 +2219,10 @@ document.querySelectorAll("[data-open-view]").forEach((button) => button.addEven
 document.querySelector("#refreshButton").addEventListener("click", () => refreshAll(true));
 document.querySelector("#discoverButton").addEventListener("click", () => {
   document.querySelector("#discoverUploadProgress").hidden = true;
+  document.querySelector('input[name="discoverTarget"][value="pending_production"]').checked = true;
+  state.discoverIdempotencyKey = globalThis.crypto?.randomUUID?.() || `source-import-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   updateDiscoverMode();
+  updateDiscoverTarget();
   document.querySelector("#discoverDialog").showModal();
 });
 document.querySelector("#closeDiscoverDialog").addEventListener("click", () => document.querySelector("#discoverDialog").close());
@@ -2100,7 +2231,11 @@ document.querySelector("#closePublishDialog").addEventListener("click", () => do
 document.querySelector("#cancelPublishDialog").addEventListener("click", () => document.querySelector("#publishDialog").close());
 document.querySelector("#closeClaimMetricsDialog").addEventListener("click", () => document.querySelector("#claimMetricsDialog").close());
 document.querySelector("#cancelClaimMetricsDialog").addEventListener("click", () => document.querySelector("#claimMetricsDialog").close());
-document.querySelector("#globalSearch").addEventListener("input", (event) => { state.search = event.target.value; renderInventory(); });
+document.querySelector("#globalSearch").addEventListener("input", (event) => {
+  state.search = event.target.value;
+  clearTimeout(state.inventorySearchTimer);
+  state.inventorySearchTimer = setTimeout(() => loadInventory({ resetPage: true }), 250);
+});
 document.querySelector("#selectVisible").addEventListener("change", (event) => {
   filteredCandidates().forEach((item) => event.target.checked ? state.selectedCandidates.add(item.id) : state.selectedCandidates.delete(item.id));
   renderInventory();
@@ -2115,8 +2250,29 @@ document.querySelector("#batchDelete").addEventListener("click", () => deleteCan
 document.querySelectorAll("#statusFilters button").forEach((button) => button.addEventListener("click", () => {
   document.querySelectorAll("#statusFilters button").forEach((item) => item.classList.toggle("active", item === button));
   state.status = button.dataset.status;
-  renderInventory();
+  state.selectedCandidates.clear();
+  loadInventory({ resetPage: true });
 }));
+document.querySelectorAll("#sourceFilters [data-source-type]").forEach((button) => button.addEventListener("click", () => {
+  state.sourceFilter = button.dataset.sourceType || "";
+  state.selectedCandidates.clear();
+  loadInventory({ resetPage: true });
+}));
+document.querySelector("#inventoryPlatformFilter").addEventListener("change", (event) => {
+  state.platformFilter = event.target.value || "";
+  state.selectedCandidates.clear();
+  loadInventory({ resetPage: true });
+});
+document.querySelector("#inventoryPreviousPage").addEventListener("click", () => {
+  if (state.inventoryLoading || state.inventoryPagination.page <= 1) return;
+  state.inventoryPagination.page -= 1;
+  loadInventory();
+});
+document.querySelector("#inventoryNextPage").addEventListener("click", () => {
+  if (state.inventoryLoading || state.inventoryPagination.page >= state.inventoryPagination.pages) return;
+  state.inventoryPagination.page += 1;
+  loadInventory();
+});
 document.querySelectorAll("#posterStatusFilters button").forEach((button) => button.addEventListener("click", () => {
   if (state.posterLoading || state.posterStatus === (button.dataset.posterStatus || "")) return;
   document.querySelectorAll("#posterStatusFilters button").forEach((item) => item.classList.toggle("active", item === button));
@@ -2384,16 +2540,36 @@ function updateDiscoverMode() {
     tiktok: "粘贴 TikTok 具体视频 URL；服务器 TikTok 登录态会用于解析和下载。",
     facebook: "请粘贴具体视频或 Reels URL；服务器登录态必须有权访问该视频。",
   };
+  const target = selectedDiscoverTarget();
+  const targetLabel = target === "approved" ? "审核通过" : "待制作";
   const modeNotes = {
-    url: "粘贴单条视频 URL 后会在服务器解析并下载，成功后直接进入待制作；超过 30 分钟的素材只允许删除。",
-    upload: "上传自有或已授权源视频后会直接进入待制作；后续制作规则与爬取视频完全一致。",
+    url: `粘贴单条视频 URL 后会在服务器解析并下载；目标区域：${targetLabel}。超过 30 分钟的素材不会进入成功库存。`,
+    upload: `上传自有或已授权视频后会执行完整媒体校验；目标区域：${targetLabel}。`,
   };
   document.querySelector("#discoverPlatformNote").textContent = modeNotes[mode] || notes[platform];
   document.querySelector("#submitDiscovery").textContent = mode === "upload" ? "上传并入库" : "开始运行";
 }
 
+function selectedDiscoverTarget() {
+  return document.querySelector('input[name="discoverTarget"]:checked')?.value || "pending_production";
+}
+
+function updateDiscoverTarget() {
+  const approvedInput = document.querySelector('input[name="discoverTarget"][value="approved"]');
+  const canApprove = !!state.importCapabilities.can_direct_approve;
+  approvedInput.disabled = !canApprove;
+  document.querySelector("#discoverApprovedTarget").classList.toggle("disabled", !canApprove);
+  document.querySelector("#discoverApprovalPermission").hidden = canApprove;
+  if (!canApprove && approvedInput.checked) {
+    document.querySelector('input[name="discoverTarget"][value="pending_production"]').checked = true;
+  }
+  document.querySelector("#discoverApprovalWarning").hidden = selectedDiscoverTarget() !== "approved";
+  updateDiscoverMode();
+}
+
 document.querySelector("#discoverMode").addEventListener("change", updateDiscoverMode);
 document.querySelector("#discoverPlatform").addEventListener("change", updateDiscoverMode);
+document.querySelectorAll('input[name="discoverTarget"]').forEach((input) => input.addEventListener("change", updateDiscoverTarget));
 updateDiscoverMode();
 
 document.querySelector("#closeProductionDialog").addEventListener("click", () => document.querySelector("#productionDialog").close());
@@ -2529,23 +2705,49 @@ document.querySelector("#discoverForm").addEventListener("submit", async (event)
   try {
     const mode = document.querySelector("#discoverMode").value;
     const platform = document.querySelector("#discoverPlatform").value;
+    const targetArea = selectedDiscoverTarget();
+    const targetLabel = targetArea === "approved" ? "审核通过" : "待制作";
+    if (targetArea === "approved" && !state.importCapabilities.can_direct_approve) {
+      throw new Error("当前账号没有直接导入审核通过成片的后台权限");
+    }
+    if (targetArea === "approved" && !confirm("该视频将作为外部完整成片直接进入审核通过，并跳过智能切片与双版本制作。确认继续？")) {
+      return;
+    }
     if (mode === "upload") {
       const file = document.querySelector("#discoverUploadFile").files[0];
       if (!file) throw new Error("请选择要上传的源视频");
-      const uploaded = await uploadServerFile(file, "source", "", setDiscoverUploadProgress);
+      const uploaded = await uploadServerFile(file, "source", "", setDiscoverUploadProgress, {
+        source_import: true,
+        target_area: targetArea,
+        idempotency_key: state.discoverIdempotencyKey,
+        operator_id: localStorage.getItem("jaguartvOperatorName") || "dashboard",
+      });
       document.querySelector("#discoverUploadFile").value = "";
       document.querySelector("#discoverDialog").close();
-      toast(`源视频已入库：${uploaded.candidate_id}，可在待制作中生成成片`);
-      state.status = "DOWNLOADED";
+      toast(`源视频已入库：${uploaded.candidate_id}，目标区域：${targetLabel}`);
+      state.status = targetArea === "approved" ? "APPROVED" : "DOWNLOADED";
+      state.sourceFilter = "source_import";
       await refreshAll();
       return;
     }
-    document.querySelector("#discoverDialog").close();
     const url = document.querySelector("#discoverUrl").value.trim();
-    const payload = { action: "ingest", platform, url };
-    const result = await api("/api/actions", { method: "POST", body: JSON.stringify(payload) });
-    state.status = "DOWNLOADED";
-    toast(`URL 导入下载任务 ${result.task_id} 已启动，完成后进入待制作`);
+    const payload = {
+      action: "ingest",
+      platform,
+      url,
+      target_area: targetArea,
+      idempotency_key: state.discoverIdempotencyKey,
+      operator_id: localStorage.getItem("jaguartvOperatorName") || "dashboard",
+    };
+    const result = await api("/api/actions", {
+      method: "POST",
+      headers: { "X-Idempotency-Key": state.discoverIdempotencyKey },
+      body: JSON.stringify(payload),
+    });
+    document.querySelector("#discoverDialog").close();
+    state.status = targetArea === "approved" ? "APPROVED" : "DOWNLOADED";
+    state.sourceFilter = "source_import";
+    toast(`URL 导入下载任务 ${result.task_id} 已启动，目标区域：${targetLabel}`);
     pollTask(result.task_id);
   } catch (error) { toast(error.message, "error"); }
   finally { button.disabled = false; }

@@ -80,45 +80,68 @@ def test_ocr_regions_merge_into_stable_horizontal_bands():
     assert bottom[2] >= 0.56
 
 
-def test_ocr_subtitle_filter_drops_top_and_tiny_regions():
+def test_ocr_subtitle_filter_keeps_mid_screen_subtitles_but_drops_tiny_regions():
     regions = _subtitle_band_regions([
-        [0.04, 0.10, 0.30, 0.16],
+        [0.18, 0.24, 0.62, 0.30],
         [0.82, 0.70, 0.86, 0.74],
         [0.20, 0.72, 0.72, 0.80],
     ])
-    assert regions == [[0.185, 0.712, 0.735, 0.808]]
+    assert len(regions) == 2
+    assert regions[0] == pytest.approx([0.165, 0.232, 0.635, 0.308])
+    assert regions[1] == pytest.approx([0.185, 0.712, 0.735, 0.808])
 
 
-def test_ocr_blur_uses_fallback_regions_when_detection_misses(tmp_path: Path, monkeypatch):
+def test_ocr_blur_does_not_use_broad_fallback_when_detection_misses(tmp_path: Path, monkeypatch):
     media = tmp_path / "source.mp4"
     media.write_bytes(b"video")
     output = tmp_path / "blurred.mp4"
-    fallback = [[0.04, 0.70, 0.96, 0.94]]
 
     def fake_run(args, *, check=False):
         extracted = Path(args[-1])
         extracted.write_bytes(b"segment")
         return type("Result", (), {"returncode": 0, "stderr": "", "stdout": ""})()
 
-    def fake_blur_static_regions(extracted, destination, regions, *, sigma=28):
-        destination.write_bytes(b"blurred")
-        assert regions == fallback
-        return destination
-
     monkeypatch.setattr("jaguartv_factory.workbuddy_adapter._run", fake_run)
-    monkeypatch.setattr("jaguartv_factory.workbuddy_adapter.detect_chinese_text_regions", lambda _path, **_kwargs: [])
-    monkeypatch.setattr("jaguartv_factory.workbuddy_adapter.blur_static_regions", fake_blur_static_regions)
+    monkeypatch.setattr("jaguartv_factory.workbuddy_adapter.detect_chinese_text_region_events", lambda _path, **_kwargs: [])
 
     info = prepare_ocr_blurred_segment(
         media,
         output,
         start=0,
         duration=3,
-        fallback_regions=fallback,
     )
+    assert output.read_bytes() == b"segment"
+    assert info["used"] is False
+    assert info["regions"] == []
+    assert info["reason"] == "no_chinese_regions_detected"
+
+
+def test_ocr_blur_uses_timed_regions_for_dynamic_subtitles(tmp_path: Path, monkeypatch):
+    media = tmp_path / "source.mp4"
+    media.write_bytes(b"video")
+    output = tmp_path / "blurred.mp4"
+    events = [{"start": 0.5, "end": 1.4, "regions": [[0.22, 0.34, 0.78, 0.43]]}]
+
+    def fake_run(args, *, check=False):
+        extracted = Path(args[-1])
+        extracted.write_bytes(b"segment")
+        return type("Result", (), {"returncode": 0, "stderr": "", "stdout": ""})()
+
+    def fake_blur_timed_regions(extracted, destination, timed_regions, *, sigma=52):
+        destination.write_bytes(b"timed-blur")
+        assert timed_regions == events
+        assert sigma == 52
+        return destination
+
+    monkeypatch.setattr("jaguartv_factory.workbuddy_adapter._run", fake_run)
+    monkeypatch.setattr("jaguartv_factory.workbuddy_adapter.detect_chinese_text_region_events", lambda _path, **_kwargs: events)
+    monkeypatch.setattr("jaguartv_factory.workbuddy_adapter.blur_timed_regions", fake_blur_timed_regions)
+
+    info = prepare_ocr_blurred_segment(media, output, start=0, duration=3, sigma=52)
+    assert output.read_bytes() == b"timed-blur"
     assert info["used"] is True
-    assert info["regions"] == fallback
-    assert info["reason"] == "fallback_regions_blurred_no_chinese_regions_detected"
+    assert info["regions"] == [[0.22, 0.34, 0.78, 0.43]]
+    assert info["timed_regions"] == events
 
 
 def test_ocr_auto_backend_falls_back_to_paddleocr(tmp_path: Path, monkeypatch):

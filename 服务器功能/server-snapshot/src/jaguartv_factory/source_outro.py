@@ -162,15 +162,16 @@ def visual_tail_signals(frames: list[tuple[float, Path]], tail_start: float) -> 
         {"from": frames[index - 1][0], "to": frames[index][0], "score": frame_diff_score(frames[index - 1][1], frames[index][1])}
         for index in range(1, len(frames))
     ]
-    tail_diffs = [item["score"] for item in diffs[-2:]] or [0.0]
-    early_diffs = [item["score"] for item in diffs[:-2]] or [0.0]
-    tail_static = max(tail_diffs) <= 0.045
-    style_shift = max(early_diffs) >= 0.16 and max(tail_diffs) <= 0.07
     cut_candidates = [item["to"] for item in diffs if item["score"] >= 0.16]
+    last_cut_sec = max(cut_candidates) if cut_candidates else tail_start
+    post_cut_diffs = [item["score"] for item in diffs if item["from"] >= last_cut_sec]
+    tail_diffs = post_cut_diffs or ([item["score"] for item in diffs[-2:]] if not cut_candidates else [])
+    tail_static = bool(tail_diffs) and max(tail_diffs) <= 0.045
+    style_shift = bool(cut_candidates) and bool(post_cut_diffs) and max(post_cut_diffs) <= 0.07
     return {
         "tail_static": tail_static,
         "style_shift": style_shift,
-        "last_cut_sec": max(cut_candidates) if cut_candidates else tail_start,
+        "last_cut_sec": last_cut_sec,
         "diffs": [{"from": item["from"], "to": item["to"], "score": round(item["score"], 4)} for item in diffs],
     }
 

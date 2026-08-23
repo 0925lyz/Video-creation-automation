@@ -22,7 +22,6 @@ from jaguartv_factory.core import (
     localization_profile_for_candidate,
     mobile_review_format_needed,
     now_iso,
-    produce_passthrough_review_package,
     produce_candidate,
     production_design_config,
     register_url_stub_candidate,
@@ -126,16 +125,16 @@ def test_remotion_runtime_reinstalls_when_deep_dependency_is_missing(tmp_path: P
     assert any(call[:2] == ["/usr/bin/npm", "install"] for call in calls)
 
 
-def test_freeform_design_accepts_single_variant(tmp_path: Path):
+def test_freeform_design_keeps_required_variant_pair(tmp_path: Path):
     config = {"_root": str(tmp_path), "edit": {}, "remotion": {"dual_variant": {}}}
     patched = production_design_config(config, {"design": {"variants": ["FB版"], "layers": [
         {"id": "text", "type": "text", "text": "FB only", "x": 0.2, "y": 0.3},
     ]}})
 
-    assert patched["remotion"]["custom_design"]["variants"] == ["FB版"]
+    assert patched["remotion"]["custom_design"]["variants"] == ["通用版", "FB版"]
 
 
-def test_design_overlay_archives_review_package_with_package_id(tmp_path: Path, monkeypatch):
+def test_design_overlay_cannot_use_single_variant_archive_bypass(tmp_path: Path, monkeypatch):
     config = {
         "_root": str(tmp_path),
         "run": {"workspace": "workspace"},
@@ -148,42 +147,23 @@ def test_design_overlay_archives_review_package_with_package_id(tmp_path: Path, 
     base_video.parent.mkdir(parents=True)
     base_video.write_bytes(b"base")
     candidate_id = register_url_stub_candidate(config, "https://www.facebook.com/watch/?v=design-archive")
-    row = connect_db(config).execute("SELECT * FROM candidates WHERE id=?", (candidate_id,)).fetchone()
     archive_calls = []
-
-    def fake_render(config_arg, clean_media, output, *, variant, subtitles=None, job_id=None, candidate_id=None):
-        output.write_bytes(f"{variant}-design-render".encode())
-        return {"variant": variant, "path": str(output), "filename": output.name}
 
     def fake_archive(config_arg, package_id, review_dir):
         archive_calls.append((package_id, Path(review_dir)))
         return {"enabled": True, "files": {"video.mp4": {"url": "https://example.test/video.mp4"}}}
 
     monkeypatch.setattr("jaguartv_factory.core.require_binary", lambda name: name)
-    monkeypatch.setattr("jaguartv_factory.core.remotion_output_variants", lambda config_arg: ["通用版"])
-    monkeypatch.setattr("jaguartv_factory.core.render_video_remotion_variant", fake_render)
     monkeypatch.setattr("jaguartv_factory.core.media_duration", lambda path: 12.0)
-    monkeypatch.setattr("jaguartv_factory.core.qa_video", lambda path, config_arg=None: {"passed": True})
-    monkeypatch.setattr("jaguartv_factory.core.render_cover_image", lambda config_arg, kit, source_video, destination: destination.write_bytes(b"cover") or "fake_cover")
     monkeypatch.setattr("jaguartv_factory.core.archive_review_package", fake_archive)
+    patched = production_design_config(config, {"design": {
+        "base_video_path": str(base_video),
+        "variants": ["通用版"],
+        "layers": [{"type": "text", "text": "Texto", "x": 0.1, "y": 0.1}],
+    }})
 
-    review = produce_candidate(config, row, options={
-        "batch_label": "文案设计版",
-        "design": {
-            "base_video_path": str(base_video),
-            "variants": ["通用版"],
-            "layers": [{"type": "text", "text": "Texto", "x": 0.1, "y": 0.1}],
-        },
-    })
-
-    assert archive_calls == [(candidate_id, review)]
-    assert (review / "video.mp4").is_file()
-    assert (review / "metadata.json").is_file()
-    archived_event = connect_db(config).execute(
-        "SELECT 1 FROM events WHERE candidate_id=? AND event_type='SERVER_ARCHIVED'",
-        (candidate_id,),
-    ).fetchone()
-    assert archived_event is not None
+    assert patched["remotion"]["custom_design"]["variants"] == ["通用版", "FB版"]
+    assert archive_calls == []
 
 
 def test_design_image_path_is_limited_to_uploads_and_brand_assets(tmp_path: Path):
@@ -588,7 +568,6 @@ def test_demo_config_loads():
     assert config["localization"]["preserve_backing_track"] is True
     assert config["localization"]["require_backing_track"] is True
     assert config["remotion"]["captions"]["max_lines"] == 2
-    assert config["edit"]["short_video_threshold_sec"] == 75
     assert config["selection"]["max_source_duration_sec"] == 1800
     assert config["brand"]["kits"]["jaguartv"]["endcard"]["mode"] == "orientation_image"
     assert config["brand"]["kits"]["jaguartv"]["endcard"]["duration_sec"] == 1.5
@@ -938,7 +917,7 @@ def test_localization_profile_only_localizes_chinese_audio_from_bilibili_or_douy
     assert profiles["douyin"]["audio_mode"] == "localized"
 
 
-def test_class_two_candidate_routes_to_original_passthrough(tmp_path: Path, monkeypatch):
+def test_class_two_candidate_cannot_route_to_original_passthrough(tmp_path: Path, monkeypatch):
     config = {
         "_root": str(tmp_path),
         "run": {"workspace": "workspace"},
@@ -960,14 +939,6 @@ def test_class_two_candidate_routes_to_original_passthrough(tmp_path: Path, monk
         audio_policy="preserve_output_audio",
         operator_override=False,
     )
-    calls: dict[str, Path] = {}
-
-    def fake_passthrough(config_arg, row_arg, media, *args, **kwargs):
-        calls["media"] = Path(media)
-        review = tmp_path / "review"
-        review.mkdir()
-        return review
-
     monkeypatch.setattr("jaguartv_factory.core.require_binary", lambda name: name)
     monkeypatch.setattr("jaguartv_factory.core.media_duration", lambda path: 18.0)
     monkeypatch.setattr("jaguartv_factory.core.detect_source_outro", lambda *args, **kwargs: {"applied": False})
@@ -977,58 +948,8 @@ def test_class_two_candidate_routes_to_original_passthrough(tmp_path: Path, monk
         "jaguartv_factory.core.localization_profile_for_candidate",
         lambda *args, **kwargs: {"class": 2, "audio_mode": "preserve_source", "reason": "no_chinese_speech_or_subtitle_evidence"},
     )
-    monkeypatch.setattr("jaguartv_factory.core.produce_passthrough_review_package", fake_passthrough)
-
-    review = produce_candidate(config, row)
-    assert review == tmp_path / "review"
-    assert calls["media"] == source
-
-
-def test_passthrough_review_package_persists_production_metadata(tmp_path: Path, monkeypatch):
-    config = {
-        "_root": str(tmp_path),
-        "run": {"workspace": "workspace"},
-        "storage": {"provider": "disabled"},
-        "brand": {"default_kit": "jaguartv", "kits": {"jaguartv": {}}},
-    }
-    candidate_id = register_url_stub_candidate(config, "https://www.facebook.com/reel/short-source")
-    connection = connect_db(config)
-    row = connection.execute("SELECT * FROM candidates WHERE id=?", (candidate_id,)).fetchone()
-    (tmp_path / "workspace" / "jobs" / candidate_id).mkdir(parents=True)
-    media = tmp_path / "source.mp4"
-    media.write_bytes(b"source-video")
-    strategy = SimpleNamespace(
-        content_type="football",
-        content_type_confidence=1.0,
-        matched_rules=[],
-        operator_override=False,
-    )
-
-    monkeypatch.setattr("jaguartv_factory.core.render_cover_image", lambda *args: "video_frame")
-    monkeypatch.setattr("jaguartv_factory.core.qa_video", lambda *args: {"playable": True, "passed": False})
-    monkeypatch.setattr("jaguartv_factory.core.media_duration", lambda path: 11.0)
-    monkeypatch.setattr("jaguartv_factory.core.media_dimensions", lambda path: (540, 960))
-    monkeypatch.setattr("jaguartv_factory.core.archive_review_package", lambda *args: {"enabled": False})
-
-    produce_passthrough_review_package(
-        config,
-        row,
-        media,
-        {"keyword": "Libertadores", "category": "football"},
-        {"class": 2, "audio_mode": "preserve_source", "reason": "no_chinese_speech_or_subtitle_evidence"},
-        {"applied": False},
-        strategy,
-        {"decision": "REVIEW_REQUIRED"},
-        lambda *_args: None,
-    )
-
-    saved = connection.execute("SELECT status,metadata_json FROM candidates WHERE id=?", (candidate_id,)).fetchone()
-    payload = json.loads(saved["metadata_json"])
-    assert saved["status"] == "READY_FOR_REVIEW"
-    assert payload["output_variants"][0]["variant"] == "原视频"
-    assert payload["audio"]["mode"] == "preserve_source"
-    assert payload["qa"]["passed"] is True
-    assert payload["qa"]["passthrough_reason"] == "source_shorter_than_output_minimum"
+    with pytest.raises(RuntimeError, match="standard production requires edit.render_engine=remotion"):
+        produce_candidate(config, row)
 
 
 def test_localized_clean_render_uses_ptbr_voice_without_fixed_bgm(tmp_path: Path, monkeypatch):
