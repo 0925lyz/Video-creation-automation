@@ -457,6 +457,25 @@ def test_publication_data_sync_is_due_immediately_and_restart_recovers_task(tmp_
     assert state["next_sync_at"] == "2026-07-01T12:00:00+00:00"
 
 
+def test_legacy_pending_tasks_are_requeued_for_immediate_data_sync(tmp_path: Path):
+    config = config_for(tmp_path)
+    add_account(config, "account-a", "channel-a")
+    add_publication(config, 1, published_at="2026-07-05T10:00:00+00:00")
+    schedule_first_sync(config, 1)
+    connection = connect_db(config)
+    connection.execute(
+        "UPDATE youtube_sync_states SET next_sync_at=first_sync_due_at WHERE publication_id=1"
+    )
+    connection.commit()
+
+    due = restore_sync_tasks(config, now=datetime(2026, 7, 5, 12, tzinfo=timezone.utc))
+
+    state = connection.execute("SELECT * FROM youtube_sync_states WHERE publication_id=1").fetchone()
+    assert [row["publication_id"] for row in due] == [1]
+    assert state["first_sync_due_at"] == "2026-07-06T10:00:00+00:00"
+    assert state["next_sync_at"] == "2026-07-05T10:00:00+00:00"
+
+
 def test_private_publication_never_creates_sync_task(tmp_path: Path):
     config = config_for(tmp_path)
     add_account(config, "account-a", "channel-a")

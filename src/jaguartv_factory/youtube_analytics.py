@@ -170,6 +170,34 @@ def schedule_first_sync(config: dict[str, Any], publication_id: int) -> dict[str
     return dict(connection.execute("SELECT * FROM youtube_sync_states WHERE publication_id=?", (int(publication_id),)).fetchone())
 
 
+def _normalize_pending_data_sync_due(connection: Any, current: datetime) -> None:
+    timestamp = _iso(current)
+    connection.execute(
+        """
+        UPDATE youtube_sync_states
+        SET next_sync_at=(
+              SELECT p.published_at FROM publications p
+              WHERE p.id=youtube_sync_states.publication_id
+          ),
+          updated_at=?
+        WHERE youtube_sync_states.sync_status='PENDING'
+          AND youtube_sync_states.next_sync_at IS NOT NULL
+          AND youtube_sync_states.next_sync_at>?
+          AND EXISTS (
+              SELECT 1 FROM publications p
+              WHERE p.id=youtube_sync_states.publication_id
+                AND p.published_at IS NOT NULL
+                AND p.published_at<=?
+                AND p.platform='youtube'
+                AND p.status='PUBLISHED'
+                AND COALESCE(NULLIF(p.youtube_video_id,''),p.platform_video_id,'')!=''
+          )
+        """,
+        (timestamp, timestamp, timestamp),
+    )
+    connection.commit()
+
+
 def restore_sync_tasks(
     config: dict[str, Any],
     *,
@@ -179,7 +207,9 @@ def restore_sync_tasks(
     if limit < 1 or limit > 1000:
         raise ValueError("limit must be between 1 and 1000")
     connection = connect_db(config)
-    current = _iso(now or datetime.now(timezone.utc))
+    current_dt = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    _normalize_pending_data_sync_due(connection, current_dt)
+    current = _iso(current_dt)
     rows = connection.execute(
         """
         SELECT s.*,p.youtube_video_id,p.platform_video_id,p.channel_id,p.published_at,
