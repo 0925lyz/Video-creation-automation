@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import math
 import os
@@ -1923,19 +1924,62 @@ def translate_to_ptbr(text: str) -> str:
     clean = re.sub(r"\s+", " ", text).strip()[:1600]
     if not clean:
         return "Veja este momento incrível e descubra mais no JaguarTV Hoje."
-    query = urllib.parse.urlencode({"client": "gtx", "sl": "auto", "tl": "pt", "dt": "t", "q": clean})
-    request = urllib.request.Request(
-        f"https://translate.googleapis.com/translate_a/single?{query}",
-        headers={"User-Agent": "Mozilla/5.0"},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=20) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-        translated = "".join(part[0] for part in payload[0] if part and part[0])
-    except Exception as error:
-        # Never fall back to the untranslated source text: a Chinese/English
-        # script would otherwise be narrated by the pt-BR voice unnoticed.
-        raise RuntimeError(f"pt-BR translation failed: {error}") from error
+    google_error: Exception | None = None
+    translated = ""
+    for attempt in range(3):
+        query = urllib.parse.urlencode(
+            {"client": "gtx", "sl": "auto", "tl": "pt", "dt": "t", "q": clean}
+        )
+        request = urllib.request.Request(
+            f"https://translate.googleapis.com/translate_a/single?{query}",
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            translated = "".join(part[0] for part in payload[0] if part and part[0])
+            if translated.strip():
+                break
+        except Exception as error:
+            google_error = error
+            if attempt < 2:
+                time.sleep(attempt + 1)
+
+    if not translated.strip():
+        try:
+            source_language = "zh-CN" if re.search(r"[\u4e00-\u9fff]", clean) else "en"
+            chunks: list[str] = []
+            current = ""
+            for character in clean:
+                if current and len((current + character).encode("utf-8")) > 450:
+                    chunks.append(current)
+                    current = character
+                else:
+                    current += character
+            if current:
+                chunks.append(current)
+            translated_chunks = []
+            for chunk in chunks:
+                query = urllib.parse.urlencode(
+                    {"q": chunk, "langpair": f"{source_language}|pt-BR", "mt": "1"}
+                )
+                request = urllib.request.Request(
+                    f"https://api.mymemory.translated.net/get?{query}",
+                    headers={"User-Agent": "JaguarTV-Content-Factory/1.0"},
+                )
+                with urllib.request.urlopen(request, timeout=20) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+                status = int(payload.get("responseStatus") or 0)
+                part = html.unescape(str((payload.get("responseData") or {}).get("translatedText") or ""))
+                if status != 200 or not part.strip():
+                    raise RuntimeError(str(payload.get("responseDetails") or "empty fallback response"))
+                translated_chunks.append(part.strip())
+            translated = " ".join(translated_chunks)
+        except Exception as fallback_error:
+            # Never narrate untranslated source text when both providers fail.
+            raise RuntimeError(
+                f"pt-BR translation failed: google={google_error}; fallback={fallback_error}"
+            ) from fallback_error
     translated = translated.strip()
     if not translated:
         raise RuntimeError("pt-BR translation returned empty text")

@@ -38,6 +38,7 @@ from jaguartv_factory.core import (
     render_endcard,
     render_clean_segment,
     tts_rate_percent,
+    translate_to_ptbr,
     update_render_job,
     should_ocr_blur_source_subtitles,
     source_text,
@@ -59,6 +60,42 @@ from jaguartv_factory.source_outro import (
 def test_language_detection():
     assert likely_language("这是一个足球视频")[0] == "zh"
     assert likely_language("Você não vai acreditar que o Brasil marcou")[0] == "pt"
+
+
+def test_translate_to_ptbr_retries_google_then_uses_portuguese_fallback(monkeypatch):
+    calls = []
+
+    class Response:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps(self.payload).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        calls.append((request.full_url, timeout))
+        if "translate.googleapis.com" in request.full_url:
+            raise OSError("rate limited")
+        return Response({
+            "responseStatus": 200,
+            "responseData": {"translatedText": "Torcedores brasileiros comemoram o gol."},
+        })
+
+    monkeypatch.setattr("jaguartv_factory.core.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("jaguartv_factory.core.time.sleep", lambda _seconds: None)
+
+    translated = translate_to_ptbr("巴西球迷庆祝绝杀")
+
+    assert translated == "Torcedores brasileiros comemoram o gol."
+    assert sum("translate.googleapis.com" in url for url, _ in calls) == 3
+    fallback_url = next(url for url, _ in calls if "mymemory.translated.net" in url)
+    assert "langpair=zh-CN%7Cpt-BR" in fallback_url
 
 
 def test_freeform_design_preserves_newlines_and_ignores_blank_text(tmp_path: Path):
