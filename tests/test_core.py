@@ -9,6 +9,7 @@ import pytest
 from PIL import Image
 
 from jaguartv_factory.core import (
+    audio_mode_after_required_asr,
     brand_kit,
     candidate_market_rejection,
     choose_audio_strategy,
@@ -821,6 +822,24 @@ def test_auto_audio_strategy_preserves_music_without_speech(tmp_path: Path, monk
     assert mode == "preserve_source"
     assert transcript == ""
     assert "no_speech_evidence" in reason
+
+
+def test_required_chinese_asr_without_speech_preserves_source_audio():
+    mode, reason = audio_mode_after_required_asr(
+        "localized", "", require_transcript=True, source_has_audio=True
+    )
+
+    assert mode == "preserve_source"
+    assert reason == "asr_found_no_speech_preserved_source_audio"
+
+
+def test_required_chinese_asr_keeps_localization_when_speech_exists():
+    mode, reason = audio_mode_after_required_asr(
+        "localized", "中文解说", require_transcript=True, source_has_audio=True
+    )
+
+    assert mode == "localized"
+    assert reason == ""
 
 
 def test_auto_audio_strategy_uses_silence_when_source_has_no_audio(tmp_path: Path, monkeypatch):

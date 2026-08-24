@@ -1729,6 +1729,16 @@ def media_has_audio(path: Path) -> bool:
     return result.returncode == 0 and bool(result.stdout.strip())
 
 
+def audio_mode_after_required_asr(
+    audio_mode: str, transcript: str, *, require_transcript: bool, source_has_audio: bool
+) -> tuple[str, str]:
+    if audio_mode != "localized" or not require_transcript or transcript.strip():
+        return audio_mode, ""
+    if source_has_audio:
+        return "preserve_source", "asr_found_no_speech_preserved_source_audio"
+    return "silent", "asr_found_no_speech_source_has_no_audio"
+
+
 def choose_audio_strategy(
     config: dict[str, Any], work: Path, media: Path
 ) -> tuple[str, str, str]:
@@ -3889,6 +3899,14 @@ def produce_candidate(
             config=config,
             allow_metadata_fallback=not require_source_transcript,
         )
+        audio_mode, no_speech_reason = audio_mode_after_required_asr(
+            audio_mode,
+            transcript,
+            require_transcript=require_source_transcript,
+            source_has_audio=media_has_audio(media),
+        )
+        if no_speech_reason:
+            audio_reason += f":{no_speech_reason}"
     elif audio_mode == "preserve_source" and not media_has_audio(media):
         audio_mode = "silent"
         audio_reason += ":source_has_no_audio"
