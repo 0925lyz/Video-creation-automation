@@ -14,13 +14,18 @@ mkdir -p "$VENV_ROOT" "$APP_DIR/workspace/runtime/integration-status"
 install_tool() {
   local name="$1"
   local source="$2"
+  local install_mode="${3:-standard}"
   local env_dir="$VENV_ROOT/$name"
   "$PYTHON_BIN" -m venv "$env_dir"
   "$env_dir/bin/python" -m pip install --upgrade pip setuptools wheel
-  "$env_dir/bin/pip" install "$source"
+  if [[ "$install_mode" == "editable" ]]; then
+    "$env_dir/bin/pip" install -e "$source"
+  else
+    "$env_dir/bin/pip" install "$source"
+  fi
 }
 
-install_tool f2 "$APP_DIR/workspace/external_tools/f2"
+install_tool f2 "$APP_DIR/workspace/external_tools/f2" editable
 install_tool scrapling "$APP_DIR/workspace/external_tools/Scrapling[fetchers]"
 install_tool agent-reach "$APP_DIR/workspace/external_tools/Agent-Reach"
 

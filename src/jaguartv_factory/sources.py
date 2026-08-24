@@ -13,6 +13,7 @@ configured on the service side.
 """
 from __future__ import annotations
 
+import http.cookiejar
 import json
 import os
 import shutil
@@ -22,8 +23,11 @@ import tempfile
 import urllib.parse
 import urllib.request
 from functools import lru_cache
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 from .binaries import require_binary
 
@@ -69,8 +73,71 @@ def yt_dlp_binary() -> str:
     raise SourceError("yt-dlp binary is missing")
 
 
-def run(args: list[str], *, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(args, check=False, text=True, capture_output=True, timeout=timeout)
+def run(
+    args: list[str],
+    *,
+    timeout: float | None = None,
+    cwd: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(args, check=False, text=True, capture_output=True, timeout=timeout, cwd=cwd)
+
+
+def f2_binary(options: dict[str, Any] | None = None) -> str:
+    options = options or {}
+    configured = str(os.environ.get("JAGUARTV_F2_BINARY") or options.get("binary") or "").strip()
+    if configured:
+        if any(character.isspace() for character in configured):
+            raise SourceError("JAGUARTV_F2_BINARY must contain one executable path without arguments")
+        path = Path(configured).expanduser()
+        if not path.is_absolute() and options.get("_root"):
+            path = Path(str(options["_root"])) / path
+        if path.is_file() and os.access(path, os.X_OK):
+            return str(path.resolve())
+        located = shutil.which(configured) if Path(configured).name == configured else None
+        if located:
+            return located
+        raise SourceError(f"f2 binary is not executable: {configured}")
+    project_root = Path(str(options.get("_root") or Path(__file__).resolve().parents[2])).expanduser()
+    for candidate in (
+        project_root / "workspace" / "tool_venvs" / "f2" / "bin" / "f2",
+        project_root / "workspace" / "external_tools" / "f2" / ".venv" / "bin" / "f2",
+    ):
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate.resolve())
+    located = shutil.which("f2")
+    if located:
+        return located
+    raise SourceError("f2 binary is missing; run scripts/install-runtime-integrations.sh")
+
+
+def f2_runtime_status(options: dict[str, Any] | None = None) -> dict[str, Any]:
+    try:
+        binary = f2_binary(options)
+    except SourceError as error:
+        return {"ok": False, "path": "", "version": "", "apps": {}, "error": str(error)}
+    try:
+        version_result = run([binary, "--version"], timeout=15)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return {"ok": False, "path": binary, "version": "", "apps": {}, "error": str(error)}
+    version_text = (version_result.stdout or version_result.stderr or "").strip()
+    version = version_text.removeprefix("Version ").strip() if version_result.returncode == 0 else ""
+    apps: dict[str, dict[str, Any]] = {}
+    for name, command in (("douyin", "dy"), ("tiktok", "tk")):
+        try:
+            result = run([binary, command, "-h"], timeout=30)
+            error = "" if result.returncode == 0 else (result.stderr or result.stdout or "probe failed").strip()[-1000:]
+            apps[name] = {"ok": result.returncode == 0, "error": error}
+        except (OSError, subprocess.TimeoutExpired) as error:
+            apps[name] = {"ok": False, "error": str(error)}
+    status = {
+        "ok": bool(version and apps.get("douyin", {}).get("ok")),
+        "path": binary,
+        "version": version,
+        "apps": apps,
+    }
+    if not version:
+        status["error"] = (version_result.stderr or version_result.stdout or "f2 version check failed").strip()[-1000:]
+    return status
 
 
 def preferred_js_runtime() -> str:
@@ -153,6 +220,50 @@ def http_json(url: str, timeout: int = 30) -> Any:
     request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+class _KwaiVideoParser(HTMLParser):
+    def __init__(self, photo_id: str):
+        super().__init__(convert_charrefs=True)
+        self.photo_id = photo_id
+        self.media_url = ""
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() != "a-video-player" or self.media_url:
+            return
+        values = {key.lower(): value or "" for key, value in attrs}
+        if values.get("photo-id") == self.photo_id:
+            self.media_url = values.get("src", "")
+
+
+def kwai_media_url_from_html(html: str, photo_id: str) -> str:
+    parser = _KwaiVideoParser(photo_id)
+    parser.feed(html)
+    return parser.media_url
+
+
+def resolve_kwai_video_url(url: str, timeout: int = 30) -> str:
+    parsed = urllib.parse.urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme not in {"http", "https"} or not (host == "kwai.com" or host.endswith(".kwai.com")):
+        raise SourceError("Kwai resolver requires an http(s) kwai.com URL")
+    path_parts = [part for part in parsed.path.split("/") if part]
+    try:
+        photo_id = path_parts[path_parts.index("video") + 1]
+    except (ValueError, IndexError) as error:
+        raise SourceError("Kwai URL does not contain a video ID") from error
+    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            html = response.read().decode("utf-8", errors="replace")
+    except Exception as error:
+        raise SourceError(f"Kwai page fetch failed: {error}") from error
+    media_url = kwai_media_url_from_html(html, photo_id)
+    media = urllib.parse.urlparse(media_url)
+    media_host = (media.hostname or "").lower()
+    if media.scheme != "https" or not media_host.endswith(".kwai.net"):
+        raise SourceError("Kwai page did not expose a trusted video stream")
+    return media_url
 
 
 def http_download(url: str, destination: Path, timeout: int = 300, headers: dict[str, str] | None = None) -> None:
@@ -319,11 +430,12 @@ class YtDlpAdapter:
         return entries
 
     def download(self, url: str, output_template: str) -> None:
+        download_url = resolve_kwai_video_url(url) if self.platform == "kwai" else url
         args = [
             yt_dlp_binary(), "--ignore-config", "--force-ipv4", "--no-playlist", "--write-info-json",
             *self._runtime_args(),
             "-f", "bv*[height<=1080]+ba/b[height<=1080]/b", "--merge-output-format", "mp4",
-            "-o", output_template, url,
+            "-o", output_template, download_url,
         ]
         timeout = float(self.options.get("download_timeout_sec") or 300)
         try:
@@ -340,6 +452,15 @@ class YtDlpAdapter:
                 )
                 return
             raise SourceError(result.stderr.strip()[-1000:] or "download failed")
+        if self.platform == "kwai":
+            info_path = Path(output_template.replace("%(ext)s", "info.json"))
+            if info_path.is_file():
+                try:
+                    info = json.loads(info_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    info = {}
+                info.update({"webpage_url": url, "resolved_via": "kwai_page_to_ytdlp"})
+                info_path.write_text(json.dumps(info, ensure_ascii=False), encoding="utf-8")
 
     def _download_tiktok_with_browser_fallback(
         self,
@@ -392,34 +513,49 @@ class F2DouyinAdapter:
         self.api_base = str(options.get("api_base") or "http://127.0.0.1:8000").rstrip("/")
 
     def _binary(self) -> str:
-        configured = str(os.environ.get("JAGUARTV_F2_BINARY") or self.options.get("binary") or "").strip()
+        return f2_binary(self.options)
+
+    def _config_args(self, temp_root: Path) -> list[str]:
+        configured = str(
+            os.environ.get("JAGUARTV_F2_CONFIG_FILE") or self.options.get("config_file") or ""
+        ).strip()
         if configured:
             path = Path(configured).expanduser()
             if not path.is_absolute() and self.options.get("_root"):
                 path = Path(str(self.options["_root"])) / path
-            if path.is_file() and os.access(path, os.X_OK):
-                return str(path.resolve())
-            located = shutil.which(configured) if Path(configured).name == configured else None
-            if located:
-                return located
-            raise SourceError(f"f2 binary is not executable: {configured}")
-        located = shutil.which("f2")
-        if located:
-            return located
-        raise SourceError("f2 binary is missing; Douyin downloads must not fall back to yt-dlp")
-
-    def _config_args(self) -> list[str]:
-        configured = str(
-            os.environ.get("JAGUARTV_F2_CONFIG_FILE") or self.options.get("config_file") or ""
-        ).strip()
-        if not configured:
+            if path.is_file():
+                return ["--config", str(path.resolve())]
+        cookie_file = YtDlpAdapter("douyin", self.options)._session_cookie_file()
+        if not cookie_file:
             return []
-        path = Path(configured).expanduser()
-        if not path.is_absolute() and self.options.get("_root"):
-            path = Path(str(self.options["_root"])) / path
-        if not path.is_file():
-            raise SourceError(f"f2 config file does not exist: {path}")
-        return ["--config", str(path.resolve())]
+        try:
+            jar = http.cookiejar.MozillaCookieJar(str(cookie_file))
+            jar.load(ignore_discard=True, ignore_expires=True)
+        except (OSError, http.cookiejar.LoadError) as error:
+            raise SourceError(f"managed Douyin cookie file is invalid: {cookie_file}") from error
+        cookie_header = "; ".join(
+            f"{cookie.name}={cookie.value}"
+            for cookie in jar
+            if cookie.name and cookie.value and cookie.domain.lstrip(".").endswith("douyin.com")
+        )
+        if not cookie_header:
+            return []
+        generated = temp_root / "f2-session.yaml"
+        generated.write_text(
+            yaml.safe_dump({"douyin": {"cookie": cookie_header}}, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
+        generated.chmod(0o600)
+        return ["--config", str(generated)]
+
+    @staticmethod
+    def _validate_url(url: str) -> None:
+        parsed = urllib.parse.urlparse(url)
+        host = (parsed.hostname or "").lower()
+        if parsed.scheme not in {"http", "https"} or not (
+            host == "douyin.com" or host.endswith(".douyin.com") or host.endswith(".iesdouyin.com")
+        ):
+            raise SourceError("f2 requires an http(s) Douyin URL")
 
     def _scrape_config(self) -> dict[str, Any]:
         return {
@@ -467,6 +603,7 @@ class F2DouyinAdapter:
         return entries
 
     def download(self, url: str, output_template: str) -> None:
+        self._validate_url(url)
         destination = Path(output_template.replace("%(ext)s", "mp4")).expanduser()
         destination.parent.mkdir(parents=True, exist_ok=True)
         temp_root = Path(tempfile.mkdtemp(prefix=".f2-douyin-", dir=destination.parent))
@@ -481,11 +618,11 @@ class F2DouyinAdapter:
             "one",
             "--naming",
             "{aweme_id}",
-            *self._config_args(),
+            *self._config_args(temp_root),
         ]
         timeout = float(self.options.get("download_timeout_sec") or 300)
         try:
-            result = run(args, timeout=timeout)
+            result = run(args, timeout=timeout, cwd=temp_root)
             if result.returncode != 0:
                 raise SourceError(result.stderr.strip()[-1000:] or "f2 Douyin download failed")
             videos = sorted(path for path in temp_root.rglob("*.mp4") if path.is_file())

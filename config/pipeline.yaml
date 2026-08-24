@@ -61,7 +61,7 @@ sources:
     douyin:
       api_base: http://127.0.0.1:8000   # self-hosted Douyin_TikTok_Download_API
       binary: workspace/tool_venvs/f2/bin/f2
-      config_file: workspace/sessions/douyin/f2.yaml
+      config_file: ""                    # optional private f2 YAML; managed sessions are detected automatically
     xiaohongshu:
       api_base: http://127.0.0.1:5556   # self-hosted XHS-Downloader API mode
 

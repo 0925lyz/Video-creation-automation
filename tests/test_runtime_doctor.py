@@ -47,6 +47,12 @@ def test_doctor_ready_with_optional_degraded_tools(tmp_path: Path, monkeypatch, 
         "impersonation": True,
         "js_runtime": "node:/opt/node/bin/node",
     })
+    monkeypatch.setattr(cli, "f2_runtime_status", lambda _options=None: {
+        "ok": True,
+        "path": "/opt/jaguartv/f2/bin/f2",
+        "version": "0.0.1.7",
+        "apps": {"douyin": {"ok": True}, "tiktok": {"ok": False, "error": "msToken failed"}},
+    })
 
     assert cli.doctor(tmp_path / "config" / "pipeline.yaml") == 0
     payload = json.loads(capsys.readouterr().out)
@@ -55,6 +61,7 @@ def test_doctor_ready_with_optional_degraded_tools(tmp_path: Path, monkeypatch, 
     assert payload["required"]["ffprobe"]["path"] == "/opt/jaguartv/bin/ffprobe"
     assert payload["yt_dlp"]["extractor_count"] == 1752
     assert payload["yt_dlp"]["impersonation"] is True
+    assert payload["f2"]["apps"]["douyin"]["ok"] is True
     assert "tesseract" in payload["degraded"]
     assert "pyvideotrans" in payload["degraded"]
     assert "Core pipeline is ready" in payload["next_steps"]
@@ -72,3 +79,21 @@ def test_ytdlp_status_command_does_not_require_pipeline_config(monkeypatch, caps
 
     assert cli.main(["--config", "/missing/pipeline.yaml", "ytdlp-status"]) == 0
     assert json.loads(capsys.readouterr().out)["version"] == "2026.08.19"
+
+
+def test_f2_status_command_reports_per_app_health(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "load_config", lambda _path: {
+        "_root": str(tmp_path),
+        "sources": {"adapters": {"douyin": {"binary": "workspace/tool_venvs/f2/bin/f2"}}},
+    })
+    monkeypatch.setattr(cli, "f2_runtime_status", lambda options=None: {
+        "ok": True,
+        "path": str(tmp_path / "workspace" / "tool_venvs" / "f2" / "bin" / "f2"),
+        "version": "0.0.1.7",
+        "apps": {"douyin": {"ok": True}, "tiktok": {"ok": False, "error": "msToken failed"}},
+    })
+
+    assert cli.main(["--config", str(tmp_path / "pipeline.yaml"), "f2-status"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["apps"]["douyin"]["ok"] is True
+    assert payload["apps"]["tiktok"]["ok"] is False

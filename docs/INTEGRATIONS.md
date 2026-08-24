@@ -26,12 +26,14 @@
 | --- | --- | --- |
 | MediaCrawler | 上游声明包含商业使用限制，生产使用前需完成许可确认 | 负责抖音、快手、B站和小红书发现；JSONL 通过 `jaguartv ingest-mediacrawler` 进入统一候选库 |
 | Agent Reach | MIT | 发现路由和运行健康检查；标准化 JSONL 通过 `jaguartv ingest-agent-reach` 入库 |
-| Scrapling | BSD-3-Clause | 每日北京时间 05:00 抓取 Google Trends RSS，失败时才回退标准 HTTP |
-| f2 | Apache-2.0 | 抖音唯一下载器；Cookie 只从权限为 0600 的配置文件读取 |
-| yt-dlp | Unlicense | YouTube、TikTok、Facebook、X、Instagram、Kwai 的统一下载器 |
+| Scrapling | BSD-3-Clause | 每日北京时间 05:00 抓取 Google Trends RSS，与 pytrends 结果合并、去重并保留来源 |
+| f2 | Apache-2.0 | 独立 editable 环境安装完整 CLI；抖音候选唯一下载器，登录态仅通过权限为 0600 的临时配置传入 |
+| yt-dlp | Unlicense | YouTube、TikTok、Facebook、X、Instagram 的统一下载器；Kwai 先解析官方页面 CDN，再交给 yt-dlp 下载 |
 | pyvideotrans | GPL-3.0 | 可选 STT、字幕翻译、TTS 和整段翻译适配器，各能力默认关闭 |
 
 GPL 项目保持独立进程或独立检出，不与本仓库源码打包。使用和再分发前应复核对应固定提交中的上游许可证；`NOASSERTION` 项目不应在未确认许可时重新分发。
+
+`jaguartv f2-status` 会分别探测抖音与 TikTok 模块。f2 0.0.1.7 的 TikTok 模块在部分网络环境会在导入阶段因 `msToken` 获取失败而不可用，因此当前生产 TikTok 下载继续使用 yt-dlp；该故障不会影响 f2 的抖音下载，也不会拖垮工厂进程。
 
 ## Codex Skill 路由
 

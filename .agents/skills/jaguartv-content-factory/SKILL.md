@@ -11,6 +11,7 @@ Operate the shared project through `scripts/factory.sh`. Keep source discovery, 
 
 1. Run `scripts/factory.sh doctor` before a new environment or after dependency changes.
    Use `scripts/factory.sh ytdlp-status` when diagnosing extractor, JS runtime, or browser-impersonation support.
+   Use `scripts/factory.sh f2-status` to inspect f2 version and separate Douyin/TikTok module health.
 2. Run `scripts/factory.sh discover --platform youtube --limit 3` to collect candidates. Add other implemented adapters only after `doctor` confirms availability.
 3. Inspect candidates with `scripts/factory.sh list --status DISCOVERED --limit 20`.
 4. Download a selected candidate with `scripts/factory.sh download --candidate <id>`.
@@ -46,6 +47,8 @@ This skill is the only factory entry point. The skills below provide agent guida
 Do not route to removed Hyperframes, WorkBuddy, SEO, sales, email, paywall, or unrelated marketing skills. Hyperframes was never a production renderer in this repository; Remotion is the single supported render engine.
 
 Check pinned external repositories with `scripts/factory.sh integrations`. MediaCrawler and Agent Reach feed normalized discovery records; `yt-dlp` performs YouTube/TikTok/Facebook/X/Instagram/Kwai downloads, while `f2` is the exclusive Douyin downloader. Synchronization is explicit and may access the network: `scripts/factory.sh integrations --sync --name mediacrawler`.
+
+The complete pinned f2 CLI is installed editable in `workspace/tool_venvs/f2`, so its implemented profile, collection, playlist, live, and single-item modes remain available for an explicit operator task. Factory candidate downloads still go through `download`; never call f2 directly and then register its output manually. Managed Douyin login sessions are converted to a temporary mode-0600 f2 config and removed after the subprocess exits. TikTok remains on yt-dlp unless `f2-status` reports its TikTok module healthy and a future tested adapter explicitly enables it.
 
 ## Environment
 

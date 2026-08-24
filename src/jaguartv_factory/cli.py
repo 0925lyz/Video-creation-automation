@@ -28,7 +28,7 @@ from .youtube_analytics import backfill_report, run_analytics_worker, set_backfi
 from .reaction import REACTION_MODES
 from .server_store import save_upload
 from .strategy import AUDIO_POLICIES, CONTENT_TYPES, SEGMENT_STRATEGIES
-from .sources import yt_dlp_runtime_status
+from .sources import f2_runtime_status, yt_dlp_runtime_status
 
 
 def print_json(value: object) -> None:
@@ -49,6 +49,7 @@ def binary_check(name: str, *, required: bool = True) -> dict[str, object]:
 
 
 def doctor(config_path: Path = Path("config/pipeline.yaml")) -> int:
+    config = load_config(config_path)
     environment_bin = Path(sys.executable).parent
     required_checks = {
         "python3": {
@@ -80,7 +81,7 @@ def doctor(config_path: Path = Path("config/pipeline.yaml")) -> int:
         }
     checks["paddleocr"] = optional_checks["paddleocr"]["ok"]
     try:
-        pyvideotrans_ok, pyvideotrans_reason = pyvideotrans_available(load_config(config_path))
+        pyvideotrans_ok, pyvideotrans_reason = pyvideotrans_available(config)
         optional_checks["pyvideotrans"] = {
             "name": "pyvideotrans",
             "path": pyvideotrans_reason if pyvideotrans_ok else None,
@@ -116,12 +117,12 @@ def doctor(config_path: Path = Path("config/pipeline.yaml")) -> int:
     }
     checks["tts"] = tts
     checks["ptbr_voice"] = "Luciana (macOS)" if shutil.which("say") else ("espeak pt-br (fallback)" if tts else None)
-    project_root = Path(load_config(config_path).get("_root") or Path.cwd())
+    project_root = Path(config.get("_root") or Path.cwd())
     skill_names = (
         "jaguartv-content-factory", "jaguartv-copywriter", "content-strategy",
         "copy-editing", "copywriting", "captions-overlay", "embedded-captions",
-        "general-video", "image", "media-use", "motion-doctrine", "motion-graphics",
-        "product-marketing", "social", "talking-head-recut", "video", "analytics", "attribution",
+        "media-use", "motion-doctrine", "motion-graphics", "product-marketing",
+        "social", "talking-head-recut", "analytics", "attribution",
     )
     checks["project_agent_skills"] = {
         name: (project_root / ".agents" / "skills" / name / "SKILL.md").is_file()
@@ -132,6 +133,7 @@ def doctor(config_path: Path = Path("config/pipeline.yaml")) -> int:
             str(path) for path in (
                 Path.cwd().parent / "MediaCrawler",
                 Path.cwd() / "MediaCrawler",
+                project_root / "workspace" / "external_tools" / "MediaCrawler",
                 Path.home() / "MediaCrawler",
                 Path("/opt/MediaCrawler"),
             )
@@ -144,6 +146,9 @@ def doctor(config_path: Path = Path("config/pipeline.yaml")) -> int:
     checks["required"] = required_checks
     checks["optional"] = optional_checks
     checks["yt_dlp"] = yt_dlp_runtime_status()
+    f2_options = dict((((config.get("sources") or {}).get("adapters") or {}).get("douyin") or {}))
+    f2_options["_root"] = str(project_root)
+    checks["f2"] = f2_runtime_status(f2_options)
     checks["degraded"] = [
         name for name, item in optional_checks.items()
         if not item["ok"] and name not in {"edge_tts", "system_tts"}
@@ -205,6 +210,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("doctor")
     subparsers.add_parser("ytdlp-status")
+    subparsers.add_parser("f2-status")
 
     discover_parser = subparsers.add_parser("discover")
     discover_parser.add_argument("--platform", action="append", choices=["youtube", "bilibili", "douyin", "xiaohongshu", "tiktok", "facebook", "x", "instagram", "kwai"])
@@ -343,6 +349,13 @@ def main(argv: list[str] | None = None) -> int:
         status = yt_dlp_runtime_status()
         print_json(status)
         return 0 if status["ok"] else 1
+    if args.command == "f2-status":
+        config = load_config(Path(args.config))
+        options = dict((((config.get("sources") or {}).get("adapters") or {}).get("douyin") or {}))
+        options["_root"] = str(config.get("_root") or Path.cwd())
+        status = f2_runtime_status(options)
+        print_json(status)
+        return 0 if status.get("ok") else 1
     config = load_config(Path(args.config))
     if args.command == "discover":
         print_json(discover(config, platforms=args.platform, limit=args.limit, keyword_overrides=args.keyword))

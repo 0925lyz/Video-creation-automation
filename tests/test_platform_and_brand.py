@@ -48,7 +48,15 @@ from jaguartv_factory.server_store import (
     save_upload_chunk,
 )
 from jaguartv_factory.source_imports import create_source_import
-from jaguartv_factory.sources import F2DouyinAdapter, SourceError, XhsApiAdapter, YtDlpAdapter, get_adapter, yt_dlp_binary
+from jaguartv_factory.sources import (
+    F2DouyinAdapter,
+    SourceError,
+    XhsApiAdapter,
+    YtDlpAdapter,
+    f2_runtime_status,
+    get_adapter,
+    yt_dlp_binary,
+)
 
 
 def make_config(tmp_path: Path) -> dict:
@@ -209,6 +217,44 @@ def test_tiktok_download_uses_browser_fallback_when_ytdlp_fails(tmp_path: Path, 
     assert info["browser_fallback"]["title"] == "TikTok Brasil"
 
 
+def test_kwai_download_resolves_page_media_then_uses_ytdlp(tmp_path: Path, monkeypatch):
+    calls = []
+
+    def fake_run(args, *, timeout=None, cwd=None):
+        calls.append(args)
+        return type("Result", (), {"returncode": 0, "stderr": "", "stdout": ""})()
+
+    monkeypatch.setattr("jaguartv_factory.sources.yt_dlp_binary", lambda: "/usr/bin/yt-dlp")
+    monkeypatch.setattr("jaguartv_factory.sources.run", fake_run)
+    monkeypatch.setattr(
+        "jaguartv_factory.sources.resolve_kwai_video_url",
+        lambda url, timeout=30: "https://aws-br-cdn.kwai.net/upic/source.mp4?tag=verified",
+    )
+
+    adapter = YtDlpAdapter("kwai", {})
+    adapter.download(
+        "https://www.kwai.com/@KwaiBrasilOficial/video/5233051404659401808",
+        str(tmp_path / "source.%(ext)s"),
+    )
+
+    download_call = next(args for args in calls if "-o" in args)
+    assert download_call[-1] == "https://aws-br-cdn.kwai.net/upic/source.mp4?tag=verified"
+
+
+def test_kwai_page_parser_matches_requested_photo_id():
+    from jaguartv_factory.sources import kwai_media_url_from_html
+
+    html = '''
+      <a-video-player photo-id="other" src="https://cdn.test/other.mp4"></a-video-player>
+      <a-video-player photo-id="5233051404659401808"
+        src="https://aws-br-cdn.kwai.net/upic/source.mp4?tag=verified"></a-video-player>
+    '''
+
+    assert kwai_media_url_from_html(html, "5233051404659401808") == (
+        "https://aws-br-cdn.kwai.net/upic/source.mp4?tag=verified"
+    )
+
+
 def test_tiktok_media_filter_rejects_login_page_animation():
     login_animation = (
         "https://sf16-website-login.neutral.ttwstatic.com/obj/"
@@ -299,7 +345,7 @@ def test_f2_douyin_download_uses_config_file_without_cookie_argument(tmp_path: P
     output = tmp_path / "downloads" / "candidate.%(ext)s"
     calls = []
 
-    def fake_run(args, *, timeout=None):
+    def fake_run(args, *, timeout=None, cwd=None):
         calls.append(args)
         output_dir = Path(args[args.index("--path") + 1])
         (output_dir / "123.mp4").write_bytes(b"video")
@@ -318,6 +364,108 @@ def test_f2_douyin_download_uses_config_file_without_cookie_argument(tmp_path: P
     assert "--config" in calls[0]
     assert "--cookie" not in calls[0]
     assert "-k" not in calls[0]
+
+
+def test_f2_douyin_download_allows_missing_optional_config(tmp_path: Path, monkeypatch):
+    executable = tmp_path / "bin" / "f2"
+    executable.parent.mkdir()
+    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    executable.chmod(0o755)
+    output = tmp_path / "downloads" / "candidate.%(ext)s"
+    calls = []
+
+    def fake_run(args, *, timeout=None, cwd=None):
+        calls.append((args, cwd))
+        output_dir = Path(args[args.index("--path") + 1])
+        (output_dir / "123.mp4").write_bytes(b"video")
+        return type("Result", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
+
+    monkeypatch.setattr("jaguartv_factory.sources.run", fake_run)
+    adapter = F2DouyinAdapter(
+        "douyin",
+        {"binary": str(executable), "config_file": "", "_root": str(tmp_path)},
+    )
+
+    adapter.download("https://www.douyin.com/video/123", str(output))
+
+    assert (tmp_path / "downloads" / "candidate.mp4").read_bytes() == b"video"
+    assert "--config" not in calls[0][0]
+    assert Path(calls[0][1]).name.startswith(".f2-douyin-")
+
+
+def test_f2_douyin_uses_managed_cookie_via_private_temp_config(tmp_path: Path, monkeypatch):
+    executable = tmp_path / "bin" / "f2"
+    executable.parent.mkdir()
+    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    executable.chmod(0o755)
+    session = tmp_path / "workspace" / "sessions" / "douyin" / "account"
+    session.mkdir(parents=True)
+    cookie_file = session / "cookies.txt"
+    cookie_file.write_text(
+        "# Netscape HTTP Cookie File\n"
+        ".douyin.com\tTRUE\t/\tTRUE\t2147483647\tsessionid\tsecret-value\n",
+        encoding="utf-8",
+    )
+    (session / "manifest.json").write_text(
+        json.dumps({"status": "READY", "cookie_file_path": str(cookie_file)}),
+        encoding="utf-8",
+    )
+    observed = {}
+
+    def fake_run(args, *, timeout=None, cwd=None):
+        config_path = Path(args[args.index("--config") + 1])
+        observed["args"] = list(args)
+        observed["config"] = config_path.read_text(encoding="utf-8")
+        observed["mode"] = config_path.stat().st_mode & 0o777
+        output_dir = Path(args[args.index("--path") + 1])
+        (output_dir / "123.mp4").write_bytes(b"video")
+        return type("Result", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
+
+    monkeypatch.setattr("jaguartv_factory.sources.run", fake_run)
+    adapter = F2DouyinAdapter(
+        "douyin",
+        {"binary": str(executable), "config_file": "", "_root": str(tmp_path), "_workspace": "workspace"},
+    )
+
+    adapter.download(
+        "https://www.douyin.com/video/123",
+        str(tmp_path / "downloads" / "candidate.%(ext)s"),
+    )
+
+    assert "secret-value" in observed["config"]
+    assert "secret-value" not in " ".join(observed["args"])
+    assert observed["mode"] == 0o600
+
+
+def test_f2_douyin_rejects_non_douyin_url(tmp_path: Path):
+    adapter = F2DouyinAdapter("douyin", {"_root": str(tmp_path)})
+
+    with pytest.raises(SourceError, match="Douyin URL"):
+        adapter.download("https://example.com/video/123", str(tmp_path / "candidate.%(ext)s"))
+
+
+def test_f2_runtime_status_probes_douyin_and_tiktok_separately(tmp_path: Path, monkeypatch):
+    executable = tmp_path / "bin" / "f2"
+    executable.parent.mkdir()
+    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    executable.chmod(0o755)
+
+    def fake_run(args, *, timeout=None, cwd=None):
+        if args[1:] == ["--version"]:
+            return type("Result", (), {"returncode": 0, "stdout": "Version 0.0.1.7\n", "stderr": ""})()
+        if args[1:3] == ["dy", "-h"]:
+            return type("Result", (), {"returncode": 0, "stdout": "douyin help", "stderr": ""})()
+        return type("Result", (), {"returncode": 1, "stdout": "", "stderr": "msToken failed"})()
+
+    monkeypatch.setattr("jaguartv_factory.sources.run", fake_run)
+
+    status = f2_runtime_status({"binary": str(executable), "_root": str(tmp_path)})
+
+    assert status["ok"] is True
+    assert status["version"] == "0.0.1.7"
+    assert status["apps"]["douyin"]["ok"] is True
+    assert status["apps"]["tiktok"]["ok"] is False
+    assert "msToken" in status["apps"]["tiktok"]["error"]
 
 
 def test_brand_kit_and_endcard_render(tmp_path: Path):

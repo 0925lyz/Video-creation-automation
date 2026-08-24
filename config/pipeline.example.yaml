@@ -49,7 +49,7 @@ sources:
     douyin:
       api_base: http://127.0.0.1:8000
       binary: workspace/tool_venvs/f2/bin/f2
-      config_file: workspace/sessions/douyin/f2.yaml
+      config_file: ""
     xiaohongshu:
       api_base: http://127.0.0.1:5556
 
