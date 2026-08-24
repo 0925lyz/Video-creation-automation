@@ -30,10 +30,14 @@ if git_has_changes; then
   exit 2
 fi
 
-echo "==> Pulling latest code"
-git -C "$APP_DIR" remote set-url origin "$REPO_URL"
-git -C "$APP_DIR" fetch origin "$BRANCH"
-git -C "$APP_DIR" checkout -B "$BRANCH" "origin/$BRANCH"
+if [[ "${SKIP_GIT_UPDATE:-0}" == "1" ]]; then
+  echo "==> Using preloaded Git commit"
+else
+  echo "==> Pulling latest code"
+  git -C "$APP_DIR" remote set-url origin "$REPO_URL"
+  git -C "$APP_DIR" fetch origin "$BRANCH"
+  git -C "$APP_DIR" checkout -B "$BRANCH" "origin/$BRANCH"
+fi
 
 cd "$APP_DIR"
 

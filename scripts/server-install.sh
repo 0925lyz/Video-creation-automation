@@ -92,7 +92,11 @@ echo "==> Preparing app directory: $APP_DIR"
 sudo mkdir -p "$APP_DIR"
 sudo chown -R "$SERVICE_USER":"$SERVICE_USER" "$APP_DIR"
 
-if [[ -d "$APP_DIR/.git" ]]; then
+if [[ "${SKIP_GIT_UPDATE:-0}" == "1" ]]; then
+  echo "==> Using preloaded Git commit"
+  [[ -d "$APP_DIR/.git" ]] || { echo "Missing preloaded repository: $APP_DIR" >&2; exit 1; }
+  refuse_local_changes
+elif [[ -d "$APP_DIR/.git" ]]; then
   echo "==> Updating existing repository"
   refuse_local_changes
   git -C "$APP_DIR" remote set-url origin "$REPO_URL"

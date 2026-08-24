@@ -22,6 +22,22 @@ fi
 
 chmod 600 "$SERVER_KEY"
 
+LOCAL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BUNDLE_DIR="$(mktemp -d)"
+BUNDLE_PATH="$BUNDLE_DIR/jaguartv-content-factory.bundle"
+REMOTE_BUNDLE="/tmp/jaguartv-content-factory-deploy.bundle"
+trap 'rm -rf "$BUNDLE_DIR"' EXIT
+
+git -C "$LOCAL_ROOT" rev-parse --verify "refs/heads/$BRANCH" >/dev/null
+git -C "$LOCAL_ROOT" bundle create "$BUNDLE_PATH" "$BRANCH"
+
+scp \
+  -i "$SERVER_KEY" \
+  -o IdentitiesOnly=yes \
+  -o BatchMode=yes \
+  -o StrictHostKeyChecking=accept-new \
+  "$BUNDLE_PATH" "${SERVER_USER}@${SERVER_HOST}:$REMOTE_BUNDLE"
+
 ssh \
   -i "$SERVER_KEY" \
   -o IdentitiesOnly=yes \
@@ -36,14 +52,17 @@ ssh \
        git status --short >&2
        exit 2
      fi
+     git fetch $(printf '%q' "$REMOTE_BUNDLE") refs/heads/$(printf '%q' "$BRANCH")
+     git checkout -B $(printf '%q' "$BRANCH") FETCH_HEAD
      git remote set-url origin $(printf '%q' "$REPO_URL")
-     git fetch origin $(printf '%q' "$BRANCH")
-     git checkout -B $(printf '%q' "$BRANCH") origin/$(printf '%q' "$BRANCH")
+     DEPLOY_SCRIPT=scripts/server-sync.sh
    else
      sudo mkdir -p $(printf '%q' "$SERVER_DIR")
      sudo chown -R $(printf '%q' "$SERVER_USER"):$(printf '%q' "$SERVER_USER") $(printf '%q' "$SERVER_DIR")
-     git clone --branch $(printf '%q' "$BRANCH") $(printf '%q' "$REPO_URL") $(printf '%q' "$SERVER_DIR")
+     git clone --branch $(printf '%q' "$BRANCH") $(printf '%q' "$REMOTE_BUNDLE") $(printf '%q' "$SERVER_DIR")
      cd $(printf '%q' "$SERVER_DIR")
+     git remote set-url origin $(printf '%q' "$REPO_URL")
+     DEPLOY_SCRIPT=scripts/server-install.sh
    fi
    APP_DIR=$(printf '%q' "$SERVER_DIR") \
    REPO_URL=$(printf '%q' "$REPO_URL") \
@@ -51,6 +70,7 @@ ssh \
    SERVICE_NAME=$(printf '%q' "$SERVICE_NAME") \
    JAGUARTV_HOST=$(printf '%q' "$JAGUARTV_HOST") \
    JAGUARTV_PORT=$(printf '%q' "$JAGUARTV_PORT") \
-   bash scripts/server-install.sh"
+   SKIP_GIT_UPDATE=1 bash \"\$DEPLOY_SCRIPT\"
+   rm -f $(printf '%q' "$REMOTE_BUNDLE")"
 
 echo "Deployed: ${SERVER_USER}@${SERVER_HOST}:${SERVER_DIR} (${BRANCH})"
