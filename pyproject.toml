@@ -20,11 +20,10 @@ dependencies = [
 [project.optional-dependencies]
 asr = ["faster-whisper>=1.1.1"]
 design = ["opencv-python-headless>=4.10"]
-workbuddy = ["demucs>=4.0.1", "faster-whisper>=1.1.1"]
+media = ["demucs>=4.0.1", "faster-whisper>=1.1.1"]
 test = ["pytest>=8.3"]
 
 [project.scripts]
-workbuddy = "jaguartv_factory.cli:main"
 jaguartv = "jaguartv_factory.cli:main"
 
 [tool.setuptools.package-data]

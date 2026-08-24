@@ -23,6 +23,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from .binaries import require_binary
 
 class SourceError(RuntimeError):
     """Search/download failure local to one adapter."""
@@ -75,9 +76,10 @@ def http_download(url: str, destination: Path, timeout: int = 300, headers: dict
 
 
 def ffmpeg_download(url: str, destination: Path, timeout: int = 300, headers: dict[str, str] | None = None) -> None:
-    ffmpeg = shutil.which("ffmpeg")
-    if not ffmpeg:
-        raise SourceError("ffmpeg binary is missing for HLS media download")
+    try:
+        ffmpeg = require_binary("ffmpeg")
+    except RuntimeError as error:
+        raise SourceError("ffmpeg binary is missing for HLS media download") from error
     header_lines = {"User-Agent": "Mozilla/5.0", **(headers or {})}
     header_blob = "".join(f"{key}: {value}\r\n" for key, value in header_lines.items())
     destination.parent.mkdir(parents=True, exist_ok=True)

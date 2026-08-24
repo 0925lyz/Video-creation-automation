@@ -25,9 +25,9 @@ git_has_changes() {
 }
 
 if git_has_changes; then
-  STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-  echo "==> Saving existing server changes to git stash: server-sync-$STAMP"
-  git -C "$APP_DIR" stash push --include-untracked -m "server-sync-$STAMP"
+  echo "Refusing to deploy over server-side changes. Review them first." >&2
+  git -C "$APP_DIR" status --short >&2
+  exit 2
 fi
 
 echo "==> Pulling latest code"
@@ -39,7 +39,7 @@ cd "$APP_DIR"
 
 NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
 if [[ "$NODE_MAJOR" -lt "$NODE_MIN_MAJOR" ]]; then
-  echo "==> Installing Node.js $NODE_MIN_MAJOR for Remotion and Hyperframes tooling"
+  echo "==> Installing Node.js $NODE_MIN_MAJOR for Remotion tooling"
   curl -fsSL "https://deb.nodesource.com/setup_${NODE_MIN_MAJOR}.x" | sudo -E bash -
   sudo apt-get install -y nodejs
 fi
@@ -54,8 +54,8 @@ if [[ -f "$APP_DIR/workspace/factory.db" ]]; then
 fi
 
 echo "==> Updating Node helper packages"
-npm --prefix "$APP_DIR" install --no-audit --no-fund
-npm --prefix "$APP_DIR/src/jaguartv_factory/remotion_template" install --no-audit --no-fund
+npm --prefix "$APP_DIR" ci --no-audit --no-fund
+npm --prefix "$APP_DIR/src/jaguartv_factory/remotion_template" ci --no-audit --no-fund
 
 if ! command -v deno >/dev/null 2>&1 || ! deno --version 2>/dev/null | head -n 1 | grep -Eq 'deno (2\.([3-9]|[1-9][0-9]+)\.|([3-9]|[1-9][0-9]+)\.)'; then
   echo "==> Installing a supported Deno runtime for YouTube extraction"
@@ -73,7 +73,7 @@ if ! command -v deno >/dev/null 2>&1 || ! deno --version 2>/dev/null | head -n 1
 fi
 
 echo "==> Verifying install"
-"$PYTHON_BIN" -m pytest tests/test_core.py tests/test_platform_and_brand.py tests/test_workbuddy_integration.py
+"$PYTHON_BIN" -m pytest tests/test_core.py tests/test_platform_and_brand.py tests/test_localization.py
 "$APP_DIR/.agents/skills/jaguartv-content-factory/scripts/factory.sh" doctor
 npm --prefix "$APP_DIR" run build
 "$APP_DIR/scripts/remotion-smoke.sh"

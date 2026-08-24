@@ -7,6 +7,10 @@ from urllib.request import urlopen
 
 import pytest
 
+from jaguartv_factory.browser_scraper import (
+    _looks_like_tiktok_media_url,
+    _ordered_tiktok_media_urls,
+)
 from jaguartv_factory.core import (
     assert_script_is_portuguese,
     brand_kit,
@@ -203,6 +207,33 @@ def test_tiktok_download_uses_browser_fallback_when_ytdlp_fails(tmp_path: Path, 
     assert (tmp_path / "source.mp4").read_bytes() == b"mp4"
     info = json.loads((tmp_path / "source.info.json").read_text(encoding="utf-8"))
     assert info["browser_fallback"]["title"] == "TikTok Brasil"
+
+
+def test_tiktok_media_filter_rejects_login_page_animation():
+    login_animation = (
+        "https://sf16-website-login.neutral.ttwstatic.com/obj/"
+        "tiktok_web_login_static/tiktok/webapp/main/webapp-desktop/playback1.mp4"
+    )
+    real_stream = "https://v16-webapp-prime.tiktokcdn.com/video/tos/useast2a/tos-useast2a-ve-0068c001.mp4"
+
+    assert not _looks_like_tiktok_media_url(login_animation)
+    assert _looks_like_tiktok_media_url(real_stream)
+
+
+def test_tiktok_media_candidates_prefer_real_streams_and_dedupe():
+    login_animation = (
+        "https://sf16-website-login.neutral.ttwstatic.com/obj/"
+        "tiktok_web_login_static/tiktok/webapp/main/webapp-desktop/playback1.mp4"
+    )
+    generic_mp4 = "https://cdn.example.test/media/video.mp4"
+    real_stream = "https://v16-webapp-prime.tiktokcdn.com/video/tos/useast2a/real.mp4"
+
+    assert _ordered_tiktok_media_urls([
+        login_animation,
+        generic_mp4,
+        real_stream,
+        real_stream,
+    ]) == [real_stream, generic_mp4]
 
 
 def test_yt_dlp_adapter_supports_browser_cookie_env(monkeypatch):
@@ -890,6 +921,40 @@ def test_discover_skips_sources_seen_before_even_after_delete(tmp_path: Path, mo
     assert second["duplicates"] == 1
     assert connection.execute("SELECT COUNT(*) count FROM candidates").fetchone()["count"] == 0
     assert connection.execute("SELECT COUNT(*) count FROM seen_sources").fetchone()["count"] == 1
+
+
+def test_discover_merges_runtime_hot_keywords_without_modifying_base_file(tmp_path: Path, monkeypatch):
+    config = make_config(tmp_path)
+    keywords = tmp_path / "config" / "keywords.yaml"
+    runtime_keywords = tmp_path / "workspace" / "runtime" / "keywords.trends.yaml"
+    keywords.parent.mkdir(parents=True)
+    runtime_keywords.parent.mkdir(parents=True)
+    keywords.write_text(
+        "base:\n  enabled: true\n  terms:\n    pt:\n      - futebol base\n",
+        encoding="utf-8",
+    )
+    runtime_keywords.write_text(
+        "google_trends_br_daily:\n  enabled: true\n  terms:\n    pt:\n      - flamengo agora\n",
+        encoding="utf-8",
+    )
+    original = keywords.read_text(encoding="utf-8")
+    config["sources"] = {"keywords_file": str(keywords), "enabled": ["youtube"]}
+    config["trends"] = {"runtime_keywords_file": str(runtime_keywords)}
+    config["discovery"] = {"max_candidates_per_keyword": 1}
+    searched: list[str] = []
+
+    class Adapter:
+        def search(self, term: str, limit: int) -> list[dict]:
+            searched.append(term)
+            return []
+
+    monkeypatch.setattr("jaguartv_factory.sources.SEARCHABLE_PLATFORMS", {"youtube"})
+    monkeypatch.setattr("jaguartv_factory.sources.get_adapter", lambda platform, config: Adapter())
+
+    discover(config)
+
+    assert searched == ["futebol base", "flamengo agora"]
+    assert keywords.read_text(encoding="utf-8") == original
 
 
 def test_delete_server_only_review_package(tmp_path: Path):

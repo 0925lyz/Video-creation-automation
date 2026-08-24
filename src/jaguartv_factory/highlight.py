@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
+from .binaries import require_binary
 
 HIGHLIGHT_KEYWORDS = (
     "goal", "gol", "score", "scores", "penalty", "pênalti", "shoot", "chute",
@@ -61,10 +62,7 @@ class HighlightSegment:
 
 
 def _require_binary(name: str) -> str:
-    binary = shutil.which(name)
-    if not binary:
-        raise RuntimeError(f"Missing required binary: {name}")
-    return binary
+    return require_binary(name)
 
 
 def _run_binary(args: list[str]) -> subprocess.CompletedProcess[bytes]:

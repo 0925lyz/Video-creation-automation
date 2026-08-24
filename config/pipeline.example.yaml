@@ -110,6 +110,17 @@ storage:
   max_upload_bytes: 2147483648
   upload_chunk_bytes: 8388608
 
+trends:
+  enabled: true
+  cron: "0 8 * * *"
+  schedule_timezone: America/Sao_Paulo
+  geo: BR
+  keywords: ["futebol Brasil"]
+  top_n: 10
+  source: google_trends
+  sync_keywords_group: google_trends_br_daily
+  runtime_keywords_file: workspace/runtime/keywords.trends.yaml
+
 compliance:
   require_verified_rights: false
   mode: manual_review

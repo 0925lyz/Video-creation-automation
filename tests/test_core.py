@@ -36,14 +36,12 @@ from jaguartv_factory.core import (
     remotion_captions_enabled_for_variant,
     render_endcard,
     render_clean_segment,
-    render_hyperframes_html,
     tts_rate_percent,
     update_render_job,
     should_ocr_blur_source_subtitles,
     source_text,
     source_text_for_interval,
     source_filename_label,
-    safe_hyperframes_dir_name,
     upsert_render_job,
     write_srt,
     write_srt_blocks,
@@ -507,27 +505,6 @@ def test_remotion_renderer_cleans_isolated_tmpdir_after_failure(tmp_path: Path, 
     renderer_tmp = Path((tmp_path / "renderer-tmpdir.txt").read_text(encoding="utf-8"))
     assert renderer_tmp == expected_tmp
     assert not renderer_tmp.exists()
-
-
-def test_hyperframes_package_rejects_nested_project_dir():
-    assert safe_hyperframes_dir_name("hf_pack") == "hf_pack"
-    with pytest.raises(ValueError):
-        safe_hyperframes_dir_name("../outside")
-
-
-def test_hyperframes_html_uses_local_media_and_captions():
-    html = render_hyperframes_html(
-        {"title": "JaguarTV", "durationSeconds": 3.0, "gsap": "vendor/gsap.min.js"},
-        [{"startSeconds": 0.0, "endSeconds": 1.0, "text": "Legenda"}],
-        "Resumo",
-    )
-    assert 'src="media/source.mp4"' in html
-    assert 'data-composition-id="jaguartv-hf"' in html
-    assert 'data-start="0"' in html
-    assert 'data-width="1080"' in html
-    assert 'data-track-index="3"' in html
-    assert 'window.__timelines["jaguartv-hf"]' in html
-    assert "Legenda" in html
 
 
 def test_render_job_progress_is_persistent(tmp_path: Path):

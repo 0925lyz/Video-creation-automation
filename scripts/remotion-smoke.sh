@@ -16,9 +16,6 @@ fi
 "$PYTHON_BIN" -c "from PIL import Image"
 
 mkdir -p "$OUT_DIR" "$PUBLIC_SMOKE"
-if [[ -x "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" ]]; then
-  export REMOTION_BROWSER_EXECUTABLE="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-fi
 ffmpeg -y -v error \
   -f lavfi -i "testsrc2=size=640x360:rate=30:duration=1" \
   -f lavfi -i "sine=frequency=880:sample_rate=48000:duration=1" \

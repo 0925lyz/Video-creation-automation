@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 from .core import append_event, connect_db, now_iso
 from .publisher import parse_datetime, publishing_timezone
 from .youtube_publisher import upload_youtube_publication
+from .x_publisher import upload_x_publication
 
 
 Uploader = Callable[[dict[str, Any], int], dict[str, Any]]
@@ -41,7 +42,7 @@ def due_publications(config: dict[str, Any], *, limit: int = 3, now: datetime | 
         """
         SELECT *
         FROM publications
-        WHERE platform='youtube' AND operation_type='PUBLICATION' AND status IN ('QUEUED','SCHEDULED')
+        WHERE platform IN ('youtube','x') AND operation_type='PUBLICATION' AND status IN ('QUEUED','SCHEDULED')
         ORDER BY COALESCE(scheduled_utc_at, scheduled_at) ASC,id ASC
         LIMIT 100
         """
@@ -97,7 +98,7 @@ def publish_due_once(
     *,
     limit: int = 3,
     dry_run: bool = False,
-    uploader: Uploader = upload_youtube_publication,
+    uploader: Uploader | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     due = due_publications(config, limit=limit, now=now)
@@ -125,15 +126,26 @@ def publish_due_once(
             "account": publication.get("account") or "",
         })
         try:
-            upload = uploader(config, int(publication["id"]))
+            selected_uploader = uploader or (
+                upload_x_publication if publication.get("platform") == "x" else upload_youtube_publication
+            )
+            upload = selected_uploader(config, int(publication["id"]))
             published_at = str(upload.get("published_at") or now_iso())
+            platform = str(publication.get("platform") or "")
+            platform_video_id = str(
+                upload.get("platform_video_id")
+                or upload.get("x_post_id")
+                or upload.get("youtube_video_id")
+                or ""
+            )
+            public_url = str(upload.get("public_url") or upload.get("x_url") or upload.get("youtube_url") or "")
             youtube_video_id = str(upload.get("youtube_video_id") or "")
             youtube_url = str(upload.get("youtube_url") or "")
-            if not youtube_video_id:
-                raise RuntimeError("YouTube upload did not return a video id")
+            if not platform_video_id:
+                raise RuntimeError(f"{platform or 'platform'} publish did not return a content id")
             published_dt = parse_datetime(published_at)
             if not published_dt:
-                raise RuntimeError("YouTube upload returned an invalid published_at")
+                raise RuntimeError(f"{platform or 'platform'} publish returned an invalid published_at")
             published_utc = published_dt.astimezone(timezone.utc)
             timezone_name = str(publication.get("timezone") or publishing_timezone(config, None))
             published_local = published_utc.astimezone(ZoneInfo(timezone_name)).isoformat()
@@ -148,18 +160,27 @@ def publish_due_once(
             if not keyword or keyword.lower() == "unknown":
                 keyword = discovered_keyword
             account_id = str(publication.get("authorized_account_id") or publication.get("account") or "")
-            auth = connection.execute(
-                "SELECT channel_id,channel_title FROM youtube_channel_auths WHERE account=?",
-                (account_id,),
-            ).fetchone()
-            channel_id = str((auth["channel_id"] if auth else "") or publication.get("channel_id") or "")
+            if platform == "youtube":
+                auth = connection.execute(
+                    "SELECT channel_id,channel_title FROM youtube_channel_auths WHERE account=?",
+                    (account_id,),
+                ).fetchone()
+                auth_username = str(auth["channel_title"] if auth else "")
+                channel_id = str((auth["channel_id"] if auth else "") or publication.get("channel_id") or "")
+            else:
+                auth = connection.execute(
+                    "SELECT x_user_id,username FROM x_account_auths WHERE account=?",
+                    (account_id,),
+                ).fetchone()
+                auth_username = str(auth["username"] if auth else "")
+                channel_id = ""
             username_snapshot = str(
                 publication.get("platform_username_snapshot")
                 or publication.get("account_label")
-                or (auth["channel_title"] if auth else "")
+                or auth_username
                 or account_id
             )
-            thumbnail_url = f"https://i.ytimg.com/vi/{youtube_video_id}/hqdefault.jpg"
+            thumbnail_url = f"https://i.ytimg.com/vi/{youtube_video_id}/hqdefault.jpg" if youtube_video_id else ""
             publish_task_id = str(publication.get("publish_task_id") or publication.get("idempotency_key") or f"publication:{publication['id']}")
             connection.execute(
                 """
@@ -172,9 +193,9 @@ def publish_due_once(
                 WHERE id=?
                 """,
                 (
-                    published_at, youtube_video_id, youtube_url, youtube_url,
-                    youtube_video_id, youtube_url, published_at, published_at,
-                    account_id, account_id, username_snapshot, channel_id, published_local,
+                    published_at, youtube_video_id, youtube_url, public_url,
+                    platform_video_id, public_url, published_at, published_at,
+                    account_id, str(publication.get("platform_account_id") or account_id), username_snapshot, channel_id, published_local,
                     category, keyword, publish_task_id, thumbnail_url, publication["id"],
                 ),
             )
@@ -185,7 +206,7 @@ def publish_due_once(
             public_status = str(
                 publication.get("public_status") or publication.get("privacy_status") or ""
             ).lower()
-            if public_status == "public":
+            if platform == "youtube" and public_status == "public":
                 connection.execute(
                     """
                     INSERT INTO youtube_sync_states(
@@ -202,12 +223,12 @@ def publish_due_once(
             append_event(connection, str(publication["candidate_id"]), "PUBLICATION_PUBLISHED", {
                 "publication_id": publication["id"],
                 "account": publication.get("account") or "",
-                "youtube_video_id": youtube_video_id,
-                "youtube_url": youtube_url,
+                "platform_video_id": platform_video_id,
+                "public_url": public_url,
                 "published_at": published_at,
             })
             published += 1
-            results.append({"publication_id": publication["id"], "status": "PUBLISHED", "youtube_url": youtube_url})
+            results.append({"publication_id": publication["id"], "status": "PUBLISHED", "public_url": public_url})
         except Exception as error:
             failed += 1
             mark_publication_failed(connection, publication, error)

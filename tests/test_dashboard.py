@@ -30,6 +30,7 @@ from jaguartv_factory.dashboard import (
     save_review,
     save_x_oauth_callback,
     save_youtube_oauth_callback,
+    signed_upload_url,
     upload_kind_requires_token,
     update_x_auth,
     x_auth_rows,
@@ -251,15 +252,32 @@ def test_public_brand_asset_path_is_limited_to_brand_assets():
     assert public_brand_asset_path("/assets/brand/missing.png") is None
 
 
-def test_uploads_do_not_require_upload_token():
-    assert upload_kind_requires_token("design_image") is False
-    assert upload_kind_requires_token("source") is False
-    assert upload_kind_requires_token("reaction") is False
-    assert upload_kind_requires_token("") is False
+def test_all_upload_kinds_require_upload_token():
+    assert upload_kind_requires_token("design_image") is True
+    assert upload_kind_requires_token("source") is True
+    assert upload_kind_requires_token("reaction") is True
+    assert upload_kind_requires_token("") is True
 
 
-def test_dashboard_is_public_by_default_even_with_admin_token(tmp_path: Path, monkeypatch):
+def test_dashboard_is_private_by_default_when_admin_token_exists(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("JAGUARTV_DASHBOARD_TOKEN", "secret-token")
+    app = DashboardApplication(("127.0.0.1", 0), dashboard_config(tmp_path))
+    thread = threading.Thread(target=app.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{app.server_address[1]}"
+    try:
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(f"{base}/api/tasks", timeout=5)
+        assert error.value.code == 401
+    finally:
+        app.shutdown()
+        thread.join(timeout=5)
+        app.server_close()
+
+
+def test_explicit_public_dashboard_is_read_only(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("JAGUARTV_DASHBOARD_TOKEN", "secret-token")
+    monkeypatch.setenv("JAGUARTV_DASHBOARD_PUBLIC", "1")
     app = DashboardApplication(("127.0.0.1", 0), dashboard_config(tmp_path))
     thread = threading.Thread(target=app.serve_forever, daemon=True)
     thread.start()
@@ -267,10 +285,60 @@ def test_dashboard_is_public_by_default_even_with_admin_token(tmp_path: Path, mo
     try:
         with urllib.request.urlopen(f"{base}/api/tasks", timeout=5) as response:
             assert response.status == 200
+        request = urllib.request.Request(
+            f"{base}/api/actions",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(request, timeout=5)
+        assert error.value.code == 401
     finally:
         app.shutdown()
         thread.join(timeout=5)
         app.server_close()
+
+
+def test_upload_requires_token_and_signed_download_rejects_tampering(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("JAGUARTV_DASHBOARD_PUBLIC", "1")
+    monkeypatch.setenv("JAGUARTV_UPLOAD_TOKEN", "upload-secret")
+    app = DashboardApplication(("127.0.0.1", 0), dashboard_config(tmp_path))
+    thread = threading.Thread(target=app.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{app.server_address[1]}"
+    try:
+        request = urllib.request.Request(
+            f"{base}/api/uploads?kind=reaction&filename=clip.mp4",
+            data=b"video",
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(request, timeout=5)
+        assert error.value.code == 401
+
+        request = urllib.request.Request(
+            f"{base}/api/uploads?kind=reaction&filename=clip.mp4",
+            data=b"video",
+            headers={"X-Upload-Token": "upload-secret"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            uploaded = json.loads(response.read())
+        assert "expires=" in uploaded["download_url"]
+        assert "signature=" in uploaded["download_url"]
+        with urllib.request.urlopen(base + uploaded["download_url"], timeout=5) as response:
+            assert response.read() == b"video"
+        tampered = uploaded["download_url"].replace("signature=", "signature=bad")
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(base + tampered, timeout=5)
+        assert error.value.code == 401
+    finally:
+        app.shutdown()
+        thread.join(timeout=5)
+        app.server_close()
+
+    assert signed_upload_url("not-an-upload-id") == ""
 
 
 def test_dashboard_admin_token_can_be_required_when_public_flag_is_off(tmp_path: Path, monkeypatch):

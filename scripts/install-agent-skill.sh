@@ -16,8 +16,6 @@ install_skill() {
   echo "Installed: $target"
 }
 
-install_skill "$HOME/.workbuddy/skills"
-install_skill "$HOME/.codebuddy/skills"
 install_skill "$HOME/.codex/skills"
 
 echo "Set this in each agent environment:"

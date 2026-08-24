@@ -29,6 +29,23 @@ The default `audio.source_mode: auto` preserves original audio for non-localized
 - Do not run two production commands for the same candidate concurrently.
 - Preserve failed events and intermediate assets for diagnosis.
 
+## Agent Skill Routing
+
+This skill is the only factory entry point. The skills below provide agent guidance; they do not replace the Python pipeline, create another database, or prove that a production service called them.
+
+- Use `content-strategy` for topic lanes and campaign planning.
+- Use `jaguartv-copywriter`, `copywriting`, and `copy-editing` for pt-BR titles, captions, tags, and Chinese review copy.
+- Use `captions-overlay` and `embedded-captions` when planning subtitle layout; the actual render still runs through Remotion.
+- Use `general-video`, `video`, `talking-head-recut`, `motion-doctrine`, and `motion-graphics` for edit decisions that are then expressed through the factory production options and Remotion template.
+- Use `image` for poster and brand-image preparation, then import the finished image through the poster inventory.
+- Use `media-use` for audio and media handling guidance; actual files remain under the candidate workspace.
+- Use `product-marketing` and `social` for channel-specific positioning after the candidate has passed review.
+- Use `analytics` and `attribution` when interpreting publication metrics and feedback proposals.
+
+Do not route to removed Hyperframes, WorkBuddy, SEO, sales, email, paywall, or unrelated marketing skills. Hyperframes was never a production renderer in this repository; Remotion is the single supported render engine.
+
+Check optional external repositories with `scripts/factory.sh integrations`. Synchronization is explicit and may access the network: `scripts/factory.sh integrations --sync --name mediacrawler`.
+
 ## Environment
 
 Set `JAGUARTV_FACTORY_ROOT` when the skill is installed outside the repository:

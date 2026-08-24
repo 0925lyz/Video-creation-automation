@@ -59,7 +59,7 @@ def test_import_capabilities_reflect_existing_admin_permission(dashboard_server:
     assert administrator["can_direct_approve"] is True
 
 
-def test_forged_direct_approval_is_rejected_before_download(dashboard_server: str):
+def test_anonymous_direct_approval_is_rejected_before_business_logic(dashboard_server: str):
     with pytest.raises(urllib.error.HTTPError) as error:
         request_json(
             f"{dashboard_server}/api/actions",
@@ -71,14 +71,15 @@ def test_forged_direct_approval_is_rejected_before_download(dashboard_server: st
             },
         )
 
-    assert error.value.code == 403
-    assert "administrator permission" in json.loads(error.value.read())["error"]
+    assert error.value.code == 401
+    assert "authentication required" in json.loads(error.value.read())["error"]
 
 
 def test_target_area_is_a_backend_whitelist(dashboard_server: str):
     with pytest.raises(urllib.error.HTTPError) as error:
         request_json(
             f"{dashboard_server}/api/actions",
+            headers={"X-Dashboard-Token": "test-admin-token"},
             payload={
                 "action": "ingest",
                 "platform": "youtube",

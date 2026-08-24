@@ -64,8 +64,14 @@ def _resolve_path(config: dict[str, Any], value: str) -> Path:
     return _config_root(config) / path
 
 
-def _keywords_file(config: dict[str, Any]) -> Path:
-    return _resolve_path(config, str((config.get("sources", {}) or {}).get("keywords_file") or "config/keywords.demo.yaml"))
+def _runtime_keywords_file(config: dict[str, Any]) -> Path:
+    return _resolve_path(
+        config,
+        str(
+            (config.get("trends", {}) or {}).get("runtime_keywords_file")
+            or "workspace/runtime/keywords.trends.yaml"
+        ),
+    )
 
 
 def sync_hot_keywords_to_keyword_file(config: dict[str, Any], keywords: list[str]) -> dict[str, Any]:
@@ -76,7 +82,8 @@ def sync_hot_keywords_to_keyword_file(config: dict[str, Any], keywords: list[str
     cleaned = list(dict.fromkeys(str(keyword).strip() for keyword in keywords if str(keyword).strip()))
     if not cleaned:
         return {"synced": False, "reason": "no keywords"}
-    path = _keywords_file(config)
+    path = _runtime_keywords_file(config)
+    path.parent.mkdir(parents=True, exist_ok=True)
     data = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
     data = data or {}
     data[group_name] = {

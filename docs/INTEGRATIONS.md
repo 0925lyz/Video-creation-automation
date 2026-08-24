@@ -25,24 +25,20 @@
 | 工具 | 许可证 | 在本项目中的入口 |
 | --- | --- | --- |
 | MediaCrawler | 上游未提供标准 SPDX 声明 | JSONL 结果通过 `jaguartv ingest-mediacrawler` 进入统一候选库 |
-| Douyin_TikTok_Download_API | Apache-2.0 | 可选抖音解析服务；地址由 `sources.adapters.douyin.api_base` 配置 |
-| XHS-Downloader | GPL-3.0 | 可选小红书解析服务；通过 HTTP 与主进程隔离 |
-| Scrapling | BSD-3-Clause | 可选浏览器检索工具；内置 Playwright 回退仍是默认实现 |
-| PaddleOCR | Apache-2.0 | 可选 OCR 后端，由 `edit.ocr_backend` 选择 |
 | pyvideotrans | GPL-3.0 | 可选 STT、字幕翻译、TTS 和整段翻译适配器，各能力默认关闭 |
 
 GPL 项目保持独立进程或独立检出，不与本仓库源码打包。使用和再分发前应复核对应固定提交中的上游许可证；`NOASSERTION` 项目不应在未确认许可时重新分发。
 
 ## Codex Skill 路由
 
-仓库自带 `.agents/skills/jaguartv-content-factory`，它是统一操作入口。`config/integrations.yaml` 同时记录当前工作流可调用的可选 Skill：
+仓库自带 `.agents/skills/jaguartv-content-factory`，它是统一操作入口。保留的 Agent skill 及路由记录在 `config/agent-skills.yaml`：
 
 - 发现和下载结果必须进入 `ingest`、`ingest-mediacrawler` 或 `upload`，不能建立第二套候选数据库。
 - 音视频理解、剪辑、字幕和 TTS 结果必须回到候选 ID 对应的工作目录，再由 `produce` 生成审核包。
 - 去除文字、水印或遮挡的能力仅用于自有或明确授权素材，不能用于规避平台或版权识别。
 - Skill 不负责自动发布；`workspace/ready_for_review/` 和服务器审核页仍是人工审核边界。
 
-这些 Skill 是操作环境的可选能力，不属于本仓库 Python 依赖，也不会随项目压缩包复制其实现。
+这些 skill 是给 Agent 阅读的操作方法，不是 Python 库，也不会被 worker 自动调用。实际执行证据仍以 CLI、API、数据库记录和 worker 日志为准。
 
 ## 数据边界
 

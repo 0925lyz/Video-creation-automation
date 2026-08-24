@@ -30,12 +30,11 @@ git_has_changes() {
     [[ -n "$(git -C "$APP_DIR" ls-files --others --exclude-standard)" ]]
 }
 
-save_local_changes() {
+refuse_local_changes() {
   if [[ -d "$APP_DIR/.git" ]] && git_has_changes; then
-    local stamp
-    stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-    echo "==> Saving existing server changes to git stash: server-install-$stamp"
-    git -C "$APP_DIR" stash push --include-untracked -m "server-install-$stamp"
+    echo "Refusing to install over server-side changes. Review them first." >&2
+    git -C "$APP_DIR" status --short >&2
+    exit 2
   fi
 }
 
@@ -69,7 +68,7 @@ fi
 
 NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
 if [[ "$NODE_MAJOR" -lt "$NODE_MIN_MAJOR" ]]; then
-  echo "==> Installing Node.js $NODE_MIN_MAJOR for Remotion and Hyperframes tooling"
+  echo "==> Installing Node.js $NODE_MIN_MAJOR for Remotion tooling"
   curl -fsSL "https://deb.nodesource.com/setup_${NODE_MIN_MAJOR}.x" | sudo -E bash -
   sudo apt-get install -y nodejs
 fi
@@ -95,7 +94,7 @@ sudo chown -R "$SERVICE_USER":"$SERVICE_USER" "$APP_DIR"
 
 if [[ -d "$APP_DIR/.git" ]]; then
   echo "==> Updating existing repository"
-  save_local_changes
+  refuse_local_changes
   git -C "$APP_DIR" remote set-url origin "$REPO_URL"
   git -C "$APP_DIR" fetch origin "$BRANCH"
   git -C "$APP_DIR" checkout -B "$BRANCH" "origin/$BRANCH"
@@ -112,8 +111,8 @@ echo "==> Creating Python virtual environment"
 .venv/bin/pip install -e ".[test]"
 
 echo "==> Installing Node helper packages"
-npm --prefix "$APP_DIR" install --no-audit --no-fund
-npm --prefix "$APP_DIR/src/jaguartv_factory/remotion_template" install --no-audit --no-fund
+npm --prefix "$APP_DIR" ci --no-audit --no-fund
+npm --prefix "$APP_DIR/src/jaguartv_factory/remotion_template" ci --no-audit --no-fund
 
 mkdir -p workspace/server_media/review workspace/server_media/uploads/source \
   workspace/server_media/uploads/reaction assets/bgm
@@ -129,11 +128,18 @@ import secrets
 print(secrets.token_urlsafe(32))
 PY
 )"
+  DASHBOARD_TOKEN="$(.venv/bin/python - <<'PY'
+import secrets
+print(secrets.token_urlsafe(32))
+PY
+)"
   {
     echo "JAGUARTV_HOST=$JAGUARTV_HOST"
     echo "JAGUARTV_PORT=$JAGUARTV_PORT"
     echo "JAGUARTV_EVENTS_TOKEN=$EVENTS_TOKEN"
     echo "JAGUARTV_UPLOAD_TOKEN=$UPLOAD_TOKEN"
+    echo "JAGUARTV_DASHBOARD_TOKEN=$DASHBOARD_TOKEN"
+    echo "JAGUARTV_DASHBOARD_PUBLIC=0"
   } > .env
   chmod 600 .env
 fi
@@ -141,6 +147,11 @@ fi
 if ! grep -q '^JAGUARTV_UPLOAD_TOKEN=' .env; then
   UPLOAD_TOKEN="$(.venv/bin/python -c 'import secrets; print(secrets.token_urlsafe(32))')"
   echo "JAGUARTV_UPLOAD_TOKEN=$UPLOAD_TOKEN" >> .env
+fi
+
+if ! grep -q '^JAGUARTV_DASHBOARD_TOKEN=' .env; then
+  DASHBOARD_TOKEN="$(.venv/bin/python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+  echo "JAGUARTV_DASHBOARD_TOKEN=$DASHBOARD_TOKEN" >> .env
 fi
 
 echo "==> Installing systemd service: $SERVICE_NAME"
@@ -175,7 +186,7 @@ echo "==> Installing YouTube analytics worker"
 bash scripts/install-youtube-analytics-worker.sh
 
 echo "==> Verifying install"
-.venv/bin/python -m pytest tests/test_core.py tests/test_platform_and_brand.py tests/test_workbuddy_integration.py
+.venv/bin/python -m pytest tests/test_core.py tests/test_platform_and_brand.py tests/test_localization.py
 ./.agents/skills/jaguartv-content-factory/scripts/factory.sh doctor
 npm --prefix "$APP_DIR" run build
 ./scripts/remotion-smoke.sh

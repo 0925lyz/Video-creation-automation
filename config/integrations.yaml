@@ -9,58 +9,9 @@ external_tools:
     checkout: workspace/external_tools/MediaCrawler
     license: NOASSERTION
     workflow: JSONL discovery import through `jaguartv ingest-mediacrawler`
-  douyin_tiktok_download_api:
-    repository: https://github.com/Evil0ctal/Douyin_TikTok_Download_API.git
-    revision: 42784ffc83a72a516bfe952153ad7e2a3998d16c
-    checkout: workspace/external_tools/Douyin_TikTok_Download_API
-    license: Apache-2.0
-    workflow: Optional Douyin resolver at the configured sources.adapters.douyin.api_base
-  xhs_downloader:
-    repository: https://github.com/JoeanAmier/XHS-Downloader.git
-    revision: cfc064f24621bf75da9f6e33d084ebcfa7f4a98e
-    checkout: workspace/external_tools/XHS-Downloader
-    license: GPL-3.0
-    workflow: Optional Xiaohongshu resolver at the configured sources.adapters.xiaohongshu.api_base
-  scrapling:
-    repository: https://github.com/D4Vinci/Scrapling.git
-    revision: 5d213a2d4764002bfc4fed33c32fe09fa8b0bf7f
-    checkout: workspace/external_tools/Scrapling
-    license: BSD-3-Clause
-    workflow: Optional browser-retrieval toolkit; the built-in Playwright fallback remains the default
-  paddleocr:
-    repository: https://github.com/PaddlePaddle/PaddleOCR.git
-    revision: 2661c7c0ef5c613e8f93c6e93b2e052399f0f854
-    checkout: workspace/external_tools/PaddleOCR
-    license: Apache-2.0
-    workflow: Optional OCR backend selected by edit.ocr_backend
   pyvideotrans:
     repository: https://github.com/jianchang512/pyvideotrans.git
     revision: a21122786d3a1efda4c92b15cbeb28009d4a7e19
     checkout: workspace/external_tools/pyvideotrans
     license: GPL-3.0
-    workflow: Optional STT, subtitle translation, TTS and video-translation adapter; all switches default off
-
-codex_skills:
-  bundled:
-    - .agents/skills/jaguartv-content-factory
-  optional_routing:
-    discovery:
-      - agent-reach
-      - apify-ultimate-scraper
-      - bilibili-downloader-plus
-      - bilibili-video-crawler
-      - douyin-downloader
-      - tiktok-crawling
-      - yt-dlp-downloader
-    media_understanding:
-      - bilibili-video-parser
-      - speech-recognition
-      - tencent-mps
-    editing:
-      - openclaw-video-editor
-      - tencent-mps
-    localization:
-      - tencentcloud-tts
-    authorized_asset_cleanup:
-      - nologo-open-api
-      - wavespeed-watermark-remover
+    workflow: Optional STT, subtitle translation, TTS and video-translation adapter; each switch is explicit

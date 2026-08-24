@@ -1,6 +1,6 @@
 # JaguarTV Content Factory vNEXT
 
-面向巴西葡语市场的视频内容工厂：多平台候选入库、长视频智能精彩切片、按内容类型选择音频策略、可选 Reaction 合成、JaguarTV 品牌渲染、服务器审核包和人工审核。
+面向巴西葡语市场的视频内容工厂：巴西热点关键词、多平台候选入库、长视频智能切片、pt-BR 本地化、Remotion 双版本渲染、海报库存、人工审核、发布文案、YouTube/X 发布和发布后数据回收。
 
 所有运行时视频都保存在 `factory.jarg.top` 对应服务器。源素材和 Reaction 输入默认私有，只有审核包通过 `/media/review/...` 提供访问；项目不使用办公协作盘作为视频存储。
 
@@ -12,6 +12,8 @@
 - 音频策略：源音 + Funk、源音乐优先、仅 Funk、保留葡语、葡语配音字幕、BGM only。
 - 人工审核交接：系统记录权利状态和风险等级，不在制作前自动阻断；内部人员在服务器审核页确认授权与发布范围。
 - 可解释审核：保存内容类型、命中规则、片段时间、精彩度、原因、Reaction 和音频参数。
+- 发布闭环：YouTube/X 支持审核后发布；其他平台当前只生成文案和本地成片，不假装已自动发布。
+- 热点反馈：每日热点进入运行时关键词层，不会再把服务器 Git 配置改脏；数据分析只生成优化建议，需审核后应用。
 
 ## 本地启动
 
@@ -130,9 +132,8 @@ GET /api/hot-keywords?date=today
 
 ## 文档
 
-- [产品需求文档](docs/JaguarTV_vNEXT_产品需求文档.md)
-- [双工具评估与融合实施报告](docs/双工具评估与融合实施报告.md)
-- [WorkBuddy 执行总指令](prompts/WORKBUDDY_VNEXT_SYSTEM_PROMPT.md)
+- [当前唯一工作流](docs/WORKFLOW.md)
+- [外部仓库和 Agent Skill](docs/INTEGRATIONS.md)
 
 ## 合规边界
 

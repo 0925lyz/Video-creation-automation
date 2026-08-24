@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import html
 import json
 import math
 import os
@@ -28,6 +27,7 @@ from typing import Any, Callable, Iterable, Sequence
 import yaml
 from PIL import Image, ImageDraw, ImageFont
 
+from .binaries import common_binary_candidates, require_binary as resolve_binary
 from .compliance import assert_render_allowed
 from .highlight import analyze_video
 from .reaction import compose_reaction, reaction_spec
@@ -41,7 +41,7 @@ from .pyvideotrans_adapter import (
     pyvideotrans_translate_srt,
     pyvideotrans_tts,
 )
-from .workbuddy_adapter import (
+from .localization import (
     classify_chinese_audio,
     demucs_backing_track,
     detect_chinese_text_regions,
@@ -74,40 +74,8 @@ def run_command(
     return subprocess.run(args, cwd=cwd, check=check, text=True, capture_output=True, timeout=timeout)
 
 
-def common_binary_candidates(name: str) -> list[Path]:
-    machine = "arm64" if os.uname().machine in {"arm64", "aarch64"} else "x64"
-    system = {"darwin": "darwin", "linux": "linux", "win32": "win32"}.get(sys.platform, sys.platform)
-    if name == "ffmpeg":
-        return [
-            ROOT / "node_modules" / "ffmpeg-static" / ("ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"),
-            Path("/Applications/CapCut.app/Contents/Resources/ffmpeg"),
-            Path("/Applications/VideoFusion-macOS.app/Contents/Resources/ffmpeg"),
-            Path("/Applications/BlueStacks.app/Contents/MacOS/ffmpeg"),
-        ]
-    if name == "ffprobe":
-        suffix = "ffprobe.exe" if sys.platform == "win32" else "ffprobe"
-        return [ROOT / "node_modules" / "ffprobe-static" / "bin" / system / machine / suffix]
-    return []
-
-
 def require_binary(name: str) -> str:
-    if name == "yt-dlp":
-        try:
-            from .sources import yt_dlp_binary
-
-            return yt_dlp_binary()
-        except Exception:
-            pass
-    sibling = Path(sys.executable).parent / name
-    if sibling.exists():
-        return str(sibling)
-    path = shutil.which(name)
-    if path:
-        return path
-    for candidate in common_binary_candidates(name):
-        if candidate.is_file():
-            return str(candidate)
-    raise RuntimeError(f"Missing required binary: {name}")
+    return resolve_binary(name)
 
 
 def platform_from_url(url: str) -> str:
@@ -1158,6 +1126,16 @@ def discover(
     connection = connect_db(config)
     keyword_path = resolve_config_path(config, config["sources"]["keywords_file"])
     keywords = yaml.safe_load(keyword_path.read_text(encoding="utf-8")) or {}
+    runtime_keyword_value = str(
+        (config.get("trends", {}) or {}).get("runtime_keywords_file") or ""
+    ).strip()
+    if runtime_keyword_value:
+        runtime_keyword_path = resolve_config_path(config, runtime_keyword_value)
+        if runtime_keyword_path.is_file() and runtime_keyword_path.resolve() != keyword_path.resolve():
+            runtime_keywords = yaml.safe_load(runtime_keyword_path.read_text(encoding="utf-8")) or {}
+            if not isinstance(runtime_keywords, dict):
+                raise ValueError("trends.runtime_keywords_file must contain a keyword group mapping")
+            keywords.update(runtime_keywords)
     override_terms = [str(term).strip() for term in (keyword_overrides or []) if str(term).strip()]
     if override_terms:
         keywords = {
@@ -2223,7 +2201,7 @@ def tts_ptbr(
     config: dict[str, Any] | None = None,
     subtitles: Path | None = None,
 ) -> None:
-    """Generate pt-BR narration with WorkBuddy's edge-tts path first.
+    """Generate pt-BR narration with the local edge-tts path first.
 
     Local system voices remain the offline fallback for tests and degraded
     server operation.
@@ -2483,192 +2461,6 @@ def remotion_captions_enabled_for_variant(config: dict[str, Any], variant: str) 
     if not isinstance(variants, list):
         return False
     return variant in {str(item).strip() for item in variants}
-
-
-def hyperframes_packaging_enabled(config: dict[str, Any]) -> bool:
-    settings = config.get("hyperframes", {}) or {}
-    return bool(settings.get("enabled", False))
-
-
-def safe_hyperframes_dir_name(value: Any, *, default: str = "hyperframes") -> str:
-    name = str(value or default).strip()
-    if not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
-        raise ValueError("hyperframes.project_dir must be a simple directory name")
-    return name
-
-
-def write_hyperframes_package(
-    config: dict[str, Any],
-    work: Path,
-    package_id: str,
-    clean_media: Path,
-    subtitles: Path | None,
-    title: str,
-    publishing_text: str,
-    duration: float,
-) -> dict[str, Any]:
-    settings = config.get("hyperframes", {}) or {}
-    project_root = work / safe_hyperframes_dir_name(settings.get("project_dir"))
-    safe_package_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", package_id).strip("._-") or "package"
-    project = project_root / safe_package_id
-    media_dir = project / "media"
-    vendor_dir = project / "vendor"
-    media_dir.mkdir(parents=True, exist_ok=True)
-    vendor_dir.mkdir(parents=True, exist_ok=True)
-    source_copy = media_dir / "source.mp4"
-    shutil.copy2(clean_media, source_copy)
-    gsap_asset = local_hyperframes_gsap_asset()
-    if not gsap_asset:
-        raise RuntimeError("Hyperframes packaging requires a local gsap.min.js asset from installed skills")
-    shutil.copy2(gsap_asset, vendor_dir / "gsap.min.js")
-
-    cues = remotion_caption_cues(subtitles, max_end=duration)
-    manifest = {
-        "engine": "hyperframes",
-        "status": "project_ready",
-        "variant": str(settings.get("variant_label", "HF包装版")),
-        "project_dir": str(project),
-        "index": str(project / "index.html"),
-        "source": "media/source.mp4",
-        "gsap": "vendor/gsap.min.js",
-        "durationSeconds": round(max(0.0, float(duration)), 3),
-        "title": title[:140],
-        "captionCount": len(cues),
-        "allowExternalRender": bool(settings.get("allow_external_render", False)),
-    }
-    (project / "manifest.json").write_text(json.dumps({**manifest, "captions": cues}, ensure_ascii=False, indent=2), encoding="utf-8")
-    (project / "index.html").write_text(
-        render_hyperframes_html(manifest, cues, publishing_text),
-        encoding="utf-8",
-    )
-    return manifest
-
-
-def local_hyperframes_gsap_asset() -> Path | None:
-    candidates = [
-        ROOT / ".agents" / "skills" / "talking-head-recut" / "assets" / "vendor" / "gsap.min.js",
-        ROOT / ".agents" / "skills" / "music-to-video" / "references" / "motion-primitives" / "assets" / "gsap.min.js",
-    ]
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-    return None
-
-
-def render_hyperframes_html(manifest: dict[str, Any], cues: list[dict[str, Any]], publishing_text: str) -> str:
-    title = html.escape(str(manifest.get("title") or "JaguarTV"))
-    text = html.escape(publishing_text[:260])
-    duration = max(1.0, float(manifest.get("durationSeconds") or 0))
-    gsap_src = html.escape(str(manifest.get("gsap") or ""))
-    gsap_tag = f'<script src="{gsap_src}"></script>' if gsap_src else ""
-    title_duration = min(4.0, duration)
-    dek_start = max(0.0, duration - min(4.0, duration))
-    caption_clips = "\n".join(
-        (
-            f'    <section id="hf-caption-{index}" class="clip caption" '
-            f'data-start="{max(0.0, float(cue["startSeconds"])):.3f}" '
-            f'data-duration="{max(0.001, float(cue["endSeconds"]) - float(cue["startSeconds"])):.3f}" '
-            f'data-track-index="3">{html.escape(str(cue["text"]))}</section>'
-        )
-        for index, cue in enumerate(cues)
-    )
-    return f"""<!doctype html>
-<html lang="pt-BR">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=1080, height=1920" />
-  <title>{title}</title>
-  {gsap_tag}
-  <style>
-    html, body {{
-      width: 1080px;
-      height: 1920px;
-      margin: 0;
-      overflow: hidden;
-      background: #050505;
-      font-family: Arial, Helvetica, sans-serif;
-    }}
-    #root {{
-      position: relative;
-      width: 1080px;
-      height: 1920px;
-      overflow: hidden;
-      color: #fff;
-    }}
-    .clip {{
-      position: absolute;
-      box-sizing: border-box;
-    }}
-    .base {{
-      inset: 0;
-      width: 1080px;
-      height: 1920px;
-      background: #050505;
-    }}
-    video {{
-      inset: 0;
-      width: 100%;
-      height: 100%;
-      object-fit: contain;
-      background: #000;
-    }}
-    .title {{
-      left: 54px;
-      top: 82px;
-      width: 820px;
-      font-size: 66px;
-      line-height: 1.04;
-      font-weight: 900;
-      text-shadow: 0 3px 12px rgba(0,0,0,.72);
-    }}
-    .caption {{
-      left: 50%;
-      bottom: 134px;
-      transform: translateX(-50%);
-      width: 886px;
-      border-left: 12px solid #f2d14b;
-      padding: 28px 34px;
-      background: rgba(5, 5, 5, .74);
-      font-size: 48px;
-      line-height: 1.18;
-      font-weight: 800;
-      text-align: center;
-      text-shadow: 0 2px 6px rgba(0,0,0,.55);
-      overflow: hidden;
-    }}
-    .dek {{
-      right: 44px;
-      bottom: 58px;
-      width: 470px;
-      font-size: 24px;
-      line-height: 1.22;
-      opacity: .88;
-      text-align: right;
-      text-shadow: 0 2px 8px rgba(0,0,0,.72);
-    }}
-  </style>
-</head>
-<body>
-  <div id="root" data-composition-id="jaguartv-hf" data-start="0" data-width="1080" data-height="1920" data-duration="{duration:.3f}">
-    <section id="hf-base" class="clip base" data-start="0" data-duration="{duration:.3f}" data-track-index="0"></section>
-    <video id="hf-video" class="clip" src="media/source.mp4" data-start="0" data-duration="{duration:.3f}" data-track-index="1" muted playsinline></video>
-    <audio id="hf-audio" src="media/source.mp4" data-start="0" data-duration="{duration:.3f}" data-track-index="10" data-volume="1"></audio>
-    <section id="hf-title" class="clip title" data-start="0" data-duration="{title_duration:.3f}" data-track-index="2"><span id="hf-title-text">{title}</span></section>
-{caption_clips}
-    <section id="hf-dek" class="clip dek" data-start="{dek_start:.3f}" data-duration="{duration - dek_start:.3f}" data-track-index="4">{text}</section>
-  </div>
-  <script>
-    window.__timelines = window.__timelines || {{}};
-    const timeline = window.gsap
-      ? gsap.timeline({{ paused: true }})
-      : {{ fromTo() {{ return this; }}, to() {{ return this; }} }};
-    timeline.fromTo("#hf-title-text", {{ opacity: 0, y: -30 }}, {{ opacity: 1, y: 0, duration: 0.45, ease: "power3.out" }}, 0.15);
-    timeline.fromTo("#hf-dek", {{ opacity: 0, y: 18 }}, {{ opacity: 0.88, y: 0, duration: 0.45, ease: "power2.out" }}, {dek_start:.3f});
-    window.__timelines["jaguartv-hf"] = timeline;
-  </script>
-</body>
-</html>
-"""
 
 
 def load_font(size: int) -> ImageFont.FreeTypeFont:
@@ -4225,7 +4017,6 @@ def produce_candidate(
             render_start = 0.0
         title_suffix = f" - Parte {segment_index}" if segment_total > 1 else ""
         variant_outputs: list[dict[str, Any]] = []
-        hyperframes_package: dict[str, Any] | None = None
         segment_script = script
         segment_voice = voice
         segment_subtitles = subtitles
@@ -4316,17 +4107,6 @@ def produce_candidate(
                 if not qa_variant["passed"]:
                     raise RuntimeError(f"QA failed for {package_id} {variant}: {qa_variant}")
                 variant_outputs.append(info)
-            if hyperframes_packaging_enabled(config):
-                hyperframes_package = write_hyperframes_package(
-                    config,
-                    work,
-                    package_id,
-                    clean,
-                    segment_subtitles,
-                    f"{filename_stem}{title_suffix}",
-                    segment_publishing_text,
-                    float(segment["duration"]),
-                )
             output = Path(str(variant_outputs[0]["path"]))
         else:
             render_video(
@@ -4447,7 +4227,6 @@ def produce_candidate(
             "production_contract": "candidate-production-v1",
             "production_run_id": production_run_id,
             "output_variants": persisted_outputs,
-            "hyperframes_package": hyperframes_package,
             "render_engine": render_engine,
             "reaction": reaction.to_dict(),
             "compliance": compliance,

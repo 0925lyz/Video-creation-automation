@@ -306,7 +306,7 @@ def public_brand_asset_path(requested: str) -> Path | None:
 
 
 def upload_kind_requires_token(kind: str) -> bool:
-    return False
+    return True
 
 
 def loopback_client(address: str) -> bool:
@@ -664,7 +664,15 @@ def generate_copywriter_with_gemini(payload: dict[str, Any]) -> dict[str, Any]:
 def signed_upload_url(upload_id: str, lifetime_sec: int = 24 * 3600) -> str:
     if not re.fullmatch(r"[a-f0-9]{32}", str(upload_id or "")):
         return ""
-    return f"/api/uploads/{upload_id}/download"
+    secret = os.environ.get("JAGUARTV_UPLOAD_SIGNING_SECRET", "").strip() or os.environ.get(
+        "JAGUARTV_UPLOAD_TOKEN", ""
+    ).strip()
+    if not secret:
+        return f"/api/uploads/{upload_id}/download"
+    expires = int(time.time()) + max(60, min(int(lifetime_sec), 7 * 24 * 3600))
+    payload = f"{upload_id}:{expires}"
+    signature = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"/api/uploads/{upload_id}/download?expires={expires}&signature={signature}"
 
 
 def upload_rows(config: dict[str, Any]) -> list[dict[str, Any]]:
@@ -4300,8 +4308,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json({"error": "internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def admin_required_path(self, path: str) -> bool:
-        if os.environ.get("JAGUARTV_DASHBOARD_PUBLIC", "1").strip().lower() in {"1", "true", "yes", "on"}:
-            return False
         if path == "/api/health":
             return False
         if path == "/oauth/youtube/callback":
@@ -4313,6 +4319,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == "/api/uploads" or path.startswith("/api/uploads/"):
             return False
         if path.startswith("/media/") or path.startswith("/assets/brand/"):
+            return False
+        public_read_only = os.environ.get("JAGUARTV_DASHBOARD_PUBLIC", "0").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if public_read_only and self.command in {"GET", "HEAD"}:
             return False
         return True
 
@@ -4389,7 +4403,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         return secrets.compare_digest(provided, token)
 
     def authorized_for_uploads(self) -> bool:
-        return True
+        token = os.environ.get("JAGUARTV_UPLOAD_TOKEN", "").strip()
+        if not token:
+            return loopback_client(self.client_address[0])
+        provided = (
+            self.headers.get("X-Upload-Token", "").strip()
+            or self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+        )
+        return bool(provided) and secrets.compare_digest(provided, token)
 
     def authorized_for_upload_kind(self, kind: str) -> bool:
         if not upload_kind_requires_token(kind):
@@ -4407,7 +4428,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return ""
 
     def valid_upload_signature(self, upload_id: str, query: dict[str, list[str]]) -> bool:
-        return True
+        secret = os.environ.get("JAGUARTV_UPLOAD_SIGNING_SECRET", "").strip() or os.environ.get(
+            "JAGUARTV_UPLOAD_TOKEN", ""
+        ).strip()
+        if not secret or not re.fullmatch(r"[a-f0-9]{32}", str(upload_id or "")):
+            return False
+        try:
+            expires = int(str((query.get("expires") or [""])[0]))
+        except (TypeError, ValueError):
+            return False
+        now = int(time.time())
+        if expires < now or expires > now + 7 * 24 * 3600:
+            return False
+        provided = str((query.get("signature") or [""])[0]).strip()
+        expected = hmac.new(
+            secret.encode("utf-8"),
+            f"{upload_id}:{expires}".encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        return bool(provided) and secrets.compare_digest(provided, expected)
 
     def send_private_upload(self, parsed: Any, *, head_only: bool) -> None:
         parts = parsed.path.strip("/").split("/")

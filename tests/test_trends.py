@@ -25,7 +25,7 @@ class FakeTrendReq:
         }
 
 
-def test_google_trends_job_syncs_hot_keywords_to_keyword_library(tmp_path: Path):
+def test_google_trends_job_syncs_hot_keywords_to_runtime_library(tmp_path: Path):
     keyword_file = tmp_path / "config" / "keywords.demo.yaml"
     keyword_file.parent.mkdir()
     keyword_file.write_text("football:\n  terms:\n    pt: [brasileirão]\n", encoding="utf-8")
@@ -39,13 +39,17 @@ def test_google_trends_job_syncs_hot_keywords_to_keyword_library(tmp_path: Path)
             "top_n": 2,
             "source": "google_trends",
             "sync_keywords_group": "google_trends_br_daily",
+            "runtime_keywords_file": "workspace/runtime/keywords.trends.yaml",
             "schedule_timezone": "America/Sao_Paulo",
         },
     }
 
+    original = keyword_file.read_text(encoding="utf-8")
     result = run_trends_job(config, client_factory=FakeTrendReq)
-    data = yaml.safe_load(keyword_file.read_text(encoding="utf-8"))
+    runtime_file = tmp_path / "workspace" / "runtime" / "keywords.trends.yaml"
+    data = yaml.safe_load(runtime_file.read_text(encoding="utf-8"))
 
     assert result["status"] == "updated"
     assert result["count"] == 2
+    assert keyword_file.read_text(encoding="utf-8") == original
     assert data["google_trends_br_daily"]["terms"]["pt"] == ["flamengo hoje", "brasileirao tabela"]

@@ -96,6 +96,41 @@ def authorize_youtube(config: dict, account: str = "consumer_football") -> None:
     connection.commit()
 
 
+def authorize_x(
+    config: dict,
+    account: str = "consumer_football",
+    *,
+    user_id: str = "x-user-1",
+    username: str = "jaguarfutebol",
+) -> None:
+    connection = connect_db(config)
+    timestamp = now_iso()
+    connection.execute(
+        """
+        INSERT INTO x_account_auths(
+          account,x_user_id,username,display_name,scopes,encrypted_access_token,
+          encrypted_refresh_token,token_type,expires_in,status,authorized_at,confirmed_at,updated_at
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            account,
+            user_id,
+            username,
+            username,
+            "tweet.read users.read tweet.write media.write offline.access",
+            "encrypted-access",
+            "encrypted-refresh",
+            "bearer",
+            7200,
+            "AUTHORIZED",
+            timestamp,
+            timestamp,
+            timestamp,
+        ),
+    )
+    connection.commit()
+
+
 def publish_payload(**overrides):
     payload = {
         "candidate_id": "cand-1",
@@ -199,6 +234,74 @@ def test_platform_capabilities_keep_youtube_publish_config_in_one_place():
     assert capabilities["youtube"]["operation_type"] == "PUBLICATION"
     assert capabilities["youtube"]["requires_account"] is True
     assert capabilities["facebook"]["operation_type"] == "LOCAL_DOWNLOAD"
+
+
+def test_x_accounts_require_distinct_users_and_publish_scopes(tmp_path: Path):
+    config = config_for(tmp_path)
+    authorize_x(config, "consumer_main", user_id="x-user-main", username="JaguarTVBrasil")
+    authorize_x(config, "consumer_football", user_id="x-user-shared", username="jaguarfutebol")
+    authorize_x(config, "consumer_guide", user_id="x-user-shared", username="jaguarfutebol")
+
+    rows = list_publish_accounts(config, "x")
+    by_id = {row["id"]: row for row in rows}
+
+    assert by_id["consumer_main"]["status"] == "AVAILABLE"
+    assert by_id["consumer_football"]["status"] == "UNAVAILABLE"
+    assert by_id["consumer_guide"]["status"] == "UNAVAILABLE"
+    assert "同一 X 账号" in by_id["consumer_guide"]["status_reason"]
+    assert "encrypted" not in json.dumps(rows, ensure_ascii=False)
+
+
+def test_revoked_duplicate_x_authorization_does_not_block_active_account(tmp_path: Path):
+    config = config_for(tmp_path)
+    authorize_x(config, "consumer_football", user_id="x-user-1", username="jaguarfutebol")
+    authorize_x(config, "partner_academia", user_id="x-user-1", username="jaguarfutebol")
+    connection = connect_db(config)
+    connection.execute(
+        "UPDATE x_account_auths SET status='REVOKED',confirmed_at='' WHERE account='partner_academia'"
+    )
+    connection.commit()
+
+    rows = {row["id"]: row for row in list_publish_accounts(config, "x")}
+
+    assert rows["consumer_football"]["status"] == "AVAILABLE"
+    assert rows["partner_academia"]["status"] == "UNAVAILABLE"
+
+
+def test_create_x_publish_operation_uses_real_authorized_account(tmp_path: Path):
+    config = config_for(tmp_path)
+    insert_candidate(config)
+    write_review_asset(config)
+    authorize_x(config)
+
+    result = create_publish_operation(
+        config,
+        publish_payload(
+            platform="x",
+            title="Esse lance mudou tudo",
+            description="Veja o momento e conte o que você achou.",
+            tags=["Futebol", "Brasil", "Jaguar TV"],
+            schedule_mode="now",
+        ),
+        now=datetime.fromisoformat("2026-08-19T10:00:00-03:00"),
+    )
+
+    assert result["operation_type"] == "PUBLICATION"
+    assert result["status"] == "QUEUED"
+    assert result["platform_account_id"] == "x-user-1"
+    assert result["platform_username_snapshot"] == "jaguarfutebol"
+
+
+def test_validate_x_copy_enforces_combined_280_character_limit():
+    with pytest.raises(ValueError, match="280"):
+        validate_publish_copy(
+            "x",
+            {
+                "title": "T" * 70,
+                "description": "D" * 180,
+                "tags": ["Futebol", "Brasil", "Jaguar TV", "Esportes", "Torcida"],
+            },
+        )
 
 
 def test_validate_publish_copy_enforces_platform_limits():

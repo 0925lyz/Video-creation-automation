@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+import yaml
 
 from jaguartv_factory.integrations import (
     IntegrationError,
@@ -17,6 +18,21 @@ def test_repository_integration_manifest_is_valid():
     assert "mediacrawler" in manifest["external_tools"]
     assert "google_trends" not in manifest["external_tools"]
     assert all(len(item["revision"]) == 40 for item in manifest["external_tools"].values())
+
+
+def test_every_declared_agent_skill_exists_and_has_one_entrypoint():
+    manifest = yaml.safe_load(Path("config/agent-skills.yaml").read_text(encoding="utf-8"))
+    names = {
+        name
+        for group in manifest["skills"].values()
+        for name in group
+    }
+
+    assert manifest["entrypoint"] == "jaguartv-content-factory"
+    assert names == {
+        path.parent.name for path in Path(".agents/skills").glob("*/SKILL.md")
+    }
+    assert all((Path(".agents/skills") / name / "SKILL.md").is_file() for name in names)
 
 
 def test_checkout_is_restricted_to_runtime_workspace(tmp_path: Path):

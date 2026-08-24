@@ -32,7 +32,9 @@ ssh \
    if [[ -d $(printf '%q' "$SERVER_DIR")/.git ]]; then
      cd $(printf '%q' "$SERVER_DIR")
      if ! git diff --quiet || ! git diff --cached --quiet || [[ -n \"\$(git ls-files --others --exclude-standard)\" ]]; then
-       git stash push --include-untracked -m server-deploy-\$(date -u +%Y%m%dT%H%M%SZ)
+       echo 'Refusing to deploy over server-side changes.' >&2
+       git status --short >&2
+       exit 2
      fi
      git remote set-url origin $(printf '%q' "$REPO_URL")
      git fetch origin $(printf '%q' "$BRANCH")

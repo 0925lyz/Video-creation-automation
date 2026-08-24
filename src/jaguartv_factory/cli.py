@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from .audit import audit_review_inventory, repair_review_inventory, set_repair_run_status
+from .binaries import require_binary
 from .pyvideotrans_adapter import pyvideotrans_available
 from .core import (
     analyze_candidate,
@@ -18,9 +19,9 @@ from .core import (
     list_candidates,
     load_config,
     produce_top,
-    require_binary,
 )
 from .mediacrawler import ingest_mediacrawler_jsonl
+from .integrations import integration_status, load_integration_manifest, sync_integrations
 from .publisher import dry_run_approved_queue, enqueue_approved_publication
 from .publish_worker import publish_due_once, run_publish_worker
 from .youtube_analytics import backfill_report, run_analytics_worker, set_backfill_status
@@ -33,42 +34,97 @@ def print_json(value: object) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2, default=str))
 
 
-def doctor() -> int:
+def binary_check(name: str, *, required: bool = True) -> dict[str, object]:
+    try:
+        return {"name": name, "path": require_binary(name), "required": required, "ok": True}
+    except Exception as error:
+        return {
+            "name": name,
+            "path": None,
+            "required": required,
+            "ok": False,
+            "reason": str(error),
+        }
+
+
+def doctor(config_path: Path = Path("config/pipeline.yaml")) -> int:
     environment_bin = Path(sys.executable).parent
-    checks = {"python3": shutil.which("python3") or str(sys.executable)}
-    for name in ("yt-dlp", "ffmpeg", "ffprobe"):
-        try:
-            checks[name] = require_binary(name)
-        except Exception:
-            checks[name] = shutil.which(name) or (str(environment_bin / name) if (environment_bin / name).is_file() else None)
-    checks["tesseract"] = shutil.which("tesseract")
+    required_checks = {
+        "python3": {
+            "name": "python3",
+            "path": shutil.which("python3") or str(sys.executable),
+            "required": True,
+            "ok": True,
+        },
+        "yt-dlp": binary_check("yt-dlp"),
+        "ffmpeg": binary_check("ffmpeg"),
+        "ffprobe": binary_check("ffprobe"),
+    }
+    optional_checks = {
+        "tesseract": binary_check("tesseract", required=False),
+        "deno": binary_check("deno", required=False),
+        "node": binary_check("node", required=False),
+    }
+    checks = {name: item["path"] for name, item in required_checks.items()}
+    checks["tesseract"] = optional_checks["tesseract"]["path"]
     try:
         from paddleocr import PaddleOCR  # noqa: F401
-        checks["paddleocr"] = True
+        optional_checks["paddleocr"] = {
+            "name": "paddleocr", "path": "python-import", "required": False, "ok": True
+        }
     except ImportError:
-        checks["paddleocr"] = False
+        optional_checks["paddleocr"] = {
+            "name": "paddleocr", "path": None, "required": False, "ok": False,
+            "reason": "not installed",
+        }
+    checks["paddleocr"] = optional_checks["paddleocr"]["ok"]
     try:
-        checks["pyvideotrans"] = pyvideotrans_available(load_config(Path("config/pipeline.yaml")))[1]
+        pyvideotrans_ok, pyvideotrans_reason = pyvideotrans_available(load_config(config_path))
+        optional_checks["pyvideotrans"] = {
+            "name": "pyvideotrans",
+            "path": pyvideotrans_reason if pyvideotrans_ok else None,
+            "required": False,
+            "ok": pyvideotrans_ok,
+            "reason": "" if pyvideotrans_ok else pyvideotrans_reason,
+        }
+        checks["pyvideotrans"] = pyvideotrans_reason
     except Exception as error:
+        optional_checks["pyvideotrans"] = {
+            "name": "pyvideotrans", "path": None, "required": False, "ok": False,
+            "reason": str(error),
+        }
         checks["pyvideotrans"] = f"unavailable:{error}"
     try:
         import edge_tts  # noqa: F401
-        checks["edge_tts"] = True
+        optional_checks["edge_tts"] = {
+            "name": "edge_tts", "path": "python-import", "required": False, "ok": True
+        }
     except ImportError:
-        checks["edge_tts"] = False
+        optional_checks["edge_tts"] = {
+            "name": "edge_tts", "path": None, "required": False, "ok": False,
+            "reason": "not installed",
+        }
+    checks["edge_tts"] = optional_checks["edge_tts"]["ok"]
     tts = shutil.which("say") or shutil.which("espeak-ng") or shutil.which("espeak")
+    optional_checks["system_tts"] = {
+        "name": "system_tts",
+        "path": tts,
+        "required": False,
+        "ok": bool(tts),
+        "reason": "" if tts else "say/espeak-ng/espeak not found",
+    }
     checks["tts"] = tts
     checks["ptbr_voice"] = "Luciana (macOS)" if shutil.which("say") else ("espeak pt-br (fallback)" if tts else None)
-    codex_home = Path.home() / ".codex"
+    project_root = Path(load_config(config_path).get("_root") or Path.cwd())
     skill_names = (
-        "douyin-downloader", "tiktok-crawling", "agent-reach", "dlazy-merge",
-        "bilibili-video-crawler", "bilibili-downloader-plus", "yt-dlp-downloader",
-        "eye-yt-dlp", "bilibili-video-parser", "all-translate", "nologo-open-api",
-        "tencentcloud-tts", "apify-ultimate-scraper", "openclaw-video-editor",
-        "wavespeed-watermark-remover", "tencent-mps", "google-trends", "speech-recognition",
+        "jaguartv-content-factory", "jaguartv-copywriter", "content-strategy",
+        "copy-editing", "copywriting", "captions-overlay", "embedded-captions",
+        "general-video", "image", "media-use", "motion-doctrine", "motion-graphics",
+        "product-marketing", "social", "talking-head-recut", "video", "analytics", "attribution",
     )
-    checks["skillhub_skills"] = {
-        name: (codex_home / "skills" / name / "SKILL.md").exists() for name in skill_names
+    checks["project_agent_skills"] = {
+        name: (project_root / ".agents" / "skills" / name / "SKILL.md").is_file()
+        for name in skill_names
     }
     checks["mediacrawler_repo"] = next(
         (
@@ -82,9 +138,33 @@ def doctor() -> int:
         ),
         "",
     )
-    checks["ready"] = all(checks[name] for name in ("python3", "yt-dlp", "ffmpeg", "ffprobe")) and (
-        bool(checks["edge_tts"]) or bool(tts)
-    )
+    required_ok = all(bool(item["ok"]) for item in required_checks.values())
+    voice_ok = bool(optional_checks["edge_tts"]["ok"] or optional_checks["system_tts"]["ok"])
+    checks["required"] = required_checks
+    checks["optional"] = optional_checks
+    checks["degraded"] = [
+        name for name, item in optional_checks.items()
+        if not item["ok"] and name not in {"edge_tts", "system_tts"}
+    ]
+    checks["ready"] = required_ok and voice_ok
+    if not checks["ready"]:
+        checks["next_steps"] = (
+            "Run scripts/bootstrap.sh, or scripts/server-install.sh on Ubuntu/Debian, then rerun doctor."
+        )
+    elif checks["degraded"]:
+        checks["next_steps"] = (
+            "Core pipeline is ready. Install optional OCR/localization integrations only for workflows that require them."
+        )
+    else:
+        checks["next_steps"] = "Core pipeline is ready."
+    if not checks["edge_tts"] and tts:
+        checks["voice_warning"] = (
+            "edge-tts is unavailable; system TTS fallback will be used and may be lower quality."
+        )
+    if str(environment_bin) not in str(checks["python3"]):
+        checks["runtime_warning"] = (
+            "doctor is not running from the project virtualenv; factory.sh will use .venv when available."
+        )
     print_json(checks)
     return 0 if checks["ready"] else 1
 
@@ -211,6 +291,11 @@ def build_parser() -> argparse.ArgumentParser:
     publish_parser.add_argument("--dry-run", action="store_true")
 
     subparsers.add_parser("publish-status")
+
+    integrations_parser = subparsers.add_parser("integrations")
+    integrations_parser.add_argument("--manifest", type=Path, default=Path("config/integrations.yaml"))
+    integrations_parser.add_argument("--name", action="append")
+    integrations_parser.add_argument("--sync", action="store_true")
     return parser
 
 
@@ -244,7 +329,7 @@ def enqueue_approved_rows(config: dict[str, object], candidate_id: str = "") -> 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "doctor":
-        return doctor()
+        return doctor(Path(args.config))
     config = load_config(Path(args.config))
     if args.command == "discover":
         print_json(discover(config, platforms=args.platform, limit=args.limit, keyword_overrides=args.keyword))
@@ -272,6 +357,11 @@ def main(argv: list[str] | None = None) -> int:
             raise FileNotFoundError(path)
         with path.open("rb") as handle:
             print_json(save_upload(config, handle, filename=path.name, kind=args.kind, content_length=path.stat().st_size))
+    elif args.command == "integrations":
+        manifest = load_integration_manifest(args.manifest)
+        project_root = Path(str(config.get("_root") or Path.cwd()))
+        operation = sync_integrations if args.sync else integration_status
+        print_json(operation(project_root, manifest, args.name))
     elif args.command == "run":
         print_json({
             "discover": discover(config, limit=args.discover),
