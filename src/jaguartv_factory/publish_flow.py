@@ -32,6 +32,14 @@ PLATFORM_CAPABILITIES: dict[str, dict[str, Any]] = {
         "privacy_status": "public",
         "notice": "",
     },
+    "x": {
+        "label": "X",
+        "operation_type": "PUBLICATION",
+        "auto_publish": True,
+        "requires_account": True,
+        "privacy_status": "public",
+        "notice": "",
+    },
     "tiktok": {
         "label": "TikTok",
         "operation_type": "LOCAL_DOWNLOAD",
@@ -93,6 +101,7 @@ PLATFORM_CAPABILITIES: dict[str, dict[str, Any]] = {
 
 PLATFORM_LIMITS = {
     "youtube": {"title": 100, "description": 5000, "tags": 15, "tag": 60},
+    "x": {"title": 70, "description": 180, "tags": 5, "tag": 30},
     "tiktok": {"title": 90, "description": 2200, "tags": 10, "tag": 60},
     "facebook": {"title": 100, "description": 5000, "tags": 15, "tag": 60},
     "douyin": {"title": 55, "description": 1000, "tags": 10, "tag": 30},
@@ -218,10 +227,58 @@ def normalize_platform(value: Any) -> str:
 
 def list_publish_accounts(config: dict[str, Any], platform: str = "") -> list[dict[str, Any]]:
     selected = normalize_platform(platform) if platform else ""
-    if selected and selected != "youtube":
+    if selected and selected not in {"youtube", "x"}:
         return []
     connection = connect_db(config)
     rows = []
+    if selected == "x":
+        auth_rows = connection.execute(
+            """
+            SELECT account,x_user_id,username,display_name,scopes,encrypted_access_token,
+                   encrypted_refresh_token,status,authorized_at,confirmed_at,updated_at
+            FROM x_account_auths
+            ORDER BY account COLLATE NOCASE
+            """
+        ).fetchall()
+        user_counts: dict[str, int] = {}
+        for row in auth_rows:
+            user_id = str(row["x_user_id"] or "")
+            if user_id and str(row["status"] or "") == "AUTHORIZED":
+                user_counts[user_id] = user_counts.get(user_id, 0) + 1
+        required_scopes = {"tweet.write", "media.write", "offline.access"}
+        for row in auth_rows:
+            scopes = set(str(row["scopes"] or "").split())
+            user_id = str(row["x_user_id"] or "")
+            has_tokens = bool(str(row["encrypted_access_token"] or "").strip()) and bool(
+                str(row["encrypted_refresh_token"] or "").strip()
+            )
+            status = "AVAILABLE"
+            reason = ""
+            if str(row["status"] or "") != "AUTHORIZED" or not str(row["confirmed_at"] or ""):
+                status, reason = "UNAVAILABLE", "X 授权尚未确认"
+            elif not has_tokens:
+                status, reason = "UNAVAILABLE", "缺少 X access token 或 refresh token，请重新授权"
+            elif missing := sorted(required_scopes - scopes):
+                status, reason = "UNAVAILABLE", "缺少 X 发布权限：" + ", ".join(missing)
+            elif not user_id:
+                status, reason = "UNAVAILABLE", "授权记录缺少 X User ID"
+            elif user_counts.get(user_id, 0) > 1:
+                status, reason = "UNAVAILABLE", "同一 X 账号被绑定到多个频道配置，请分别重新授权"
+            username = str(row["username"] or row["account"] or "")
+            rows.append(
+                {
+                    "id": str(row["account"] or ""),
+                    "platform": "x",
+                    "username": username,
+                    "display_name": str(row["display_name"] or username),
+                    "status": status,
+                    "status_reason": reason,
+                    "x_user_id": user_id,
+                    "authorized_at": str(row["authorized_at"] or ""),
+                    "updated_at": str(row["updated_at"] or ""),
+                }
+            )
+        return rows
     for row in connection.execute(
         """
         SELECT account,channel_id,channel_title,scopes,encrypted_refresh_token,authorized_at,updated_at
@@ -356,6 +413,18 @@ def generate_publish_copy_preview(config: dict[str, Any], payload: dict[str, Any
 
 
 def account_snapshot(config: dict[str, Any], platform: str, account: str) -> dict[str, str]:
+    if platform == "x":
+        for item in list_publish_accounts(config, "x"):
+            if item["id"] == account:
+                if item["status"] != "AVAILABLE":
+                    raise ValueError(item["status_reason"] or "X account is unavailable")
+                return {
+                    "id": item["x_user_id"],
+                    "username": item["username"],
+                    "channel_id": "",
+                    "authorized_account_id": item["id"],
+                }
+        raise ValueError("X account is not authorized")
     if platform != "youtube":
         return {"id": account, "username": account, "channel_id": ""}
     for item in list_publish_accounts(config, "youtube"):
@@ -388,6 +457,10 @@ def validate_publish_copy(platform: str, payload: dict[str, Any]) -> dict[str, A
         raise ValueError("tags are required and must fit platform limits")
     if platform == "youtube":
         title = youtube_title_with_hashtags(title, tags)
+    if platform == "x":
+        from .x_publisher import x_post_text
+
+        x_post_text(title, description, tags)
     return {"title": title, "description": description, "tags": tags}
 
 
@@ -503,8 +576,9 @@ def create_publish_operation(
         "username": account,
         "channel_id": "",
     }
+    account_key = str(snapshot.get("authorized_account_id") or snapshot["id"])
     idempotency_key = build_idempotency_key(
-        {**payload, "candidate_id": candidate["id"], "asset_id": asset_id, "platform": platform, "account": snapshot["id"]},
+        {**payload, "candidate_id": candidate["id"], "asset_id": asset_id, "platform": platform, "account": account_key},
         operation_type,
         scheduled_utc_at,
     )
@@ -527,7 +601,7 @@ def create_publish_operation(
                   AND status IN ('QUEUED','SCHEDULED','PUBLISHING','PUBLISHED')
                 ORDER BY id DESC LIMIT 1
                 """,
-                (asset_id, platform, snapshot["id"]),
+                (asset_id, platform, account_key),
             ).fetchone()
         if existing:
             connection.commit()
@@ -548,7 +622,7 @@ def create_publish_operation(
                 variant,
                 source_platform,
                 platform,
-                snapshot["id"],
+                account_key,
                 snapshot["username"],
                 snapshot["channel_id"],
                 scheduled_local_at,

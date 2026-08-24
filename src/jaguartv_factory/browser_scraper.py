@@ -136,9 +136,32 @@ def _looks_like_tiktok_media_url(media_url: str) -> bool:
     lower = media_url.lower()
     if not lower or lower.startswith("blob:"):
         return False
+    if any(marker in lower for marker in (
+        "tiktok_web_login_static",
+        "/webapp-desktop/playback1.mp4",
+        "website-login.neutral.ttwstatic.com",
+    )):
+        return False
     if any(marker in lower for marker in (".js", ".css", ".png", ".jpg", ".jpeg", ".webp", ".svg", ".ico")):
         return False
     return any(marker in lower for marker in (".mp4", ".m3u8", "mime_type=video", "video/tos/", "/video/tos"))
+
+
+def _ordered_tiktok_media_urls(media_urls: list[str]) -> list[str]:
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for source in media_urls:
+        media_url = html.unescape(str(source or "")).replace("&amp;", "&")
+        if not _looks_like_tiktok_media_url(media_url) or media_url in seen:
+            continue
+        seen.add(media_url)
+        candidates.append(media_url)
+
+    def priority(media_url: str) -> int:
+        lower = media_url.lower()
+        return 0 if any(marker in lower for marker in ("video/tos/", "/video/tos", "mime_type=video")) else 1
+
+    return sorted(candidates, key=priority)
 
 
 async def _search_tiktok_async(config: dict[str, Any], term: str, limit: int) -> list[dict[str, Any]]:
@@ -225,7 +248,7 @@ async def _resolve_tiktok_async(config: dict[str, Any], url: str) -> dict[str, A
             headers = getattr(response, "headers", {}) or {}
             content_type = str(headers.get("content-type") or "").lower()
             response_url = html.unescape(str(getattr(response, "url", "") or "")).replace("&amp;", "&")
-            if "video" in content_type or _looks_like_tiktok_media_url(response_url):
+            if _looks_like_tiktok_media_url(response_url):
                 resources.append(response_url)
 
         page.on("response", collect_media)
@@ -255,22 +278,17 @@ async def _resolve_tiktok_async(config: dict[str, Any], url: str) -> dict[str, A
             body = (await page.locator("body").inner_text(timeout=5000)).strip()
         except Exception:
             body = ""
-        candidates: list[str] = []
-        for source in [
+        candidates = _ordered_tiktok_media_urls([
             *(resources or []),
             *(performance_urls or []),
             *(video.get("src") for video in videos if isinstance(video, dict)),
-        ]:
-            media_url = html.unescape(str(source or "")).replace("&amp;", "&")
-            if _looks_like_tiktok_media_url(media_url):
-                candidates.append(media_url)
+        ])
         if not candidates:
             html_text = await page.content()
-            for match in re.findall(r"https?:\\/\\/[^\"'<>\\s]+", html_text):
-                media_url = html.unescape(match.replace("\\/", "/")).replace("&amp;", "&")
-                if _looks_like_tiktok_media_url(media_url):
-                    candidates.append(media_url)
-        candidates = list(dict.fromkeys(candidates))
+            candidates = _ordered_tiktok_media_urls([
+                match.replace("\\/", "/")
+                for match in re.findall(r"https?:\\/\\/[^\"'<>\\s]+", html_text)
+            ])
         if not candidates:
             raise BrowserScrapeError("tiktok browser page loaded but no downloadable video URL was found")
         return {
@@ -294,7 +312,7 @@ async def _download_tiktok_async(config: dict[str, Any], url: str, destination: 
             headers = getattr(response, "headers", {}) or {}
             content_type = str(headers.get("content-type") or "").lower()
             response_url = html.unescape(str(getattr(response, "url", "") or "")).replace("&amp;", "&")
-            if "video" not in content_type and not _looks_like_tiktok_media_url(response_url):
+            if not _looks_like_tiktok_media_url(response_url):
                 return
             item = {
                 "status": int(getattr(response, "status", 0) or 0),
@@ -314,13 +332,13 @@ async def _download_tiktok_async(config: dict[str, Any], url: str, destination: 
             await page.mouse.wheel(0, 600)
 
         destination.parent.mkdir(parents=True, exist_ok=True)
-        resolved = {"candidates": [item["url"] for item in resources if "video" in item["content_type"]]}
+        resolved = {"candidates": _ordered_tiktok_media_urls([item["url"] for item in resources])}
         if not resolved["candidates"]:
             resolved = await _resolve_tiktok_async(config, url)
         failures: list[str] = []
         for media_url in resolved.get("candidates") or [resolved.get("video_url")]:
             media_url = str(media_url or "")
-            if not media_url:
+            if not _looks_like_tiktok_media_url(media_url):
                 continue
             for headers in ({"Referer": url}, {"Referer": url, "Range": "bytes=0-"}):
                 response = await context.request.get(media_url, headers=headers, timeout=60000)

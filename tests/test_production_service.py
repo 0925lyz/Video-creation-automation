@@ -69,7 +69,16 @@ def test_dashboard_and_agent_create_same_standard_production_contract(tmp_path: 
 
     assert dashboard["contract_hash"] == agent["contract_hash"]
     assert dashboard["run_id"] == agent["run_id"]
-    assert observed == [{"content_type": "auto"}, {"content_type": "auto"}]
+    canonical_options = {
+        "content_type": "auto",
+        "segment_strategy": "auto",
+        "audio_policy": "auto",
+        "reaction_mode": "none",
+        "source_volume": 0.72,
+        "reaction_volume": 1.0,
+        "reaction_position": "bottom_right",
+    }
+    assert observed == [canonical_options, canonical_options]
     triggers = [
         row[0]
         for row in connection.execute(
@@ -77,6 +86,54 @@ def test_dashboard_and_agent_create_same_standard_production_contract(tmp_path: 
         )
     ]
     assert triggers == ["ai_agent"]
+
+
+def test_dashboard_and_agent_default_options_reuse_same_successful_run(tmp_path: Path, monkeypatch):
+    config = config_for(tmp_path)
+    insert_candidate(config, status="DOWNLOADED")
+    source = tmp_path / "workspace" / "jobs" / "candidate-1" / "source.mp4"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"source")
+    calls = []
+    gated_run_ids = []
+
+    def fake_produce(config_arg, row, progress_callback=None, options=None):
+        calls.append({key: value for key, value in options.items() if not key.startswith("_")})
+        return tmp_path / "review"
+
+    monkeypatch.setattr("jaguartv_factory.production.produce_candidate", fake_produce)
+
+    def fake_gate(*args, **kwargs):
+        gated_run_ids.append(kwargs.get("run_id"))
+        return {"passed": True}
+
+    monkeypatch.setattr("jaguartv_factory.production.assert_candidate_ready_for_review", fake_gate)
+    service = CandidateProductionService(config)
+    dashboard = service.run(
+        "candidate-1",
+        trigger_source="dashboard",
+        options={"rights_status": "VERIFIED"},
+    )
+    agent = service.run(
+        "candidate-1",
+        trigger_source="ai_agent",
+        options={
+            "content_type": "auto",
+            "segment_strategy": "auto",
+            "audio_policy": "auto",
+            "reaction_mode": "none",
+            "source_volume": 0.72,
+            "reaction_volume": 1.0,
+            "reaction_position": "bottom_right",
+            "rights_status": "VERIFIED",
+        },
+    )
+
+    assert dashboard["contract_hash"] == agent["contract_hash"]
+    assert dashboard["run_id"] == agent["run_id"]
+    assert agent["reused"] is True
+    assert len(calls) == 1
+    assert gated_run_ids == [dashboard["run_id"], dashboard["run_id"]]
 
 
 def test_retry_reuses_download_and_slice_identity(tmp_path: Path, monkeypatch):

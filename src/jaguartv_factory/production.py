@@ -30,6 +30,15 @@ ALLOWED_TRIGGER_SOURCES = {
     "test",
 }
 SOURCE_SUFFIXES = {".mp4", ".mkv", ".webm", ".mov"}
+PRODUCTION_OPTION_DEFAULTS: dict[str, Any] = {
+    "content_type": "auto",
+    "segment_strategy": "auto",
+    "audio_policy": "auto",
+    "reaction_mode": "none",
+    "source_volume": 0.72,
+    "reaction_volume": 1.0,
+    "reaction_position": "bottom_right",
+}
 
 
 class ProductionBusyError(RuntimeError):
@@ -89,12 +98,42 @@ def source_media_for(config: dict[str, Any], candidate_id: str) -> Path | None:
     )
 
 
-def production_contract_hash(options: dict[str, Any] | None = None) -> str:
+def normalize_production_options(options: dict[str, Any] | None = None) -> dict[str, Any]:
     public_options = {
-        key: value
+        str(key): value
         for key, value in (options or {}).items()
-        if not str(key).startswith("_") and key != "trigger_source"
+        if not str(key).startswith("_") and key != "trigger_source" and value is not None
     }
+    for key, default in PRODUCTION_OPTION_DEFAULTS.items():
+        public_options.setdefault(key, default)
+    for key in ("content_type", "segment_strategy", "audio_policy", "reaction_mode", "reaction_position"):
+        public_options[key] = str(public_options[key] or PRODUCTION_OPTION_DEFAULTS[key]).strip().lower()
+    for key in ("source_volume", "reaction_volume", "reaction_size_ratio"):
+        if key in public_options:
+            public_options[key] = float(public_options[key])
+    for key in ("max_segments", "reaction_border_width"):
+        if key in public_options:
+            public_options[key] = int(public_options[key])
+    if "max_duration" in public_options:
+        public_options["max_duration"] = float(public_options["max_duration"])
+    for key in ("reaction_source", "batch_label"):
+        if key in public_options:
+            value = str(public_options[key] or "").strip()
+            if value:
+                public_options[key] = value
+            else:
+                public_options.pop(key)
+    if "rights_status" in public_options:
+        value = str(public_options["rights_status"] or "").strip().upper()
+        if value:
+            public_options["rights_status"] = value
+        else:
+            public_options.pop("rights_status")
+    return public_options
+
+
+def production_contract_hash(options: dict[str, Any] | None = None) -> str:
+    public_options = normalize_production_options(options)
     serialized = json.dumps(
         {"contract": PRODUCTION_CONTRACT, "options": public_options},
         ensure_ascii=False,
@@ -270,9 +309,7 @@ class CandidateProductionService:
             raise ValueError("candidate_id is required")
         if trigger_source not in ALLOWED_TRIGGER_SOURCES:
             raise ValueError(f"unsupported trigger_source: {trigger_source}")
-        public_options = {
-            key: value for key, value in (options or {}).items() if not str(key).startswith("_")
-        }
+        public_options = normalize_production_options(options)
         contract_hash = production_contract_hash(public_options)
         idempotency_key = hashlib.sha256(
             f"{candidate_id}\x1f{contract_hash}".encode("utf-8")
@@ -319,7 +356,7 @@ class CandidateProductionService:
             (idempotency_key,),
         ).fetchone()
         if existing and existing["status"] == "SUCCEEDED":
-            assert_candidate_ready_for_review(self.config, candidate_id)
+            assert_candidate_ready_for_review(self.config, candidate_id, run_id=str(existing["id"]))
             return {
                 "candidate_id": candidate_id,
                 "run_id": existing["id"],

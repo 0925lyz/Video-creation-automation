@@ -1510,7 +1510,7 @@ async function loadPublishAccounts(platform) {
     select.disabled = !accounts.length;
   }
   if (capability.requires_account && !usable.length) {
-    document.querySelector("#publishCapabilityNotice").textContent = "YouTube 必须选择一个可用授权账号；当前没有可用账号，不能创建真实发布任务。";
+    document.querySelector("#publishCapabilityNotice").textContent = `${capability.label || platform} 必须选择一个可用授权账号；当前没有可用账号，不能创建真实发布任务。`;
   } else {
     document.querySelector("#publishCapabilityNotice").textContent = capability.notice || "";
   }
@@ -2468,7 +2468,7 @@ document.querySelector("#publishForm").addEventListener("submit", async (event) 
   const platform = document.querySelector("#publishPlatform").value;
   const capability = state.publishCapabilities[platform] || {};
   const account = document.querySelector("#publishAccount").value;
-  if (capability.requires_account && !account) return toast("YouTube 必须选择可用授权账号", "error");
+  if (capability.requires_account && !account) return toast(`${capability.label || platform} 必须选择可用授权账号`, "error");
   const title = document.querySelector("#publishTitle").value.trim();
   const description = document.querySelector("#publishDescription").value.trim();
   const tags = tagsFromInput(document.querySelector("#publishTags").value);
@@ -2499,7 +2499,7 @@ document.querySelector("#publishForm").addEventListener("submit", async (event) 
       link.click();
       link.remove();
     } else {
-      toast(result.status === "SCHEDULED" ? "已创建预约发布任务" : "已创建 YouTube 发布任务");
+      toast(result.status === "SCHEDULED" ? "已创建预约发布任务" : `已创建 ${capability.label || platform} 发布任务`);
     }
     await refreshAll();
   } catch (error) {
