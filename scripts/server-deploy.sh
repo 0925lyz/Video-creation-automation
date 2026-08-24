@@ -54,6 +54,7 @@ ssh \
      fi
      git fetch $(printf '%q' "$REMOTE_BUNDLE") refs/heads/$(printf '%q' "$BRANCH")
      git checkout -B $(printf '%q' "$BRANCH") FETCH_HEAD
+     git update-ref refs/remotes/origin/$(printf '%q' "$BRANCH") FETCH_HEAD
      git remote set-url origin $(printf '%q' "$REPO_URL")
      DEPLOY_SCRIPT=scripts/server-sync.sh
    else

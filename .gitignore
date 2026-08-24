@@ -24,6 +24,7 @@ build/
 # Generated packages and experiments
 dist/
 experiments/
+logs/
 
 # Node / Remotion runtime caches
 node_modules/
