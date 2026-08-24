@@ -334,6 +334,20 @@ def test_external_discovery_only_platforms_are_not_sent_to_ytdlp_search():
     assert "kwai" not in SEARCHABLE_PLATFORMS
 
 
+def test_copy_source_material_reads_canonical_source_keyword_and_category_tags():
+    from jaguartv_factory.publishing_copywriter import source_material_from
+
+    material = source_material_from(
+        {"title": "Fonte", "source_keyword": "copa do mundo", "source_category": "futebol"},
+        {"source_keyword": "torcida brasileira", "category_tags": ["Brasil", "Seleção"]},
+        {},
+        [],
+    )
+
+    assert material["keywords"] == ["torcida brasileira", "copa do mundo"]
+    assert material["category_tags"] == ["Brasil", "Seleção", "futebol"]
+
+
 def test_f2_douyin_download_uses_config_file_without_cookie_argument(tmp_path: Path, monkeypatch):
     executable = tmp_path / "bin" / "f2"
     executable.parent.mkdir()

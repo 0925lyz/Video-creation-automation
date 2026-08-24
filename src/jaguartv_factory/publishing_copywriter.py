@@ -197,8 +197,11 @@ def source_material_from(
         flatten_values([
             *route_tags,
             metadata.get("category"),
+            metadata.get("category_tags"),
             metadata.get("initial_category"),
             metadata.get("content_tags"),
+            metadata.get("source_category"),
+            candidate.get("source_category"),
             review.get("category"),
             review.get("initial_category"),
             review.get("content_tags"),
@@ -208,6 +211,8 @@ def source_material_from(
         [
             *split_keywords(metadata.get("keyword")),
             *split_keywords(metadata.get("keywords")),
+            *split_keywords(metadata.get("source_keyword")),
+            *split_keywords(candidate.get("source_keyword")),
             *split_keywords(review.get("keyword")),
             *split_keywords(review.get("keywords")),
             *split_keywords(metadata.get("initial_keyword")),
