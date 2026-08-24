@@ -347,6 +347,8 @@ def test_f2_douyin_download_uses_config_file_without_cookie_argument(tmp_path: P
 
     def fake_run(args, *, timeout=None, cwd=None):
         calls.append(args)
+        if args[0].endswith("python"):
+            return type("Result", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
         output_dir = Path(args[args.index("--path") + 1])
         (output_dir / "123.mp4").write_bytes(b"video")
         return type("Result", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
@@ -360,10 +362,40 @@ def test_f2_douyin_download_uses_config_file_without_cookie_argument(tmp_path: P
     adapter.download("https://www.douyin.com/video/123", str(output))
 
     assert (tmp_path / "downloads" / "candidate.mp4").read_bytes() == b"video"
-    assert calls[0][:3] == [str(executable.resolve()), "dy", "--url"]
-    assert "--config" in calls[0]
-    assert "--cookie" not in calls[0]
-    assert "-k" not in calls[0]
+    f2_call = next(call for call in calls if call[0] == str(executable.resolve()))
+    assert f2_call[:3] == [str(executable.resolve()), "dy", "--url"]
+    assert "--config" in f2_call
+    assert "--cookie" not in f2_call
+    assert "-k" not in f2_call
+
+
+def test_f2_douyin_prepares_upstream_cache_schema_before_download(tmp_path: Path, monkeypatch):
+    executable = tmp_path / "bin" / "f2"
+    python = executable.with_name("python")
+    executable.parent.mkdir()
+    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    python.write_text("#!/bin/sh\n", encoding="utf-8")
+    executable.chmod(0o755)
+    python.chmod(0o755)
+    output = tmp_path / "downloads" / "candidate.%(ext)s"
+    calls = []
+
+    def fake_run(args, *, timeout=None, cwd=None):
+        calls.append((args, cwd))
+        if args[0] == str(python.resolve()):
+            return type("Result", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
+        output_dir = Path(args[args.index("--path") + 1])
+        (output_dir / "123.mp4").write_bytes(b"video")
+        return type("Result", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
+
+    monkeypatch.setattr("jaguartv_factory.sources.run", fake_run)
+    adapter = F2DouyinAdapter("douyin", {"binary": str(executable), "_root": str(tmp_path)})
+
+    adapter.download("https://www.douyin.com/video/123", str(output))
+
+    assert calls[0][0][0] == str(python.resolve())
+    assert "ALTER TABLE video_info ADD COLUMN caption TEXT" in calls[0][0][2]
+    assert calls[0][1] == calls[1][1]
 
 
 def test_f2_douyin_download_allows_missing_optional_config(tmp_path: Path, monkeypatch):

@@ -563,6 +563,36 @@ class F2DouyinAdapter:
             "run": {"workspace": str(self.options.get("_workspace") or "workspace")},
         }
 
+    def _prepare_runtime_cache(self, temp_root: Path) -> None:
+        """Create f2's disposable cache and repair its missing caption column."""
+        binary = Path(self._binary()).resolve()
+        python = binary.with_name("python")
+        if not python.is_file() or not os.access(python, os.X_OK):
+            return
+        script = """
+import asyncio
+import sqlite3
+from pathlib import Path
+from f2.apps.douyin.db import AsyncVideoDB
+
+async def prepare():
+    async with AsyncVideoDB("douyin_videos.db"):
+        pass
+
+asyncio.run(prepare())
+database = Path("douyin_videos.db")
+with sqlite3.connect(database) as connection:
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(video_info)")}
+    if "caption" not in columns:
+        connection.execute("ALTER TABLE video_info ADD COLUMN caption TEXT")
+database.chmod(0o600)
+""".strip()
+        result = run([str(python), "-c", script], timeout=30, cwd=temp_root)
+        if result.returncode != 0:
+            raise SourceError(
+                result.stderr.strip()[-1000:] or "could not prepare the f2 Douyin cache schema"
+            )
+
     def search(self, term: str, limit: int) -> list[dict[str, Any]]:
         query = urllib.parse.urlencode({"keyword": term, "count": limit, "offset": 0})
         try:
@@ -622,6 +652,7 @@ class F2DouyinAdapter:
         ]
         timeout = float(self.options.get("download_timeout_sec") or 300)
         try:
+            self._prepare_runtime_cache(temp_root)
             result = run(args, timeout=timeout, cwd=temp_root)
             if result.returncode != 0:
                 raise SourceError(result.stderr.strip()[-1000:] or "f2 Douyin download failed")
