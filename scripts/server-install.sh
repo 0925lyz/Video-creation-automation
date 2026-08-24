@@ -110,6 +110,9 @@ echo "==> Creating Python virtual environment"
 .venv/bin/python -m pip install --upgrade pip setuptools wheel
 .venv/bin/pip install -e ".[test]"
 
+echo "==> Installing pinned discovery and download integrations"
+APP_DIR="$APP_DIR" PYTHON_BIN="$APP_DIR/.venv/bin/python" bash scripts/install-runtime-integrations.sh
+
 echo "==> Installing Node helper packages"
 npm --prefix "$APP_DIR" ci --no-audit --no-fund
 npm --prefix "$APP_DIR/src/jaguartv_factory/remotion_template" ci --no-audit --no-fund

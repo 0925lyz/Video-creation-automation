@@ -24,7 +24,11 @@
 
 | 工具 | 许可证 | 在本项目中的入口 |
 | --- | --- | --- |
-| MediaCrawler | 上游未提供标准 SPDX 声明 | JSONL 结果通过 `jaguartv ingest-mediacrawler` 进入统一候选库 |
+| MediaCrawler | 上游声明包含商业使用限制，生产使用前需完成许可确认 | 负责抖音、快手、B站和小红书发现；JSONL 通过 `jaguartv ingest-mediacrawler` 进入统一候选库 |
+| Agent Reach | MIT | 发现路由和运行健康检查；标准化 JSONL 通过 `jaguartv ingest-agent-reach` 入库 |
+| Scrapling | BSD-3-Clause | 每日北京时间 05:00 抓取 Google Trends RSS，失败时才回退标准 HTTP |
+| f2 | Apache-2.0 | 抖音唯一下载器；Cookie 只从权限为 0600 的配置文件读取 |
+| yt-dlp | Unlicense | YouTube、TikTok、Facebook、X、Instagram、Kwai 的统一下载器 |
 | pyvideotrans | GPL-3.0 | 可选 STT、字幕翻译、TTS 和整段翻译适配器，各能力默认关闭 |
 
 GPL 项目保持独立进程或独立检出，不与本仓库源码打包。使用和再分发前应复核对应固定提交中的上游许可证；`NOASSERTION` 项目不应在未确认许可时重新分发。
@@ -38,7 +42,7 @@ GPL 项目保持独立进程或独立检出，不与本仓库源码打包。使�
 - 去除文字、水印或遮挡的能力仅用于自有或明确授权素材，不能用于规避平台或版权识别。
 - Skill 不负责自动发布；`workspace/ready_for_review/` 和服务器审核页仍是人工审核边界。
 
-这些 skill 是给 Agent 阅读的操作方法，不是 Python 库，也不会被 worker 自动调用。实际执行证据仍以 CLI、API、数据库记录和 worker 日志为准。
+这些 skill 是给 Agent 阅读的操作方法，不是 Python 库，也不会被 worker 自动调用。仓库只把已选规则固化进 Python/Remotion 流程；实际执行证据仍以 CLI、API、数据库记录和 worker 日志为准。
 
 ## 数据边界
 

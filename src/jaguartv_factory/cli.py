@@ -28,6 +28,7 @@ from .youtube_analytics import backfill_report, run_analytics_worker, set_backfi
 from .reaction import REACTION_MODES
 from .server_store import save_upload
 from .strategy import AUDIO_POLICIES, CONTENT_TYPES, SEGMENT_STRATEGIES
+from .sources import yt_dlp_runtime_status
 
 
 def print_json(value: object) -> None:
@@ -142,6 +143,7 @@ def doctor(config_path: Path = Path("config/pipeline.yaml")) -> int:
     voice_ok = bool(optional_checks["edge_tts"]["ok"] or optional_checks["system_tts"]["ok"])
     checks["required"] = required_checks
     checks["optional"] = optional_checks
+    checks["yt_dlp"] = yt_dlp_runtime_status()
     checks["degraded"] = [
         name for name, item in optional_checks.items()
         if not item["ok"] and name not in {"edge_tts", "system_tts"}
@@ -202,9 +204,10 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("doctor")
+    subparsers.add_parser("ytdlp-status")
 
     discover_parser = subparsers.add_parser("discover")
-    discover_parser.add_argument("--platform", action="append", choices=["youtube", "bilibili", "douyin", "xiaohongshu", "tiktok", "facebook"])
+    discover_parser.add_argument("--platform", action="append", choices=["youtube", "bilibili", "douyin", "xiaohongshu", "tiktok", "facebook", "x", "instagram", "kwai"])
     discover_parser.add_argument("--limit", type=int)
     discover_parser.add_argument("--keyword", action="append", help="Override configured keyword file for a focused discovery run.")
 
@@ -213,9 +216,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     crawler_parser = subparsers.add_parser("ingest-mediacrawler")
     crawler_parser.add_argument("path", type=Path)
-    crawler_parser.add_argument("--platform", choices=("douyin", "bilibili", "xiaohongshu", "tiktok"))
+    crawler_parser.add_argument("--platform", choices=("douyin", "bilibili", "xiaohongshu", "tiktok", "youtube", "facebook", "x", "instagram", "kwai"))
     crawler_parser.add_argument("--min-likes", type=int, default=0)
     crawler_parser.add_argument("--min-views", type=int, default=0)
+
+    reach_parser = subparsers.add_parser("ingest-agent-reach")
+    reach_parser.add_argument("path", type=Path)
+    reach_parser.add_argument("--platform", required=True, choices=("douyin", "bilibili", "xiaohongshu", "tiktok", "youtube", "facebook", "x", "instagram", "kwai"))
+    reach_parser.add_argument("--min-likes", type=int, default=0)
+    reach_parser.add_argument("--min-views", type=int, default=0)
 
     list_parser = subparsers.add_parser("list")
     list_parser.add_argument("--status")
@@ -330,6 +339,10 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "doctor":
         return doctor(Path(args.config))
+    if args.command == "ytdlp-status":
+        status = yt_dlp_runtime_status()
+        print_json(status)
+        return 0 if status["ok"] else 1
     config = load_config(Path(args.config))
     if args.command == "discover":
         print_json(discover(config, platforms=args.platform, limit=args.limit, keyword_overrides=args.keyword))
@@ -342,6 +355,15 @@ def main(argv: list[str] | None = None) -> int:
             platform=args.platform,
             min_likes=args.min_likes,
             min_views=args.min_views,
+        ))
+    elif args.command == "ingest-agent-reach":
+        print_json(ingest_mediacrawler_jsonl(
+            config,
+            args.path,
+            platform=args.platform,
+            min_likes=args.min_likes,
+            min_views=args.min_views,
+            ingest_source="agent_reach_jsonl",
         ))
     elif args.command == "list":
         print_json([dict(row) for row in list_candidates(config, args.status, args.limit)])

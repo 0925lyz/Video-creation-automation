@@ -383,14 +383,14 @@ def publication_text(
     source_material = source_material_from(candidate, candidate.get("_metadata") or {}, review, tags)
     generated = generate_publishing_copy(config, source_material)
     title = str(generated.get("title") or youtube.get("title") or candidate.get("title") or "Jaguar TV").strip()
-    caption = str(generated.get("caption") or youtube.get("description") or candidate.get("description") or "").strip()
     generated_tags = generated.get("tags") if isinstance(generated.get("tags"), list) else []
-    normalized_tags = [str(item) for item in generated_tags[:5]]
-    return {
-        "title": youtube_title_with_hashtags(title[:70], normalized_tags),
-        "description": youtube_description(caption),
-        "tags": normalized_tags,
-    }
+    from .publish_flow import youtube_copy_from_provenance
+
+    return youtube_copy_from_provenance(
+        {"title": title, "tags": [str(item) for item in generated_tags]},
+        source_material,
+        seed=str(candidate.get("id") or candidate.get("source_id") or title),
+    )
 
 
 def existing_publication(connection: Any, candidate_id: str, account_key: str) -> dict[str, Any] | None:

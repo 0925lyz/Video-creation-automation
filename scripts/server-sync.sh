@@ -48,6 +48,9 @@ echo "==> Updating Python package"
 "$PYTHON_BIN" -m pip install --upgrade pip setuptools wheel
 "$PYTHON_BIN" -m pip install -e "$APP_DIR[test]"
 
+echo "==> Updating pinned discovery and download integrations"
+APP_DIR="$APP_DIR" PYTHON_BIN="$PYTHON_BIN" bash scripts/install-runtime-integrations.sh
+
 if [[ -f "$APP_DIR/workspace/factory.db" ]]; then
   echo "==> Applying compatible database migration"
   "$PYTHON_BIN" "$APP_DIR/scripts/migrate_db.py" "$APP_DIR/workspace/factory.db" --verify-rollback

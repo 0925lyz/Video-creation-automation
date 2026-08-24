@@ -10,8 +10,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from .browser_scraper import latest_cookie_file, resolve_xiaohongshu_video, search_douyin
-from .core import load_config
+from .browser_scraper import resolve_xiaohongshu_video, search_douyin
+from .core import load_config, yt_dlp_extra_args
 from .sources import yt_dlp_binary
 
 
@@ -26,14 +26,13 @@ def _run(args: list[str], timeout: int = 90) -> subprocess.CompletedProcess[str]
 def resolve_douyin_video(config: dict[str, Any], url: str) -> dict[str, Any]:
     args = [
         yt_dlp_binary(),
+        "--ignore-config",
         "--force-ipv4",
         "--no-playlist",
         "--no-warnings",
         "--get-url",
+        *yt_dlp_extra_args(config, url, "douyin"),
     ]
-    cookie = latest_cookie_file(config, "douyin")
-    if cookie:
-        args.extend(["--cookies", str(cookie)])
     args.append(url)
     try:
         result = _run(args, timeout=120)

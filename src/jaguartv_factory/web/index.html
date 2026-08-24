@@ -16,7 +16,7 @@
     <nav aria-label="主导航">
       <button class="nav-item active" data-view="overview"><span>总览</span><small>01</small></button>
       <button class="nav-item" data-view="inventory"><span>内容库存</span><small id="navInventory">0</small></button>
-      <button class="nav-item" data-view="posters"><span>海报库存</span><small id="navPosters">0</small></button>
+      <button class="nav-item" data-view="posters" hidden aria-hidden="true"><span>海报库存（已停用）</span><small id="navPosters">0</small></button>
       <button class="nav-item" data-view="publishing"><span>发布队列</span><small id="navQueue">0</small></button>
       <button class="nav-item" data-view="analytics"><span>增长分析</span><small>04</small></button>
       <button class="nav-item" data-view="nodes"><span>运行节点</span><small id="navNodes">0</small></button>
@@ -105,7 +105,7 @@
       </div>
     </section>
 
-    <section class="view" id="view-posters">
+    <section class="view" id="view-posters" hidden aria-hidden="true">
       <div class="toolbar poster-toolbar">
         <div class="segmented" id="posterStatusFilters" aria-label="海报状态筛选">
           <button class="active" data-poster-status="">全部 <span data-poster-count="ALL">0</span></button>
@@ -473,9 +473,9 @@
       </div>
       <p class="dialog-note warning-note" id="publishCapabilityNotice"></p>
       <div class="settings-grid">
-        <label>AI 标题<input id="publishTitle" maxlength="100" required></label>
-        <label>AI 标签<input id="publishTags" placeholder="逗号分隔" required></label>
-        <label class="wide-field">AI 文案<textarea id="publishDescription" required></textarea></label>
+        <label id="publishTitleField">标题文案<input id="publishTitle" maxlength="90"></label>
+        <label class="wide-field" id="publishTagsField">说明标签<textarea id="publishTags" placeholder="#Futebol #Brasil"></textarea></label>
+        <label class="wide-field" id="publishDescriptionField">文案标签<textarea id="publishDescription" maxlength="250"></textarea></label>
       </div>
       <div class="publish-preview" id="publishPreview"></div>
       <div class="dialog-actions"><button class="secondary-button" id="regeneratePublishCopy" type="button">重新生成</button><button class="secondary-button" id="cancelPublishDialog" type="button">取消</button><button class="primary-button" type="submit">确认创建</button></div>

@@ -3658,6 +3658,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
         try:
+            posters_enabled = bool((self.server.config.get("features") or {}).get("posters", True))
+            if not posters_enabled and parsed.path == "/api/posters/counts":
+                return self.send_json({"ALL": 0, "PENDING_SCREENING": 0, "PENDING_REVIEW": 0, "APPROVED": 0})
+            if not posters_enabled and parsed.path.startswith("/api/posters"):
+                return self.send_json({"error": "poster workflow is retired"}, HTTPStatus.GONE)
             if parsed.path == "/oauth/youtube/callback":
                 return self.send_youtube_oauth_callback(query)
             if parsed.path == "/oauth/x/callback":
@@ -3888,6 +3893,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_HEAD(self) -> None:
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
+        if not bool((self.server.config.get("features") or {}).get("posters", True)) and parsed.path.startswith("/api/posters"):
+            return self.send_json({"error": "poster workflow is retired"}, HTTPStatus.GONE)
         if self.admin_required_path(parsed.path) and not self.authorized_for_admin(parsed):
             return self.send_admin_unauthorized(parsed.path)
         if parsed.path.startswith("/api/uploads/") and parsed.path.endswith("/download"):
@@ -3916,6 +3923,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         try:
+            if not bool((self.server.config.get("features") or {}).get("posters", True)) and parsed.path.startswith("/api/posters"):
+                return self.send_json({"error": "poster workflow is retired"}, HTTPStatus.GONE)
             analytics_mutation = (
                 parsed.path == "/api/youtube-analytics/backfill"
                 or parsed.path == "/api/youtube-analytics/channel-import"

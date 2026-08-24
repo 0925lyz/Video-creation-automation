@@ -132,6 +132,11 @@ def authorize_x(
 
 
 def publish_payload(**overrides):
+    tags = [f"#Conteudo{i}" for i in range(15)] + [
+        "#JAGUARTV", "#JaguarTV", "#RecargaJAGUARTV", "#testeJAGUARTV", "#instalarJAGUARTV",
+        "#baixarJAGUARTV", "#trocarUNITVporJAGUARTV", "#migrardaUNITVparaJAGUARTV",
+        "#vantagensdaJAGUARTV", "#JAGUARTVvsUNITV", "#UNITVvsJAGUARTV",
+    ]
     payload = {
         "candidate_id": "cand-1",
         "asset_id": "cand-1:0803-YouTube-1-通用版",
@@ -142,8 +147,8 @@ def publish_payload(**overrides):
         "schedule_mode": "scheduled",
         "scheduled_local_at": "2026-08-19T15:30",
         "title": "Esse lance mudou tudo",
-        "description": "Um momento forte para rever e comentar.",
-        "tags": ["Jaguar TV", "Futebol", "Brasil"],
+        "description": " ".join(tags),
+        "tags": tags,
     }
     payload.update(overrides)
     return payload
@@ -192,10 +197,9 @@ def test_create_youtube_publish_operation_records_utc_and_is_idempotent(tmp_path
     assert row["privacy_status"] == "public"
     assert row["status"] == "SCHEDULED"
     assert row["idempotency_key"]
-    assert row["title"] == "Esse lance mudou tudo #Futebol #Brasil"
+    assert row["title"] == "Esse lance mudou tudo"
     title = connection.execute("SELECT title FROM publications").fetchone()["title"]
-    assert "#Futebol" in title
-    assert "#Brasil" in title
+    assert "#" not in title
 
 
 def test_create_publish_operation_rejects_unapproved_candidate(tmp_path: Path):
@@ -215,7 +219,10 @@ def test_non_youtube_publish_operation_creates_local_download_claim(tmp_path: Pa
 
     result = create_publish_operation(
         config,
-        publish_payload(platform="facebook", account="", schedule_mode="now"),
+        publish_payload(
+            platform="facebook", account="", schedule_mode="now",
+            title="", description="Esse lance merece atenção #Futebol #Brasil", tags=[],
+        ),
         now=datetime.fromisoformat("2026-08-19T10:00:00-03:00"),
     )
 
@@ -292,23 +299,23 @@ def test_create_x_publish_operation_uses_real_authorized_account(tmp_path: Path)
     assert result["platform_username_snapshot"] == "jaguarfutebol"
 
 
-def test_validate_x_copy_enforces_combined_280_character_limit():
-    with pytest.raises(ValueError, match="280"):
+def test_validate_x_copy_enforces_combined_250_character_limit():
+    with pytest.raises(ValueError, match="250"):
         validate_publish_copy(
             "x",
             {
-                "title": "T" * 70,
-                "description": "D" * 180,
-                "tags": ["Futebol", "Brasil", "Jaguar TV", "Esportes", "Torcida"],
+                "title": "",
+                "description": "D" * 251,
+                "tags": [],
             },
         )
 
 
 def test_validate_publish_copy_enforces_platform_limits():
     with pytest.raises(ValueError, match="title"):
-        validate_publish_copy("youtube", {"title": "x" * 101, "description": "ok", "tags": ["Jaguar TV"]})
+        validate_publish_copy("youtube", {"title": "x" * 91, "description": "#ok", "tags": ["ok"] * 25})
     with pytest.raises(ValueError, match="tags"):
-        validate_publish_copy("youtube", {"title": "ok", "description": "ok", "tags": [str(i) for i in range(30)]})
+        validate_publish_copy("youtube", {"title": "ok", "description": "ok", "tags": [str(i) for i in range(60)]})
 
 
 def test_generate_publish_copy_preview_uses_openai_and_platform_limits(tmp_path: Path, monkeypatch):
@@ -350,9 +357,78 @@ def test_generate_publish_copy_preview_uses_openai_and_platform_limits(tmp_path:
         },
     )
 
-    assert result["title"] == "Esse lance virou assunto #Futebol #Brasil #NeymarMelhoresMomentos"
-    assert result["tags"] == ["Jaguar TV", "Futebol", "Brasil"]
+    assert result["title"] == "Esse lance virou assunto"
+    assert "#" not in result["title"]
+    assert len(result["tags"]) >= 25
+    assert all(tag.startswith("#") for tag in result["tags"])
+    assert len([tag for tag in result["tags"] if "jaguar" in tag.lower() or "unitv" in tag.lower() or "tv" in tag.lower()]) >= 10
+    assert result["description"] == " ".join(result["tags"])
     assert calls[0][0] == "https://relay.example.test/v1/responses"
     assert calls[0][2]["model"] == "gpt-5.5"
     assert calls[0][2]["reasoning"]["effort"] == "high"
     assert calls[0][1]["Authorization"] == "Bearer sk-test"
+
+
+def test_generate_publish_copy_without_ai_key_uses_provenance_fallback(tmp_path: Path, monkeypatch):
+    config = config_for(tmp_path)
+    insert_candidate(config)
+    write_review_asset(config)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("JAGUARTV_PUBLISHING_AI_API_KEY", raising=False)
+
+    result = generate_publish_copy_preview(
+        config,
+        {
+            "candidate_id": "cand-1",
+            "asset_id": "cand-1:0803-YouTube-1-通用版",
+            "platform": "youtube",
+            "variant": "通用版",
+        },
+    )
+
+    assert result["model"] == "deterministic-provenance"
+    assert result["title"]
+    assert result["title"] == "Esse lance de futebol merece ser visto até o fim"
+    assert "Demo source title" not in result["title"]
+    assert len(result["title"]) <= 90
+    assert "#" not in result["title"]
+    assert len(result["tags"]) >= 25
+    assert result["description"] == " ".join(result["tags"])
+
+
+@pytest.mark.parametrize("platform", ["x", "facebook", "tiktok"])
+def test_social_copy_is_one_combined_pt_br_field_under_250_chars(tmp_path: Path, monkeypatch, platform: str):
+    config = config_for(tmp_path)
+    insert_candidate(config)
+    write_review_asset(config)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("JAGUARTV_PUBLISHING_AI_API_KEY", raising=False)
+
+    result = generate_publish_copy_preview(
+        config,
+        {
+            "candidate_id": "cand-1",
+            "asset_id": "cand-1:0803-YouTube-1-通用版",
+            "platform": platform,
+            "variant": "通用版",
+        },
+    )
+
+    assert result["title"] == ""
+    assert result["tags"] == []
+    assert result["description"]
+    assert "#" in result["description"]
+    assert len(result["description"]) <= 250
+
+
+def test_publish_dialog_uses_final_field_names_and_platform_switching():
+    html = Path("src/jaguartv_factory/web/index.html").read_text(encoding="utf-8")
+    javascript = Path("src/jaguartv_factory/web/app.js").read_text(encoding="utf-8")
+
+    assert "AI 标题" not in html
+    assert "AI 文案" not in html
+    assert "标题文案" in html
+    assert "说明标签" in html
+    assert "文案标签" in html
+    assert 'new Set(["x", "facebook", "tiktok", "instagram", "kwai"])' in javascript
+    assert "configurePublishCopyFields" in javascript

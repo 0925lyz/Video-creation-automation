@@ -10,6 +10,7 @@ Operate the shared project through `scripts/factory.sh`. Keep source discovery, 
 ## Workflow
 
 1. Run `scripts/factory.sh doctor` before a new environment or after dependency changes.
+   Use `scripts/factory.sh ytdlp-status` when diagnosing extractor, JS runtime, or browser-impersonation support.
 2. Run `scripts/factory.sh discover --platform youtube --limit 3` to collect candidates. Add other implemented adapters only after `doctor` confirms availability.
 3. Inspect candidates with `scripts/factory.sh list --status DISCOVERED --limit 20`.
 4. Download a selected candidate with `scripts/factory.sh download --candidate <id>`.
@@ -36,15 +37,15 @@ This skill is the only factory entry point. The skills below provide agent guida
 - Use `content-strategy` for topic lanes and campaign planning.
 - Use `jaguartv-copywriter`, `copywriting`, and `copy-editing` for pt-BR titles, captions, tags, and Chinese review copy.
 - Use `captions-overlay` and `embedded-captions` when planning subtitle layout; the actual render still runs through Remotion.
-- Use `general-video`, `video`, `talking-head-recut`, `motion-doctrine`, and `motion-graphics` for edit decisions that are then expressed through the factory production options and Remotion template.
-- Use `image` for poster and brand-image preparation, then import the finished image through the poster inventory.
+- Use `motion-doctrine` and `motion-graphics` for edit decisions that are then expressed through the factory production options and Remotion template.
+- Use `talking-head-recut` only for footage that actually contains a speaking presenter.
 - Use `media-use` for audio and media handling guidance; actual files remain under the candidate workspace.
-- Use `product-marketing` and `social` for channel-specific positioning after the candidate has passed review.
+- Use `social` for channel-specific positioning after the candidate has passed review.
 - Use `analytics` and `attribution` when interpreting publication metrics and feedback proposals.
 
 Do not route to removed Hyperframes, WorkBuddy, SEO, sales, email, paywall, or unrelated marketing skills. Hyperframes was never a production renderer in this repository; Remotion is the single supported render engine.
 
-Check optional external repositories with `scripts/factory.sh integrations`. Synchronization is explicit and may access the network: `scripts/factory.sh integrations --sync --name mediacrawler`.
+Check pinned external repositories with `scripts/factory.sh integrations`. MediaCrawler and Agent Reach feed normalized discovery records; `yt-dlp` performs YouTube/TikTok/Facebook/X/Instagram/Kwai downloads, while `f2` is the exclusive Douyin downloader. Synchronization is explicit and may access the network: `scripts/factory.sh integrations --sync --name mediacrawler`.
 
 ## Environment
 
@@ -53,5 +54,7 @@ Set `JAGUARTV_FACTORY_ROOT` when the skill is installed outside the repository:
 ```bash
 export JAGUARTV_FACTORY_ROOT="/absolute/path/to/视频二创"
 ```
+
+The factory resolves yt-dlp from the active project virtualenv and automatically supplies managed cookies, a supported JavaScript runtime, and configured platform impersonation. Use `JAGUARTV_YTDLP_BINARY=/absolute/path/to/yt-dlp` only for a verified executable override; put platform session files in the existing session manager rather than command-line arguments. Do not call yt-dlp directly for candidate downloads because that bypasses shared metadata, validation, and database state.
 
 Read `references/pipeline.md` when diagnosing states, adapters, or output files.

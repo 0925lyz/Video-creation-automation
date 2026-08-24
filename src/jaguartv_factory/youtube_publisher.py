@@ -200,18 +200,13 @@ def upload_youtube_publication(config: dict[str, Any], publication_id: int) -> d
     video_path = publication_video_path(config, publication)
     probe = assert_ffprobe_readable(video_path)
     token = youtube_access_token(config, str(publication["account"]))
-    tags = []
-    try:
-        parsed_tags = json.loads(publication.get("tags_json") or "[]")
-        tags = [str(item) for item in parsed_tags if str(item).strip()] if isinstance(parsed_tags, list) else []
-    except json.JSONDecodeError:
-        tags = []
     result = upload_video_resumable(
         token["access_token"],
         video_path,
         title=str(publication.get("title") or "JaguarTV"),
         description=str(publication.get("description") or ""),
-        tags=tags,
+        # Hashtags belong only in the YouTube description for this workflow.
+        tags=[],
         privacy_status=str(publication.get("privacy_status") or "public"),
     )
     return {

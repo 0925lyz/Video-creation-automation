@@ -68,6 +68,28 @@ def test_mediacrawler_jsonl_filters_and_deduplicates(tmp_path: Path):
     assert metadata["like_count"] == 25_000
 
 
+def test_agent_reach_jsonl_preserves_provenance_for_x(tmp_path: Path):
+    source = tmp_path / "agent-reach" / "x" / "results.jsonl"
+    source.parent.mkdir(parents=True)
+    source.write_text(json.dumps({
+        "tweet_id": "x1",
+        "tweet_url": "https://x.com/example/status/x1",
+        "title": "Futebol brasileiro hoje",
+        "description": "Melhores momentos do jogo no Brasil",
+        "view_count": 5000,
+        "liked_count": 900,
+        "source_keyword": "futebol Brasil",
+    }), encoding="utf-8")
+
+    result = ingest_mediacrawler_jsonl(
+        make_config(tmp_path), source, platform="x", ingest_source="agent_reach_jsonl"
+    )
+
+    assert result["inserted"] == 1
+    row = connect_db(make_config(tmp_path)).execute("SELECT metadata_json FROM candidates").fetchone()
+    assert json.loads(row["metadata_json"])["ingest_source"] == "agent_reach_jsonl"
+
+
 def test_ocr_regions_merge_into_stable_horizontal_bands():
     regions = _merge_regions([
         (0.10, 0.70, 0.30, 0.75),

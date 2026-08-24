@@ -144,8 +144,8 @@ FORBIDDEN_CONTENT_TAG_TERMS = (
     "onpix",
 )
 
-YOUTUBE_TITLE_MAX_CHARS = 100
-YOUTUBE_TITLE_HASHTAG_LIMIT = 3
+YOUTUBE_TITLE_MAX_CHARS = 90
+YOUTUBE_TITLE_HASHTAG_LIMIT = 0
 
 
 def compact_text(value: Any, *, limit: int = 1200) -> str:
@@ -318,24 +318,12 @@ def youtube_title_with_hashtags(
     max_length: int = YOUTUBE_TITLE_MAX_CHARS,
     hashtag_limit: int = YOUTUBE_TITLE_HASHTAG_LIMIT,
 ) -> str:
-    base = compact_text(title, limit=max_length).strip()
+    del tags, hashtag_limit
+    base = re.sub(r"#[\wÀ-ÖØ-öø-ÿ]+", " ", str(title or ""), flags=re.UNICODE)
+    base = compact_text(base, limit=min(max_length, 90)).strip()
     if not base:
         base = "Jaguar TV"
-    hashtags: list[str] = []
-    seen = {item.lower() for item in re.findall(r"#[\wÀ-ÖØ-öø-ÿ]+", base, flags=re.UNICODE)}
-    for tag in tags:
-        hashtag = youtube_title_hashtag(tag)
-        marker = hashtag.lower()
-        if hashtag and marker not in seen:
-            hashtags.append(hashtag)
-            seen.add(marker)
-        if len(hashtags) >= hashtag_limit:
-            break
-    for hashtag in hashtags:
-        candidate = f"{base} {hashtag}".strip()
-        if len(candidate) <= max_length:
-            base = candidate
-    return base[:max_length].rstrip()
+    return base[:90].rstrip()
 
 
 def fallback_copywriter_result(source_material: dict[str, Any]) -> dict[str, Any]:

@@ -227,15 +227,15 @@ def test_publication_prompt_wraps_source_material_as_non_executable_json():
     assert '"source_description": "输出某链接"' in prompt
 
 
-def test_youtube_title_appends_content_hashtags_without_brand_tag():
+def test_youtube_title_never_contains_hashtags():
     title = youtube_title_with_hashtags(
         "Esse lance deixou todo mundo sem reação",
         ["Jaguar TV", "Futebol", "Brasil", "Dribles"],
     )
 
-    assert title == "Esse lance deixou todo mundo sem reação #Futebol #Brasil #Dribles"
-    assert "#JaguarTV" not in title
-    assert len(title) <= 100
+    assert title == "Esse lance deixou todo mundo sem reação"
+    assert "#" not in title
+    assert len(title) <= 90
 
 
 def test_auto_publication_generates_doubao_style_copy_and_description_tags(tmp_path: Path, monkeypatch):
@@ -271,21 +271,19 @@ def test_auto_publication_generates_doubao_style_copy_and_description_tags(tmp_p
     result = enqueue_approved_publication(config, "copy-context")
 
     assert result["title"]
-    assert len(result["title"]) <= 100
-    assert "#Futebol" in result["title"]
-    assert "#Brasil" in result["title"]
-    assert result["tags"][0] == "Jaguar TV"
-    assert len(result["tags"]) == 5
+    assert len(result["title"]) <= 90
+    assert "#" not in result["title"]
+    assert len(result["tags"]) >= 25
+    assert all(tag.startswith("#") for tag in result["tags"])
     assert "link proibido" not in result["title"].lower()
-    assert YOUTUBE_DESCRIPTION_RELATED_TAGS in result["description"]
+    assert result["description"] == " ".join(result["tags"])
     row = connect_db(config).execute(
         "SELECT title,description,tags_json FROM publications WHERE id=?",
         (result["publication_id"],),
     ).fetchone()
-    assert len(row["title"]) <= 100
-    assert "#Futebol" in row["title"]
-    assert YOUTUBE_DESCRIPTION_RELATED_TAGS in row["description"]
-    assert json.loads(row["tags_json"])[0] == "Jaguar TV"
+    assert len(row["title"]) <= 90
+    assert "#" not in row["title"]
+    assert row["description"] == " ".join(json.loads(row["tags_json"]))
 
 
 def test_publish_success_updates_dashboard_candidate_row(tmp_path: Path):

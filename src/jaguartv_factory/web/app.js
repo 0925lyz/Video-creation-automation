@@ -1469,7 +1469,28 @@ function saoPauloNowForInput() {
 }
 
 function tagsFromInput(value) {
-  return String(value || "").split(/[,，#\n]+/).map((item) => item.trim()).filter(Boolean);
+  const text = String(value || "").trim();
+  const hashtags = text.match(/#[^\s#]+/g);
+  if (hashtags?.length) return hashtags;
+  return text.split(/[,，\n]+/).map((item) => item.trim()).filter(Boolean);
+}
+
+const combinedCopyPlatforms = new Set(["x", "facebook", "tiktok", "instagram", "kwai"]);
+
+function configurePublishCopyFields(platform) {
+  const youtube = platform === "youtube";
+  const combined = combinedCopyPlatforms.has(platform);
+  const titleField = document.querySelector("#publishTitleField");
+  const tagsField = document.querySelector("#publishTagsField");
+  const descriptionField = document.querySelector("#publishDescriptionField");
+  titleField.hidden = combined;
+  tagsField.hidden = combined;
+  descriptionField.hidden = youtube;
+  document.querySelector("#publishTitle").required = !combined;
+  document.querySelector("#publishTags").required = !combined;
+  document.querySelector("#publishDescription").required = !youtube;
+  document.querySelector("#publishTitle").maxLength = youtube ? 90 : 100;
+  document.querySelector("#publishDescription").maxLength = combined ? 250 : 5000;
 }
 
 function selectedPublishCapability() {
@@ -1489,8 +1510,10 @@ function renderPublishPreview() {
     <div><strong>发布时间</strong><span>${escapeHtml(localTime)} · America/Sao_Paulo</span></div>
     <div><strong>公开范围</strong><span>public</span></div>
     <div><strong>当前操作</strong><span>${escapeHtml(operation)}</span></div>
-    <div><strong>标题</strong><span>${escapeHtml(document.querySelector("#publishTitle").value)}</span></div>
-    <div><strong>标签</strong><span>${escapeHtml(tagsFromInput(document.querySelector("#publishTags").value).join(", "))}</span></div>
+    ${combinedCopyPlatforms.has(document.querySelector("#publishPlatform").value)
+      ? `<div><strong>文案标签</strong><span>${escapeHtml(document.querySelector("#publishDescription").value)}</span></div>`
+      : `<div><strong>标题文案</strong><span>${escapeHtml(document.querySelector("#publishTitle").value)}</span></div>
+         <div><strong>说明标签</strong><span>${escapeHtml(tagsFromInput(document.querySelector("#publishTags").value).join(" "))}</span></div>`}
   `;
 }
 
@@ -1535,10 +1558,10 @@ async function generatePublishCopy() {
     });
     document.querySelector("#publishTitle").value = result.title || "";
     document.querySelector("#publishDescription").value = result.description || "";
-    document.querySelector("#publishTags").value = (result.tags || []).join(", ");
+    document.querySelector("#publishTags").value = (result.tags || []).join(" ");
     renderPublishPreview();
   } catch (error) {
-    toast(`AI 文案生成失败：${error.message}`, "error");
+    toast(`文案标签生成失败：${error.message}`, "error");
   } finally {
     button.disabled = false;
   }
@@ -1562,6 +1585,7 @@ async function openPublishDialog(rawAsset, candidateId = "") {
   document.querySelector("#publishTitle").value = "";
   document.querySelector("#publishDescription").value = "";
   document.querySelector("#publishTags").value = "";
+  configurePublishCopyFields("youtube");
   document.querySelector("#publishDialog").showModal();
   await loadPublishAccounts("youtube");
   await generatePublishCopy();
@@ -2448,6 +2472,7 @@ document.querySelector("#posterDeleteForm").addEventListener("submit", async (ev
 });
 
 document.querySelector("#publishPlatform").addEventListener("change", async (event) => {
+  configurePublishCopyFields(event.target.value);
   await loadPublishAccounts(event.target.value);
   await generatePublishCopy();
 });
@@ -2470,9 +2495,13 @@ document.querySelector("#publishForm").addEventListener("submit", async (event) 
   const account = document.querySelector("#publishAccount").value;
   if (capability.requires_account && !account) return toast(`${capability.label || platform} 必须选择可用授权账号`, "error");
   const title = document.querySelector("#publishTitle").value.trim();
-  const description = document.querySelector("#publishDescription").value.trim();
+  const combined = combinedCopyPlatforms.has(platform);
+  const tagText = document.querySelector("#publishTags").value.trim();
+  const description = platform === "youtube" ? tagText : document.querySelector("#publishDescription").value.trim();
   const tags = tagsFromInput(document.querySelector("#publishTags").value);
-  if (!title || !description || !tags.length) return toast("请先生成或填写标题、文案和标签", "error");
+  if (platform === "youtube" && (!title || !tags.length)) return toast("请先生成或填写标题文案和说明标签", "error");
+  if (combined && !description) return toast("请先生成或填写文案标签", "error");
+  if (!combined && platform !== "youtube" && (!title || !description || !tags.length)) return toast("请先生成或填写标题、文案和标签", "error");
   try {
     const result = await api("/api/publications", { method: "POST", body: JSON.stringify({
       candidate_id: String(asset.id).split(":", 1)[0],
@@ -2483,9 +2512,9 @@ document.querySelector("#publishForm").addEventListener("submit", async (event) 
       account,
       schedule_mode: document.querySelector("#publishScheduleMode").value,
       scheduled_local_at: document.querySelector("#publishScheduledLocal").value,
-      title,
+      title: combined ? "" : title,
       description,
-      tags,
+      tags: combined ? [] : tags,
     }) });
     document.querySelector("#publishDialog").close();
     if (result.operation_type === "LOCAL_DOWNLOAD") {

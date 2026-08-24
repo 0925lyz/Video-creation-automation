@@ -92,6 +92,12 @@ def platform_from_url(url: str) -> str:
         return "facebook"
     if "tiktok.com" in lowered:
         return "tiktok"
+    if "twitter.com" in lowered or "x.com" in lowered:
+        return "x"
+    if "instagram.com" in lowered:
+        return "instagram"
+    if "kwai.com" in lowered or "kuaishou.com" in lowered:
+        return "kwai"
     return ""
 
 
@@ -99,12 +105,19 @@ def yt_dlp_extra_args(config: dict[str, Any], url: str = "", platform_hint: str 
     platform = platform_from_url(url) or str(platform_hint or "").strip().lower()
     if not platform:
         return []
-    try:
-        from .sources import YtDlpAdapter, get_adapter
+    from .sources import SourceError, YtDlpAdapter, get_adapter
 
+    try:
         adapter = get_adapter(platform, config)
         if isinstance(adapter, YtDlpAdapter):
-            return [*adapter._cookie_args(), *adapter._js_runtime_args()]
+            return adapter._runtime_args()
+        if platform == "douyin":
+            options = dict((config.get("sources", {}).get("adapters") or {}).get(platform) or {})
+            options["_root"] = str(config.get("_root") or "")
+            options["_workspace"] = str((config.get("run", {}) or {}).get("workspace") or "workspace")
+            return YtDlpAdapter(platform, options)._runtime_args()
+    except SourceError:
+        raise
     except Exception:
         pass
     return []
@@ -1065,7 +1078,7 @@ def yt_dlp_search(query: str, platform: str, limit: int) -> list[dict[str, Any]]
     prefix = "ytsearch" if platform == "youtube" else "bilisearch"
     target = f"{prefix}{limit}:{query}"
     result = run_command(
-        [yt_dlp, "--force-ipv4", "--flat-playlist", "--dump-single-json", "--no-warnings", target],
+        [yt_dlp, "--ignore-config", "--force-ipv4", "--flat-playlist", "--dump-single-json", "--no-warnings", target],
         check=False,
     )
     if result.returncode != 0:
@@ -1337,7 +1350,7 @@ def inspect_url(
     yt_dlp = require_binary("yt-dlp")
     platform_hint = str(requested_platform or "").strip().lower()
     result = run_command([
-        yt_dlp, "--force-ipv4", "--dump-single-json", "--skip-download",
+        yt_dlp, "--ignore-config", "--force-ipv4", "--dump-single-json", "--skip-download",
         "--no-warnings", *yt_dlp_extra_args(config, url, platform_hint), url,
     ], check=False)
     if result.returncode != 0:
@@ -1575,7 +1588,7 @@ def download_candidate(config: dict[str, Any], row: sqlite3.Row) -> Path:
         connection.commit()
         raise RuntimeError("download completed but media file has zero duration")
     subtitle_result = run_command([
-        require_binary("yt-dlp"), "--force-ipv4", "--skip-download", "--write-auto-subs", "--write-subs",
+        require_binary("yt-dlp"), "--ignore-config", "--force-ipv4", "--skip-download", "--write-auto-subs", "--write-subs",
         "--sub-langs", "en,zh-Hans,zh-Hant,es,fr,de,ja,ko", "--convert-subs", "srt",
         *yt_dlp_extra_args(config, row["url"]), "-o", str(output), row["url"],
     ], check=False)

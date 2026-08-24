@@ -16,6 +16,9 @@ def test_repository_integration_manifest_is_valid():
     manifest = load_integration_manifest(Path("config/integrations.yaml"))
 
     assert "mediacrawler" in manifest["external_tools"]
+    assert "scrapling" in manifest["external_tools"]
+    assert "f2" in manifest["external_tools"]
+    assert "agent_reach" in manifest["external_tools"]
     assert "google_trends" not in manifest["external_tools"]
     assert all(len(item["revision"]) == 40 for item in manifest["external_tools"].values())
 
@@ -29,9 +32,9 @@ def test_every_declared_agent_skill_exists_and_has_one_entrypoint():
     }
 
     assert manifest["entrypoint"] == "jaguartv-content-factory"
-    assert names == {
-        path.parent.name for path in Path(".agents/skills").glob("*/SKILL.md")
-    }
+    installed = {path.parent.name for path in Path(".agents/skills").glob("*/SKILL.md")}
+    assert names <= installed
+    assert {"image", "general-video", "video", "product-marketing"}.isdisjoint(names)
     assert all((Path(".agents/skills") / name / "SKILL.md").is_file() for name in names)
 
 

@@ -4,17 +4,17 @@
 
 ## 视频闭环
 
-1. Google Trends 每日热点写入数据库和 `workspace/runtime/keywords.trends.yaml`，发现任务把它与 `config/keywords.brazil.yaml` 合并。
-2. 内置平台适配器、浏览器会话、手动 URL/文件导入或 MediaCrawler JSONL 把素材写入统一候选库。
-3. 下载器把源媒体放入 `workspace/jobs/<candidate_id>/`；Cookie 和登录会话只在 `workspace/` 或服务器环境中保存。
+1. 北京时间每日 05:00 运行 pytrends；失败时由 Scrapling 读取 Google Trends RSS，再写入数据库和 `workspace/runtime/keywords.trends.yaml`。
+2. Agent Reach 与 MediaCrawler 的标准化结果、内置平台适配器、浏览器会话及手动导入统一进入候选库，并保留关键词、分类、源标题和源标签。
+3. `yt-dlp` 下载 YouTube、TikTok、Facebook、X、Instagram、Kwai，`f2` 只下载抖音；B站和小红书沿用独立适配器。源媒体进入 `workspace/jobs/<candidate_id>/`，Cookie 和登录会话只保存在服务器私有目录。
 4. 制作服务执行尾卡检测、智能切片、OCR、pt-BR 本地化、配音和音频策略，再用 Remotion 生成通用版和 FB 版。
 5. 自动制作必须通过双版本、媒体流、路径、哈希和渲染任务门禁，才能进入 `READY_FOR_REVIEW`。管理员也可以把已经制作完成的外部成片作为“导入成片”直接批准，这类记录会明确标记 `external_import`，不冒充自动二创。
 6. 人工批准后才能建立发布任务。YouTube 和 X 支持自动发布；TikTok、Facebook、抖音、B站、Kwai、Instagram 当前只生成文案并下载本地成片，不声称自动发布成功。
 7. YouTube worker 回收公开状态和数据，Dashboard 汇总关键词、文案和转化归因。反馈目前生成建议，不会未经审核自动改写生产策略。
 
-## 海报流程
+## 已停用的海报流程
 
-当前正式代码提供海报导入、附件、预览、审批、下载、删除和库存管理。仓库没有通用的球赛预测海报生成器；历史上的按场次硬编码脚本保存在归档分支，不属于生产能力。
+球赛预测海报不再属于内容工厂。Dashboard 入口和生产 API 默认停用，历史数据库记录和文件不删除，仅用于追溯。
 
 ## 运行入口
 

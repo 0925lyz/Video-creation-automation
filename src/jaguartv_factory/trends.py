@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -97,10 +99,38 @@ def sync_hot_keywords_to_keyword_file(config: dict[str, Any], keywords: list[str
     return {"synced": True, "group": group_name, "count": len(cleaned), "path": str(path)}
 
 
-def fetch_rss_trending_keywords(config: dict[str, Any]) -> list[str]:
+def _fetch_rss_trending_keywords_with_source(config: dict[str, Any]) -> tuple[list[str], str]:
     geo = str((config.get("trends", {}) or {}).get("geo") or "BR").strip() or "BR"
+    url = f"https://trends.google.com/trending/rss?geo={geo}"
+    settings = config.get("trends", {}) or {}
+    configured_python = str(settings.get("scrapling_python") or "workspace/tool_venvs/scrapling/bin/python")
+    scrapling_python = _resolve_path(config, configured_python)
+    if scrapling_python.is_file():
+        script = (
+            "import json,sys; from scrapling.fetchers import Fetcher; "
+            "page=Fetcher.get(sys.argv[1], stealthy_headers=True, timeout=20); "
+            "print(json.dumps(page.xpath('//item/title/text()').getall(), ensure_ascii=False))"
+        )
+        try:
+            result = subprocess.run(
+                [str(scrapling_python), "-c", script, url],
+                check=False,
+                text=True,
+                capture_output=True,
+                timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            result = None
+        if result is not None and result.returncode == 0:
+            try:
+                values = json.loads(result.stdout)
+            except json.JSONDecodeError:
+                values = []
+            cleaned = [str(value).strip() for value in values if str(value).strip()]
+            if cleaned:
+                return cleaned, "scrapling_google_trends_rss"
     request = Request(
-        f"https://trends.google.com/trending/rss?geo={geo}",
+        url,
         headers={"User-Agent": "Mozilla/5.0"},
     )
     with urlopen(request, timeout=20) as response:
@@ -112,7 +142,11 @@ def fetch_rss_trending_keywords(config: dict[str, Any]) -> list[str]:
         title = title.strip()
         if title:
             values.append(title)
-    return values
+    return values, "google_trends_rss_urllib"
+
+
+def fetch_rss_trending_keywords(config: dict[str, Any]) -> list[str]:
+    return _fetch_rss_trending_keywords_with_source(config)[0]
 
 
 def trends_today(config: dict[str, Any]) -> str:
@@ -134,7 +168,11 @@ def run_trends_job(
     if not query_terms:
         raise ValueError("trends.keywords must contain at least one query")
     today = trends_today(config)
-    source = str(settings.get("source") or "google_trends")
+    source = str(settings.get("source") or "pytrends")
+    pytrends_values: list[str] = []
+    rss_values: list[str] = []
+    pytrends_error: Exception | None = None
+    rss_error: Exception | None = None
     try:
         factory = client_factory or _trend_req_class(config)
         client = factory(hl="pt-BR", tz=180)
@@ -150,28 +188,46 @@ def run_trends_job(
         rising = (related.get(query_terms[0]) or {}).get("rising")
         if rising is None:
             raise RuntimeError("pytrends returned no rising queries")
-        values = [
+        pytrends_values = [
             str(value).strip()
             for value in list(rising["query"])
             if str(value).strip()
-        ][: max(1, int(settings.get("top_n", 10)))]
-        if not values:
+        ]
+        if not pytrends_values:
             raise RuntimeError("pytrends returned an empty rising query list")
-    except Exception as pytrends_error:
-        try:
-            values = fetch_rss_trending_keywords(config)[: max(1, int(settings.get("top_n", 10)))]
-            if not values:
-                raise RuntimeError("Google Trends RSS returned no keywords")
-        except Exception as rss_error:
-            cached = list_hot_keywords(config, today)
-            print(f"WARN google trends: pytrends={pytrends_error}; rss={rss_error}; cached={len(cached)}")
-            return {
-                "status": "cached" if cached else "unavailable",
-                "date": today,
-                "count": len(cached),
-                "cached": True,
-                "error": f"pytrends={pytrends_error}; rss={rss_error}",
-            }
+    except Exception as error:
+        pytrends_error = error
+
+    try:
+        rss_values, rss_source = _fetch_rss_trending_keywords_with_source(config)
+        if not rss_values:
+            raise RuntimeError("Google Trends RSS returned no keywords")
+    except Exception as error:
+        rss_error = error
+        rss_source = ""
+
+    values: list[str] = []
+    seen: set[str] = set()
+    for value in [*pytrends_values, *rss_values]:
+        normalized = value.casefold()
+        if normalized not in seen:
+            seen.add(normalized)
+            values.append(value)
+    values = values[: max(1, int(settings.get("top_n", 10)))]
+    if pytrends_values and rss_values:
+        source = f"pytrends+{rss_source}"
+    elif rss_values:
+        source = rss_source
+    if not values:
+        cached = list_hot_keywords(config, today)
+        print(f"WARN google trends: pytrends={pytrends_error}; rss={rss_error}; cached={len(cached)}")
+        return {
+            "status": "cached" if cached else "unavailable",
+            "date": today,
+            "count": len(cached),
+            "cached": True,
+            "error": f"pytrends={pytrends_error}; rss={rss_error}",
+        }
 
     try:
         connection = connect_db(config)
@@ -187,6 +243,8 @@ def run_trends_job(
             "status": "updated",
             "date": today,
             "count": len(values),
+            "keywords": values,
+            "source": source,
             "cached": False,
             "keyword_sync": keyword_sync,
         }

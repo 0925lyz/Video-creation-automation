@@ -22,6 +22,7 @@ from jaguartv_factory.core import (
     localization_profile_for_candidate,
     mobile_review_format_needed,
     now_iso,
+    platform_from_url,
     produce_candidate,
     production_design_config,
     register_url_stub_candidate,
@@ -549,7 +550,10 @@ def test_demo_config_loads():
     assert config["brand"]["kits"]["jaguartv"]["endcard"]["mode"] == "orientation_image"
     assert config["brand"]["kits"]["jaguartv"]["endcard"]["duration_sec"] == 1.5
     assert config["mobile_review_format"]["target_resolution"] == [1080, 1440]
-    assert config["sources"]["enabled"] == ["douyin", "tiktok", "facebook"]
+    assert config["sources"]["enabled"] == [
+        "youtube", "bilibili", "douyin", "xiaohongshu", "tiktok",
+        "facebook", "x", "instagram", "kwai",
+    ]
     assert config["sources"]["keywords_file"] == "config/keywords.brazil.yaml"
 
 
@@ -617,9 +621,23 @@ def test_require_binary_prefers_virtualenv_sibling(tmp_path: Path, monkeypatch):
     venv_bin.mkdir(parents=True)
     yt_dlp = venv_bin / "yt-dlp"
     yt_dlp.write_text("#!/bin/sh\n", encoding="utf-8")
+    yt_dlp.chmod(0o755)
     monkeypatch.setattr("sys.executable", str(venv_bin / "python"))
     monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
     assert require_binary("yt-dlp") == str(yt_dlp)
+
+
+@pytest.mark.parametrize(
+    ("url", "platform"),
+    [
+        ("https://x.com/jaguartv/status/1", "x"),
+        ("https://twitter.com/jaguartv/status/1", "x"),
+        ("https://www.instagram.com/reel/abc/", "instagram"),
+        ("https://www.kwai.com/short-video/abc", "kwai"),
+    ],
+)
+def test_platform_from_url_supports_overseas_ytdlp_platforms(url: str, platform: str):
+    assert platform_from_url(url) == platform
 
 
 def test_mobile_review_format_only_wraps_landscape_outputs():

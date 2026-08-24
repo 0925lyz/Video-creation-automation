@@ -72,8 +72,10 @@ render_variant "通用版"
 render_variant "FB版"
 
 for output in "$OUT_DIR/通用版.mp4" "$OUT_DIR/FB版.mp4"; do
-  ffprobe -v error -select_streams v:0 -show_entries stream=codec_type,width,height,r_frame_rate -of json "$output" | grep -q '"width": 360'
-  ffprobe -v error -select_streams a:0 -show_entries stream=codec_type -of csv=p=0 "$output" | grep -q audio
+  video_probe="$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_type,width,height,r_frame_rate -of json "$output")"
+  audio_probe="$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_type -of csv=p=0 "$output")"
+  grep -q '"width": 360' <<<"$video_probe"
+  grep -q audio <<<"$audio_probe"
 done
 
 ffmpeg -y -v error -ss 0.2 -i "$OUT_DIR/通用版.mp4" -frames:v 1 "$OUT_DIR/generic-start.png"

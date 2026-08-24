@@ -48,6 +48,41 @@ PLATFORM_FIELDS = {
         "media": ("video_download_url", "video_url", "download_url"),
         "views": ("video_play_count", "view_count", "play_count"),
     },
+    "youtube": {
+        "aliases": ("youtube", "yt"),
+        "id": ("video_id", "id"),
+        "page": ("webpage_url", "video_url", "url"),
+        "media": ("video_download_url", "download_url"),
+        "views": ("view_count", "video_play_count"),
+    },
+    "facebook": {
+        "aliases": ("facebook", "fb"),
+        "id": ("video_id", "post_id", "id"),
+        "page": ("webpage_url", "video_url", "url"),
+        "media": ("video_download_url", "download_url"),
+        "views": ("view_count", "video_play_count", "play_count"),
+    },
+    "x": {
+        "aliases": ("x", "twitter"),
+        "id": ("tweet_id", "post_id", "video_id", "id"),
+        "page": ("webpage_url", "tweet_url", "url"),
+        "media": ("video_download_url", "download_url"),
+        "views": ("view_count", "video_play_count"),
+    },
+    "instagram": {
+        "aliases": ("instagram", "ig"),
+        "id": ("shortcode", "post_id", "video_id", "id"),
+        "page": ("webpage_url", "post_url", "url"),
+        "media": ("video_download_url", "download_url"),
+        "views": ("view_count", "video_play_count", "play_count"),
+    },
+    "kwai": {
+        "aliases": ("kwai", "kuaishou", "ks"),
+        "id": ("photo_id", "video_id", "id"),
+        "page": ("webpage_url", "video_url", "url"),
+        "media": ("video_download_url", "download_url"),
+        "views": ("view_count", "video_play_count", "play_count"),
+    },
 }
 
 
@@ -69,7 +104,7 @@ def infer_jsonl_platform(path: Path, explicit: str | None = None) -> str:
     for platform, fields in PLATFORM_FIELDS.items():
         if candidate in fields["aliases"] or parts.intersection(fields["aliases"]):
             return platform
-    raise ValueError("Cannot infer platform; pass --platform douyin, bilibili, xiaohongshu, or tiktok")
+    raise ValueError(f"Cannot infer platform; pass --platform with one of: {', '.join(PLATFORM_FIELDS)}")
 
 
 def ingest_mediacrawler_jsonl(
@@ -79,6 +114,7 @@ def ingest_mediacrawler_jsonl(
     platform: str | None = None,
     min_likes: int = 0,
     min_views: int = 0,
+    ingest_source: str = "mediacrawler_jsonl",
 ) -> dict[str, int]:
     path = path.expanduser().resolve()
     if not path.is_file():
@@ -127,7 +163,7 @@ def ingest_mediacrawler_jsonl(
                 "like_count": likes,
                 "duration": duration,
                 "direct_media_url": media_url,
-                "ingest_source": "mediacrawler_jsonl",
+                "ingest_source": ingest_source,
                 "ingest_file": str(path),
             }
             market_rejection = candidate_market_rejection(

@@ -9,6 +9,24 @@ external_tools:
     checkout: workspace/external_tools/MediaCrawler
     license: NOASSERTION
     workflow: JSONL discovery import through `jaguartv ingest-mediacrawler`
+  scrapling:
+    repository: https://github.com/D4Vinci/Scrapling.git
+    revision: 333fa22b7a5821194ce66b59b11f4b16a6484f02
+    checkout: workspace/external_tools/Scrapling
+    license: BSD-3-Clause
+    workflow: Brazil trend-page and RSS extraction feeding normalized discovery records
+  f2:
+    repository: https://github.com/Johnserf-Seed/f2.git
+    revision: 7dab3e2ffffaa2535834d28fca99dbc2e89fa9d3
+    checkout: workspace/external_tools/f2
+    license: Apache-2.0
+    workflow: Exclusive Douyin video downloader through F2DouyinAdapter
+  agent_reach:
+    repository: https://github.com/Panniantong/Agent-Reach.git
+    revision: 93ae1d18c37b707dec053c7c4f9d91cd8ef8943d
+    checkout: workspace/external_tools/Agent-Reach
+    license: MIT
+    workflow: Discovery router and health evidence; normalized records are ingested with source attribution
   pyvideotrans:
     repository: https://github.com/jianchang512/pyvideotrans.git
     revision: a21122786d3a1efda4c92b15cbeb28009d4a7e19

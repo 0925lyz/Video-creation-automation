@@ -48,7 +48,7 @@ from jaguartv_factory.server_store import (
     save_upload_chunk,
 )
 from jaguartv_factory.source_imports import create_source_import
-from jaguartv_factory.sources import SourceError, XhsApiAdapter, YtDlpAdapter, get_adapter, yt_dlp_binary
+from jaguartv_factory.sources import F2DouyinAdapter, SourceError, XhsApiAdapter, YtDlpAdapter, get_adapter, yt_dlp_binary
 
 
 def make_config(tmp_path: Path) -> dict:
@@ -266,6 +266,58 @@ def test_yt_dlp_adapter_uses_latest_managed_session_cookie(tmp_path: Path):
 
 def test_yt_dlp_binary_can_resolve_from_virtualenv():
     assert Path(yt_dlp_binary()).name == "yt-dlp"
+
+
+def test_six_overseas_platforms_use_ytdlp_and_douyin_uses_f2(tmp_path: Path):
+    config = {
+        "_root": str(tmp_path),
+        "run": {"workspace": "workspace"},
+        "sources": {"adapters": {}},
+    }
+
+    for platform in ("youtube", "tiktok", "facebook", "x", "instagram", "kwai"):
+        assert isinstance(get_adapter(platform, config), YtDlpAdapter)
+    assert isinstance(get_adapter("douyin", config), F2DouyinAdapter)
+
+
+def test_external_discovery_only_platforms_are_not_sent_to_ytdlp_search():
+    from jaguartv_factory.sources import SEARCHABLE_PLATFORMS
+
+    assert "x" not in SEARCHABLE_PLATFORMS
+    assert "instagram" not in SEARCHABLE_PLATFORMS
+    assert "kwai" not in SEARCHABLE_PLATFORMS
+
+
+def test_f2_douyin_download_uses_config_file_without_cookie_argument(tmp_path: Path, monkeypatch):
+    executable = tmp_path / "bin" / "f2"
+    executable.parent.mkdir()
+    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    executable.chmod(0o755)
+    f2_config = tmp_path / "secrets" / "f2.yaml"
+    f2_config.parent.mkdir()
+    f2_config.write_text("cookie: redacted\n", encoding="utf-8")
+    output = tmp_path / "downloads" / "candidate.%(ext)s"
+    calls = []
+
+    def fake_run(args, *, timeout=None):
+        calls.append(args)
+        output_dir = Path(args[args.index("--path") + 1])
+        (output_dir / "123.mp4").write_bytes(b"video")
+        return type("Result", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
+
+    monkeypatch.setattr("jaguartv_factory.sources.run", fake_run)
+    adapter = F2DouyinAdapter(
+        "douyin",
+        {"binary": str(executable), "config_file": str(f2_config), "_root": str(tmp_path)},
+    )
+
+    adapter.download("https://www.douyin.com/video/123", str(output))
+
+    assert (tmp_path / "downloads" / "candidate.mp4").read_bytes() == b"video"
+    assert calls[0][:3] == [str(executable.resolve()), "dy", "--url"]
+    assert "--config" in calls[0]
+    assert "--cookie" not in calls[0]
+    assert "-k" not in calls[0]
 
 
 def test_brand_kit_and_endcard_render(tmp_path: Path):

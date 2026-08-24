@@ -7,7 +7,7 @@ run:
   source_download_timeout_sec: 300
 
 sources:
-  enabled: [douyin, tiktok, facebook]
+  enabled: [youtube, bilibili, douyin, xiaohongshu, tiktok, facebook, x, instagram, kwai]
   exclude_languages: []
   keywords_file: config/keywords.brazil.yaml
   creators_file: config/creators.example.yaml
@@ -19,25 +19,49 @@ sources:
     xiaohongshu: [zh-CN, zh]
     tiktok: [pt, en]
     facebook: [en, es, pt]
+    x: [pt, en]
+    instagram: [pt, en]
+    kwai: [pt, en]
   adapters:
     youtube:
       cookies_file: ""
       cookies_from_browser: ""
       js_runtime: ""                 # optional, e.g. node:/absolute/path/to/node
+      impersonate: ""                # opt-in only; forcing it can reduce YouTube stability
     bilibili:
       cookies_file: ""              # optional Netscape cookies.txt to improve reliability
       cookies_from_browser: ""       # local-only option, e.g. chrome; keep empty on server
       js_runtime: ""                 # optional, e.g. node:/absolute/path/to/node
+      impersonate: ""
     tiktok:
       cookies_file: ""              # optional TikTok cookies.txt for age/region-limited videos
       cookies_from_browser: ""
       js_runtime: ""
+      impersonate: auto              # uses curl-cffi when available, otherwise degrades safely
     facebook:
       cookies_file: ""              # Facebook keyword search is not supported; direct URLs can use cookies
       cookies_from_browser: ""
       js_runtime: ""
+      impersonate: auto
+    x:
+      cookies_file: ""
+      cookies_from_browser: ""
+      js_runtime: ""
+      impersonate: auto
+    instagram:
+      cookies_file: ""
+      cookies_from_browser: ""
+      js_runtime: ""
+      impersonate: auto
+    kwai:
+      cookies_file: ""
+      cookies_from_browser: ""
+      js_runtime: ""
+      impersonate: auto
     douyin:
       api_base: http://127.0.0.1:8000   # self-hosted Douyin_TikTok_Download_API
+      binary: workspace/tool_venvs/f2/bin/f2
+      config_file: workspace/sessions/douyin/f2.yaml
     xiaohongshu:
       api_base: http://127.0.0.1:5556   # self-hosted XHS-Downloader API mode
 
@@ -287,14 +311,18 @@ storage:
 trends:
   enabled: true
   pytrends_path: /opt/pytrends
-  cron: "0 8 * * *"
-  schedule_timezone: America/Sao_Paulo
+  cron: "0 5 * * *"
+  schedule_timezone: Asia/Shanghai
   geo: BR
   keywords: ["futebol Brasil"]
   top_n: 10
   source: google_trends
+  scrapling_python: workspace/tool_venvs/scrapling/bin/python
   sync_keywords_group: google_trends_br_daily
   runtime_keywords_file: workspace/runtime/keywords.trends.yaml
+
+features:
+  posters: false
 
 compliance:
   require_verified_rights: false

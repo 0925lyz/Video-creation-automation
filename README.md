@@ -1,6 +1,6 @@
 # JaguarTV Content Factory vNEXT
 
-面向巴西葡语市场的视频内容工厂：巴西热点关键词、多平台候选入库、长视频智能切片、pt-BR 本地化、Remotion 双版本渲染、海报库存、人工审核、发布文案、YouTube/X 发布和发布后数据回收。
+面向巴西葡语市场的视频内容工厂：巴西热点关键词、多平台候选入库、长视频智能切片、pt-BR 本地化、Remotion 双版本渲染、人工审核、发布文案、YouTube/X 发布和发布后数据回收。球赛海报流程已停用，历史海报数据仅保留用于追溯。
 
 所有运行时视频都保存在 `factory.jarg.top` 对应服务器。源素材和 Reaction 输入默认私有，只有审核包通过 `/media/review/...` 提供访问；项目不使用办公协作盘作为视频存储。
 
@@ -20,6 +20,7 @@
 ```bash
 ./scripts/bootstrap.sh
 .venv/bin/jaguartv doctor
+.venv/bin/jaguartv ytdlp-status
 .venv/bin/jaguartv ui --host 127.0.0.1 --port 8787
 ```
 
@@ -33,6 +34,8 @@
 .venv/bin/jaguartv ingest-mediacrawler \
   /path/MediaCrawler/data/douyin/jsonl/search_contents_2026-07-27.jsonl \
   --min-likes 2000
+.venv/bin/jaguartv ingest-agent-reach \
+  /path/agent-reach/x/results.jsonl --platform x --min-views 2000
 .venv/bin/jaguartv list --status DISCOVERED
 .venv/bin/jaguartv download --candidate <id>
 
