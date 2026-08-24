@@ -394,7 +394,8 @@ def test_f2_douyin_prepares_upstream_cache_schema_before_download(tmp_path: Path
     adapter.download("https://www.douyin.com/video/123", str(output))
 
     assert calls[0][0][0] == str(python.resolve())
-    assert "ALTER TABLE video_info ADD COLUMN caption TEXT" in calls[0][0][2]
+    assert 'for missing in ("caption", "caption_raw")' in calls[0][0][2]
+    assert "ALTER TABLE video_info ADD COLUMN {missing} TEXT" in calls[0][0][2]
     assert calls[0][1] == calls[1][1]
 
 

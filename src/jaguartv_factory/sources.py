@@ -583,8 +583,9 @@ asyncio.run(prepare())
 database = Path("douyin_videos.db")
 with sqlite3.connect(database) as connection:
     columns = {row[1] for row in connection.execute("PRAGMA table_info(video_info)")}
-    if "caption" not in columns:
-        connection.execute("ALTER TABLE video_info ADD COLUMN caption TEXT")
+    for missing in ("caption", "caption_raw"):
+        if missing not in columns:
+            connection.execute(f"ALTER TABLE video_info ADD COLUMN {missing} TEXT")
 database.chmod(0o600)
 """.strip()
         result = run([str(python), "-c", script], timeout=30, cwd=temp_root)
