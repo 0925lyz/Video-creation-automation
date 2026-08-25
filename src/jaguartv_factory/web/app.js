@@ -2241,6 +2241,10 @@ document.querySelector("#assetUploadForm").addEventListener("submit", async (eve
 document.querySelectorAll(".nav-item").forEach((button) => button.addEventListener("click", () => openView(button.dataset.view)));
 document.querySelectorAll("[data-open-view]").forEach((button) => button.addEventListener("click", () => openView(button.dataset.openView)));
 document.querySelector("#refreshButton").addEventListener("click", () => refreshAll(true));
+document.querySelector("#logoutButton").addEventListener("click", async () => {
+  await fetch("/api/auth/logout", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+  window.location.replace("/login");
+});
 document.querySelector("#discoverButton").addEventListener("click", () => {
   document.querySelector("#discoverUploadProgress").hidden = true;
   document.querySelector('input[name="discoverTarget"][value="pending_production"]').checked = true;

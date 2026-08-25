@@ -124,6 +124,7 @@ COPYWRITER_PLATFORMS = {"shorts", "tiktok", "kwai", "facebook", "whatsapp", "ema
 COPYWRITER_TONES = {"viral", "trust", "urgent", "friendly"}
 PUBLIC_UPLOAD_KINDS = {"design_image"}
 ADMIN_COOKIE_NAME = "jaguartv_admin"
+ADMIN_SESSION_SECONDS = 7 * 24 * 3600
 INITIAL_CATEGORY_RULES = (
     ("ai短剧", (
         "ai短剧", "ai 短剧", "短剧", "微短剧", "竖屏剧", "ai drama", "ai short drama",
@@ -2254,6 +2255,34 @@ def oauth_result_html(title: str, lines: list[str], *, ok: bool) -> str:
 </html>"""
 
 
+def sign_admin_session(token: str, expires_at: int) -> str:
+    payload = f"v1.{expires_at}"
+    signature = hmac.new(
+        token.encode("utf-8"),
+        f"{ADMIN_COOKIE_NAME}:{payload}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{payload}.{signature}"
+
+
+def admin_session_is_valid(token: str, session: str, *, now: int | None = None) -> bool:
+    if not token or not session:
+        return False
+    version, separator, remainder = session.partition(".")
+    expires_text, separator_two, provided_signature = remainder.partition(".")
+    if version != "v1" or not separator or not separator_two:
+        return False
+    try:
+        expires_at = int(expires_text)
+    except ValueError:
+        return False
+    current = int(time.time()) if now is None else int(now)
+    if expires_at <= current or expires_at > current + ADMIN_SESSION_SECONDS + 60:
+        return False
+    expected = sign_admin_session(token, expires_at).rsplit(".", 1)[1]
+    return secrets.compare_digest(provided_signature, expected)
+
+
 def candidate_rows(
     config: dict[str, Any], status: str | None = None, limit: int | None = 100
 ) -> list[dict[str, Any]]:
@@ -3358,6 +3387,8 @@ class DashboardApplication(ThreadingHTTPServer):
         self.tasks: dict[str, dict[str, Any]] = {}
         self.tasks_lock = threading.Lock()
         self.production_lock = threading.Lock()
+        self.login_failures: dict[str, list[float]] = {}
+        self.login_failures_lock = threading.Lock()
         recovered = recover_interrupted_productions(config)
         if recovered:
             print(f"dashboard recovered {recovered} interrupted production candidate(s)")
@@ -3658,6 +3689,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
         try:
+            if parsed.path == "/login":
+                if self.authorized_for_admin():
+                    return self.redirect("/")
+                return self.send_static("/login.html")
+            if parsed.path == "/api/auth/status":
+                return self.send_json({"authenticated": self.authorized_for_admin()})
+            if (
+                parsed.path == "/"
+                and self.admin_required_path(parsed.path)
+                and not self.authorized_for_admin()
+            ):
+                return self.redirect("/login")
             posters_enabled = bool((self.server.config.get("features") or {}).get("posters", True))
             if not posters_enabled and parsed.path == "/api/posters/counts":
                 return self.send_json({"ALL": 0, "PENDING_SCREENING": 0, "PENDING_REVIEW": 0, "APPROVED": 0})
@@ -3923,6 +3966,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         try:
+            if parsed.path == "/api/auth/login":
+                return self.login_dashboard()
+            if parsed.path == "/api/auth/logout":
+                return self.send_json(
+                    {"authenticated": False},
+                    cookie=self.clear_admin_cookie_header(),
+                )
             if not bool((self.server.config.get("features") or {}).get("posters", True)) and parsed.path.startswith("/api/posters"):
                 return self.send_json({"error": "poster workflow is retired"}, HTTPStatus.GONE)
             analytics_mutation = (
@@ -4317,6 +4367,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json({"error": "internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def admin_required_path(self, path: str) -> bool:
+        if path in {"/login", "/login.html", "/api/auth/login", "/api/auth/logout", "/api/auth/status"}:
+            return False
         if path == "/api/health":
             return False
         if path == "/oauth/youtube/callback":
@@ -4342,11 +4394,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def admin_token(self) -> str:
         return os.environ.get("JAGUARTV_DASHBOARD_TOKEN", "").strip()
 
-    def query_token(self, parsed: Any) -> str:
-        query = parse_qs(parsed.query)
-        return str((query.get("admin_token") or query.get("dashboard_token") or [""])[0]).strip()
-
-    def cookie_token(self) -> str:
+    def cookie_session(self) -> str:
         cookie = self.headers.get("Cookie", "")
         for part in cookie.split(";"):
             name, separator, value = part.strip().partition("=")
@@ -4361,29 +4409,59 @@ class DashboardHandler(BaseHTTPRequestHandler):
         provided = [
             self.headers.get("X-Dashboard-Token", "").strip(),
             self.headers.get("Authorization", "").removeprefix("Bearer ").strip(),
-            self.cookie_token(),
         ]
-        if parsed is not None:
-            provided.append(self.query_token(parsed))
-        return any(secrets.compare_digest(value, token) for value in provided if value)
+        if any(secrets.compare_digest(value, token) for value in provided if value):
+            return True
+        return admin_session_is_valid(token, self.cookie_session())
 
-    def admin_cookie_header(self) -> str:
+    def admin_session_cookie_header(self) -> str:
         token = self.admin_token()
         if not token:
             return ""
-        parsed = urlparse(self.path)
-        if self.query_token(parsed) and self.authorized_for_admin(parsed):
-            return (
-                f"{ADMIN_COOKIE_NAME}={quote(token)}; Path=/; Max-Age={7 * 24 * 3600}; "
-                "HttpOnly; SameSite=Lax; Secure"
+        expires_at = int(time.time()) + ADMIN_SESSION_SECONDS
+        session = sign_admin_session(token, expires_at)
+        return (
+            f"{ADMIN_COOKIE_NAME}={quote(session)}; Path=/; Max-Age={ADMIN_SESSION_SECONDS}; "
+            "HttpOnly; SameSite=Strict; Secure"
+        )
+
+    def clear_admin_cookie_header(self) -> str:
+        return f"{ADMIN_COOKIE_NAME}=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict; Secure"
+
+    def login_dashboard(self) -> None:
+        client = self.client_address[0]
+        now = time.monotonic()
+        with self.server.login_failures_lock:
+            failures = [value for value in self.server.login_failures.get(client, []) if now - value < 300]
+            self.server.login_failures[client] = failures
+        if len(failures) >= 5:
+            return self.send_json(
+                {"error": "尝试次数过多，请等待 5 分钟后再试"},
+                HTTPStatus.TOO_MANY_REQUESTS,
             )
-        return ""
+        password = str(self.read_json().get("password") or "")
+        token = self.admin_token()
+        if not token:
+            return self.send_json(
+                {"error": "服务器尚未设置 Dashboard 访问密码"},
+                HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+        if len(password) > 4096 or not secrets.compare_digest(password, token):
+            with self.server.login_failures_lock:
+                self.server.login_failures.setdefault(client, []).append(now)
+            return self.send_json({"error": "访问密码不正确"}, HTTPStatus.UNAUTHORIZED)
+        with self.server.login_failures_lock:
+            self.server.login_failures.pop(client, None)
+        return self.send_json(
+            {"authenticated": True},
+            cookie=self.admin_session_cookie_header(),
+        )
 
     def send_admin_unauthorized(self, path: str) -> None:
         return self.send_json(
             {
                 "error": "dashboard authentication required",
-                "hint": "open with ?admin_token=... once or send X-Dashboard-Token/Authorization",
+                "hint": "open /login in a browser or send X-Dashboard-Token/Authorization",
             },
             HTTPStatus.UNAUTHORIZED,
         )
@@ -4528,13 +4606,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
         raw = self.rfile.read(length) if length else b"{}"
         return json.loads(raw.decode("utf-8"))
 
-    def send_json(self, value: Any, status: HTTPStatus = HTTPStatus.OK) -> None:
+    def send_json(
+        self,
+        value: Any,
+        status: HTTPStatus = HTTPStatus.OK,
+        *,
+        cookie: str = "",
+    ) -> None:
         body = json.dumps(value, ensure_ascii=False, default=str).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
-        if cookie := self.admin_cookie_header():
+        if cookie:
             self.send_header("Set-Cookie", cookie)
         self.end_headers()
         self.wfile.write(body)
@@ -4545,8 +4629,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
-        if cookie := self.admin_cookie_header():
-            self.send_header("Set-Cookie", cookie)
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
         self.end_headers()
         self.wfile.write(body)
 
@@ -4674,8 +4758,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Cross-Origin-Resource-Policy", "same-origin")
-        if cookie := self.admin_cookie_header():
-            self.send_header("Set-Cookie", cookie)
         if disposition:
             self.send_header("Content-Disposition", disposition)
         if partial:

@@ -72,7 +72,10 @@ def test_authorized_direct_approval_is_mutually_exclusive_and_confirms(browser_d
         with playwright.sync_playwright() as runtime:
             browser = runtime.chromium.launch(headless=True)
             page = browser.new_page(viewport={"width": 1280, "height": 900})
-            page.goto(f"{browser_dashboard}/?admin_token=e2e-admin-token", wait_until="networkidle")
+            page.goto(f"{browser_dashboard}/login", wait_until="networkidle")
+            page.locator("#password").fill("e2e-admin-token")
+            page.locator("#submitButton").click()
+            page.wait_for_url(f"{browser_dashboard}/")
             page.locator("#discoverButton").click()
             approved = page.locator('input[name="discoverTarget"][value="approved"]')
             pending = page.locator('input[name="discoverTarget"][value="pending_production"]')

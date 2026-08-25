@@ -11,6 +11,7 @@ import pytest
 
 from jaguartv_factory.core import connect_db, now_iso
 from jaguartv_factory.dashboard import (
+    admin_session_is_valid,
     copywriter_prompt,
     copywriter_request,
     candidate_design_info,
@@ -30,6 +31,7 @@ from jaguartv_factory.dashboard import (
     save_review,
     save_x_oauth_callback,
     save_youtube_oauth_callback,
+    sign_admin_session,
     signed_upload_url,
     upload_kind_requires_token,
     update_x_auth,
@@ -270,6 +272,135 @@ def test_dashboard_is_private_by_default_when_admin_token_exists(tmp_path: Path,
             urllib.request.urlopen(f"{base}/api/tasks", timeout=5)
         assert error.value.code == 401
     finally:
+        app.shutdown()
+        thread.join(timeout=5)
+        app.server_close()
+
+
+def test_dashboard_browser_login_uses_signed_session_cookie(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("JAGUARTV_DASHBOARD_TOKEN", "secret-token")
+    monkeypatch.setenv("JAGUARTV_DASHBOARD_PUBLIC", "0")
+    app = DashboardApplication(("127.0.0.1", 0), dashboard_config(tmp_path))
+    thread = threading.Thread(target=app.serve_forever, daemon=True)
+    thread.start()
+    connection = http.client.HTTPConnection("127.0.0.1", app.server_address[1], timeout=5)
+    try:
+        connection.request("GET", "/")
+        response = connection.getresponse()
+        assert response.status == 302
+        assert response.getheader("Location") == "/login"
+        response.read()
+
+        connection.request("GET", "/login")
+        response = connection.getresponse()
+        assert response.status == 200
+        assert "访问密码" in response.read().decode("utf-8")
+
+        connection.request(
+            "POST",
+            "/api/auth/login",
+            body=json.dumps({"password": "wrong-token"}),
+            headers={"Content-Type": "application/json"},
+        )
+        response = connection.getresponse()
+        assert response.status == 401
+        assert response.getheader("Set-Cookie") is None
+        response.read()
+
+        connection.request(
+            "POST",
+            "/api/auth/login",
+            body=json.dumps({"password": "secret-token"}),
+            headers={"Content-Type": "application/json"},
+        )
+        response = connection.getresponse()
+        assert response.status == 200
+        cookie = response.getheader("Set-Cookie") or ""
+        assert cookie.startswith("jaguartv_admin=")
+        assert "secret-token" not in cookie
+        assert "HttpOnly" in cookie
+        assert "SameSite=Strict" in cookie
+        assert "Secure" in cookie
+        session_cookie = cookie.split(";", 1)[0]
+        response.read()
+
+        connection.request("GET", "/api/tasks", headers={"Cookie": session_cookie})
+        response = connection.getresponse()
+        assert response.status == 200
+        response.read()
+
+        connection.request("POST", "/api/auth/logout", body=b"{}", headers={"Cookie": session_cookie})
+        response = connection.getresponse()
+        assert response.status == 200
+        cleared = response.getheader("Set-Cookie") or ""
+        assert cleared.startswith("jaguartv_admin=")
+        assert "Max-Age=0" in cleared
+        response.read()
+    finally:
+        connection.close()
+        app.shutdown()
+        thread.join(timeout=5)
+        app.server_close()
+
+
+def test_dashboard_rejects_admin_token_in_url(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("JAGUARTV_DASHBOARD_TOKEN", "secret-token")
+    monkeypatch.setenv("JAGUARTV_DASHBOARD_PUBLIC", "0")
+    app = DashboardApplication(("127.0.0.1", 0), dashboard_config(tmp_path))
+    thread = threading.Thread(target=app.serve_forever, daemon=True)
+    thread.start()
+    connection = http.client.HTTPConnection("127.0.0.1", app.server_address[1], timeout=5)
+    try:
+        connection.request("GET", "/?admin_token=secret-token")
+        response = connection.getresponse()
+        assert response.status == 302
+        assert response.getheader("Location") == "/login"
+        assert response.getheader("Set-Cookie") is None
+        response.read()
+    finally:
+        connection.close()
+        app.shutdown()
+        thread.join(timeout=5)
+        app.server_close()
+
+
+def test_admin_session_rejects_expiry_and_tampering():
+    session = sign_admin_session("secret-token", 1_000)
+
+    assert admin_session_is_valid("secret-token", session, now=999)
+    assert not admin_session_is_valid("secret-token", session, now=1_000)
+    assert not admin_session_is_valid("other-token", session, now=999)
+    assert not admin_session_is_valid("secret-token", session + "tampered", now=999)
+
+
+def test_dashboard_login_rate_limits_repeated_failures(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("JAGUARTV_DASHBOARD_TOKEN", "secret-token")
+    app = DashboardApplication(("127.0.0.1", 0), dashboard_config(tmp_path))
+    thread = threading.Thread(target=app.serve_forever, daemon=True)
+    thread.start()
+    connection = http.client.HTTPConnection("127.0.0.1", app.server_address[1], timeout=5)
+    try:
+        for _ in range(5):
+            connection.request(
+                "POST",
+                "/api/auth/login",
+                body=b'{"password":"wrong"}',
+                headers={"Content-Type": "application/json"},
+            )
+            response = connection.getresponse()
+            assert response.status == 401
+            response.read()
+        connection.request(
+            "POST",
+            "/api/auth/login",
+            body=b'{"password":"secret-token"}',
+            headers={"Content-Type": "application/json"},
+        )
+        response = connection.getresponse()
+        assert response.status == 429
+        response.read()
+    finally:
+        connection.close()
         app.shutdown()
         thread.join(timeout=5)
         app.server_close()

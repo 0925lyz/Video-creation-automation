@@ -27,4 +27,4 @@
 ./.agents/skills/jaguartv-content-factory/scripts/factory.sh ui --host 127.0.0.1 --port 8787
 ```
 
-Dashboard 默认需要 `JAGUARTV_DASHBOARD_TOKEN`。`JAGUARTV_DASHBOARD_PUBLIC=1` 只开放只读页面；写操作仍需管理员令牌。上传使用独立的 `JAGUARTV_UPLOAD_TOKEN`。
+Dashboard 默认需要 `JAGUARTV_DASHBOARD_TOKEN`。浏览器访问 `/login`，将它作为“访问密码”登录；程序调用仍可通过 `X-Dashboard-Token` 或 Bearer Token 认证，不要把 Token 放在 URL 中。`JAGUARTV_DASHBOARD_PUBLIC=1` 只开放只读页面；写操作仍需管理员认证。上传使用独立的 `JAGUARTV_UPLOAD_TOKEN`。
