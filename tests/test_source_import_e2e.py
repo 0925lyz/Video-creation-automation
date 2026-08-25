@@ -129,6 +129,9 @@ def test_authorized_finished_upload_defaults_to_original_and_approved(browser_da
             page.locator("#submitButton").click()
             page.wait_for_url(f"{browser_dashboard}/")
             page.locator("#discoverButton").click()
+            page.wait_for_function(
+                "document.querySelector('input[name=\"discoverTarget\"][value=\"approved\"]')?.disabled === false"
+            )
             page.locator("#discoverMode").select_option("upload")
 
             assert page.locator("#discoverPlatform").input_value() == "original"

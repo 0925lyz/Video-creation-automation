@@ -472,6 +472,96 @@ def test_upload_requires_token_and_signed_download_rejects_tampering(tmp_path: P
     assert signed_upload_url("not-an-upload-id") == ""
 
 
+def test_password_session_has_full_dashboard_operator_permissions(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("JAGUARTV_DASHBOARD_TOKEN", "dashboard-secret")
+    monkeypatch.setenv("JAGUARTV_UPLOAD_TOKEN", "upload-secret")
+    monkeypatch.setenv("JAGUARTV_EVENTS_TOKEN", "events-secret")
+    monkeypatch.setenv("JAGUARTV_CALLBACK_TOKEN", "callback-secret")
+    monkeypatch.setenv("JAGUARTV_DASHBOARD_PUBLIC", "1")
+    config = dashboard_config(tmp_path)
+    insert_candidate(config, "full-access-candidate")
+    app = DashboardApplication(("127.0.0.1", 0), config)
+    thread = threading.Thread(target=app.serve_forever, daemon=True)
+    thread.start()
+    connection = http.client.HTTPConnection("127.0.0.1", app.server_address[1], timeout=5)
+    try:
+        connection.request(
+            "POST",
+            "/api/auth/login",
+            body=json.dumps({"password": "dashboard-secret"}),
+            headers={"Content-Type": "application/json"},
+        )
+        response = connection.getresponse()
+        assert response.status == 200
+        session_cookie = (response.getheader("Set-Cookie") or "").split(";", 1)[0]
+        response.read()
+
+        connection.request(
+            "POST",
+            "/api/uploads?kind=reaction&filename=operator.mp4",
+            body=b"operator-video",
+            headers={"Cookie": session_cookie, "Content-Type": "video/mp4"},
+        )
+        response = connection.getresponse()
+        assert response.status == 201
+        uploaded = json.loads(response.read())
+
+        connection.request("GET", "/api/uploads", headers={"Cookie": session_cookie})
+        response = connection.getresponse()
+        assert response.status == 200
+        assert json.loads(response.read())[0]["id"] == uploaded["id"]
+
+        connection.request(
+            "GET", f"/api/uploads/{uploaded['id']}/link", headers={"Cookie": session_cookie}
+        )
+        response = connection.getresponse()
+        assert response.status == 200
+        assert "download_url" in json.loads(response.read())
+
+        connection.request(
+            "GET", f"/api/uploads/{uploaded['id']}/download", headers={"Cookie": session_cookie}
+        )
+        response = connection.getresponse()
+        assert response.status == 200
+        assert response.read() == b"operator-video"
+
+        connection.request(
+            "POST",
+            "/api/events",
+            body=json.dumps({
+                "candidate_id": "full-access-candidate",
+                "event_type": "landing_click",
+                "platform": "youtube",
+            }),
+            headers={"Cookie": session_cookie, "Content-Type": "application/json"},
+        )
+        response = connection.getresponse()
+        assert response.status == 201
+        assert json.loads(response.read())["saved"] == 1
+
+        connection.request(
+            "POST",
+            "/api/callback",
+            body=json.dumps({
+                "candidate_id": "full-access-candidate",
+                "publisher": "dashboard-user",
+                "platform": "youtube",
+                "views": 12,
+                "clicks": 3,
+                "registrations": 1,
+            }),
+            headers={"Cookie": session_cookie, "Content-Type": "application/json"},
+        )
+        response = connection.getresponse()
+        assert response.status == 200
+        assert json.loads(response.read())["success"] is True
+    finally:
+        connection.close()
+        app.shutdown()
+        thread.join(timeout=5)
+        app.server_close()
+
+
 def test_dashboard_admin_token_can_be_required_when_public_flag_is_off(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("JAGUARTV_DASHBOARD_TOKEN", "secret-token")
     monkeypatch.setenv("JAGUARTV_DASHBOARD_PUBLIC", "0")

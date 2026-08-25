@@ -4421,6 +4421,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return True
         return admin_session_is_valid(token, self.cookie_session())
 
+    def authorized_by_dashboard_access(self) -> bool:
+        """Return true only for a configured and authenticated dashboard password."""
+        return bool(self.admin_token()) and self.authorized_for_admin()
+
     def admin_session_cookie_header(self) -> str:
         token = self.admin_token()
         if not token:
@@ -4474,11 +4478,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         )
 
     def authorized_for_events(self) -> bool:
-        """JaguarTV postbacks must present the shared bearer token.
+        """Allow a logged-in operator or a machine postback bearer token.
 
         The token comes from the JAGUARTV_EVENTS_TOKEN environment variable.
         If it is unset, only loopback clients are accepted (local testing).
         """
+        if self.authorized_by_dashboard_access():
+            return True
         token = os.environ.get("JAGUARTV_EVENTS_TOKEN", "").strip()
         if not token:
             return self.client_address[0] in {"127.0.0.1", "::1"}
@@ -4486,6 +4492,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         return header.removeprefix("Bearer ").strip() == token
 
     def authorized_for_callback(self) -> bool:
+        if self.authorized_by_dashboard_access():
+            return True
         token = (
             os.environ.get("JAGUARTV_CALLBACK_TOKEN", "").strip()
             or os.environ.get("JAGUARTV_EVENTS_TOKEN", "").strip()
@@ -4497,6 +4505,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         return secrets.compare_digest(provided, token)
 
     def authorized_for_uploads(self) -> bool:
+        if self.authorized_by_dashboard_access():
+            return True
         token = os.environ.get("JAGUARTV_UPLOAD_TOKEN", "").strip()
         if not token:
             return loopback_client(self.client_address[0])
@@ -4509,7 +4519,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def authorized_for_upload_kind(self, kind: str) -> bool:
         if not upload_kind_requires_token(kind):
             return True
-        return self.authorized_for_admin() or self.authorized_for_uploads()
+        return self.authorized_for_uploads()
 
     def pending_upload_kind(self, upload_id: str) -> str:
         if not re.fullmatch(r"[a-f0-9]{32}", str(upload_id or "")):
