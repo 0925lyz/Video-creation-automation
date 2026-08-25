@@ -4078,6 +4078,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         source_import = create_uploaded_source_import(
                             self.server.config,
                             upload_id=upload_id,
+                            source_platform=str(payload.get("source_platform") or "original"),
                             target_area=target_area,
                             operator_id=str(
                                 "dashboard_admin"
@@ -4089,7 +4090,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                             can_direct_approve=can_direct_approve,
                             idempotency_key=str(payload.get("idempotency_key") or ""),
                         )
-                        candidate_id = ingest_uploaded_media(self.server.config, result)
+                        candidate_id = ingest_uploaded_media(
+                            self.server.config,
+                            result,
+                            source_platform=str(source_import.get("source_platform") or "original"),
+                        )
                         attach_source_import_candidate(
                             self.server.config,
                             source_import["id"],
@@ -4119,6 +4124,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                             "target_area": completed_import["target_area"],
                             "target_area_label": completed_import["target_label"],
                             "actual_workflow_status": completed_import["actual_workflow_status"],
+                            "source_platform": completed_import["source_platform"],
+                            "publication": completed_import.get("publication", {}),
                         })
                         result.pop("path", None)
                     else:
@@ -4502,7 +4509,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def authorized_for_upload_kind(self, kind: str) -> bool:
         if not upload_kind_requires_token(kind):
             return True
-        return self.authorized_for_uploads()
+        return self.authorized_for_admin() or self.authorized_for_uploads()
 
     def pending_upload_kind(self, upload_id: str) -> str:
         if not re.fullmatch(r"[a-f0-9]{32}", str(upload_id or "")):

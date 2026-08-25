@@ -1409,7 +1409,9 @@ def inspect_url(
     return cid
 
 
-def ingest_uploaded_media(config: dict[str, Any], upload: dict[str, Any]) -> str:
+def ingest_uploaded_media(
+    config: dict[str, Any], upload: dict[str, Any], *, source_platform: str = "server_upload"
+) -> str:
     """Register a private server upload as an already-downloaded candidate."""
     media = Path(str(upload.get("path") or "")).expanduser().resolve()
     if not media.is_file():
@@ -1430,12 +1432,14 @@ def ingest_uploaded_media(config: dict[str, Any], upload: dict[str, Any]) -> str
     too_long = candidate_too_long(config, duration)
     timestamp = now_iso()
     title = str(upload.get("original_filename") or media.name)
+    platform = str(source_platform or "server_upload").strip().lower() or "server_upload"
     metadata = {
         "upload_id": upload_id,
         "original_filename": title,
         "server_upload": True,
         "uploaded_at": upload.get("uploaded_at") or timestamp,
         "private_storage_uri": upload.get("storage_uri") or "",
+        "source_platform": platform,
         "duration": duration,
         "duration_gate": {
             "max_source_duration_sec": source_duration_limit(config),
@@ -1452,9 +1456,9 @@ def ingest_uploaded_media(config: dict[str, Any], upload: dict[str, Any]) -> str
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             cid,
-            "server_upload",
+            platform,
             upload_id,
-            f"server-upload://{upload_id}",
+            f"{platform}-upload://{upload_id}",
             title,
             "Private source uploaded through factory.jarg.top",
             duration,

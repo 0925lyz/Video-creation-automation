@@ -137,6 +137,7 @@ publishing:
         - douyin
         - facebook
         - bilibili
+        - original
       blocked_source_platforms:
         - youtube
       content_tags:

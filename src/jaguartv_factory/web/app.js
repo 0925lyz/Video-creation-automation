@@ -2559,8 +2559,18 @@ document.querySelector("#claimMetricsForm").addEventListener("submit", async (ev
 
 function updateDiscoverMode() {
   const mode = document.querySelector("#discoverMode").value;
-  const platform = document.querySelector("#discoverPlatform").value;
-  document.querySelector("#discoverPlatformField").hidden = mode === "upload";
+  const platformSelect = document.querySelector("#discoverPlatform");
+  if (mode === "upload") {
+    platformSelect.value = "original";
+    platformSelect.disabled = true;
+    const approved = document.querySelector('input[name="discoverTarget"][value="approved"]');
+    if (state.importCapabilities.can_direct_approve && approved) approved.checked = true;
+  } else {
+    platformSelect.disabled = false;
+    if (platformSelect.value === "original") platformSelect.value = "youtube";
+  }
+  const platform = platformSelect.value;
+  document.querySelector("#discoverPlatformField").hidden = false;
   document.querySelector("#discoverUrlField").hidden = mode !== "url";
   document.querySelector("#discoverUploadFields").hidden = mode !== "upload";
   document.querySelector("#discoverUrl").required = mode === "url";
@@ -2577,9 +2587,10 @@ function updateDiscoverMode() {
   const targetLabel = target === "approved" ? "审核通过" : "待制作";
   const modeNotes = {
     url: `粘贴单条视频 URL 后会在服务器解析并下载；目标区域：${targetLabel}。超过 30 分钟的素材不会进入成功库存。`,
-    upload: `上传自有或已授权视频后会执行完整媒体校验；目标区域：${targetLabel}。`,
+    upload: `上传原创完成视频后会执行完整媒体校验并进入自动发布队列；目标区域：${targetLabel}。`,
   };
   document.querySelector("#discoverPlatformNote").textContent = modeNotes[mode] || notes[platform];
+  document.querySelector("#discoverApprovalWarning").hidden = target !== "approved";
   document.querySelector("#submitDiscovery").textContent = mode === "upload" ? "上传并入库" : "开始运行";
 }
 
@@ -2751,13 +2762,22 @@ document.querySelector("#discoverForm").addEventListener("submit", async (event)
       if (!file) throw new Error("请选择要上传的源视频");
       const uploaded = await uploadServerFile(file, "source", "", setDiscoverUploadProgress, {
         source_import: true,
+        source_platform: platform,
         target_area: targetArea,
         idempotency_key: state.discoverIdempotencyKey,
         operator_id: localStorage.getItem("jaguartvOperatorName") || "dashboard",
       });
       document.querySelector("#discoverUploadFile").value = "";
       document.querySelector("#discoverDialog").close();
-      toast(`源视频已入库：${uploaded.candidate_id}，目标区域：${targetLabel}`);
+      const publication = uploaded.publication || {};
+      const publishMessage = publication.status === "SCHEDULED"
+        ? "，已加入自动发布队列"
+        : publication.status === "EXISTS"
+          ? "，发布任务已存在"
+          : targetArea === "approved"
+            ? `，自动发布未排队：${publication.reason || publication.status || "未匹配发布账号"}`
+            : "";
+      toast(`视频已入库：${uploaded.candidate_id}，来源：原创，目标区域：${targetLabel}${publishMessage}`);
       state.status = targetArea === "approved" ? "APPROVED" : "DOWNLOADED";
       state.sourceFilter = "source_import";
       await refreshAll();

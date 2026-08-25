@@ -38,7 +38,7 @@ def publishing_config(tmp_path: Path) -> dict:
                     "channel_id": "UC8gCZXc5wbnjuZeco7qbKug",
                     "daily_limit": 3,
                     "schedule_times": ["11:00", "15:30", "19:00"],
-                    "allowed_source_platforms": ["tiktok", "douyin", "facebook", "bilibili"],
+                    "allowed_source_platforms": ["tiktok", "douyin", "facebook", "bilibili", "original"],
                     "blocked_source_platforms": ["youtube"],
                     "content_tags": ["足球类"],
                     "default_privacy_status": "public",
@@ -128,7 +128,7 @@ def test_youtube_source_approved_is_blocked_from_youtube_queue(tmp_path: Path):
 
 
 def test_allowed_sources_approved_enter_jaguartv_vivo_queue(tmp_path: Path):
-    for platform in ("tiktok", "douyin", "facebook", "bilibili"):
+    for platform in ("tiktok", "douyin", "facebook", "bilibili", "original"):
         config = publishing_config(tmp_path / platform)
         insert_candidate(config, f"{platform}-football", platform)
         write_review_package(config, f"{platform}-football")

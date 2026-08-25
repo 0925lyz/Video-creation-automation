@@ -22,6 +22,7 @@ def dashboard_config(tmp_path: Path) -> dict:
 @pytest.fixture
 def dashboard_server(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("JAGUARTV_DASHBOARD_TOKEN", "test-admin-token")
+    monkeypatch.setenv("JAGUARTV_UPLOAD_TOKEN", "test-upload-token")
     monkeypatch.setenv("JAGUARTV_DASHBOARD_PUBLIC", "1")
     app = DashboardApplication(("127.0.0.1", 0), dashboard_config(tmp_path))
     thread = threading.Thread(target=app.serve_forever, daemon=True)
@@ -73,6 +74,29 @@ def test_anonymous_direct_approval_is_rejected_before_business_logic(dashboard_s
 
     assert error.value.code == 401
     assert "authentication required" in json.loads(error.value.read())["error"]
+
+
+def test_dashboard_admin_can_initialize_source_upload_without_separate_upload_token(
+    dashboard_server: str,
+):
+    status, payload = request_json(
+        f"{dashboard_server}/api/uploads/init",
+        headers={"X-Dashboard-Token": "test-admin-token"},
+        payload={"filename": "finished.mp4", "kind": "source", "size": 1024},
+    )
+
+    assert status == 201
+    assert payload["kind"] == "source"
+
+
+def test_anonymous_source_upload_still_requires_authorization(dashboard_server: str):
+    with pytest.raises(urllib.error.HTTPError) as error:
+        request_json(
+            f"{dashboard_server}/api/uploads/init",
+            payload={"filename": "finished.mp4", "kind": "source", "size": 1024},
+        )
+
+    assert error.value.code == 401
 
 
 def test_target_area_is_a_backend_whitelist(dashboard_server: str):

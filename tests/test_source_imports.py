@@ -14,6 +14,7 @@ from jaguartv_factory.source_imports import (
     SourceImportPermissionError,
     complete_source_import,
     create_source_import,
+    create_uploaded_source_import,
     fail_source_import,
     normalize_import_url,
     source_import_row,
@@ -344,6 +345,55 @@ def test_direct_approval_records_external_finished_asset_without_fake_production
     assert metadata["automatic_review"] is False
     assert review["review_source"] == "manual_import"
     assert review["reviewer"] == "admin-1"
+
+
+def test_uploaded_finished_asset_records_original_source_and_enqueues_publication(
+    tmp_path: Path, monkeypatch
+):
+    config = import_config(tmp_path)
+    insert_candidate(config, "original-upload")
+    media = tmp_path / "workspace" / "jobs" / "original-upload" / "source.mp4"
+    media.parent.mkdir(parents=True)
+    media.write_bytes(b"validated-original-video")
+    record = create_uploaded_source_import(
+        config,
+        upload_id="a" * 32,
+        source_platform="original",
+        target_area="approved",
+        operator_id="admin-1",
+        can_direct_approve=True,
+    )
+    monkeypatch.setattr(
+        "jaguartv_factory.source_imports.validate_imported_media",
+        lambda config, candidate_id, path: media_result(path, "d" * 64),
+    )
+    monkeypatch.setattr(
+        "jaguartv_factory.source_imports.create_import_cover",
+        lambda config, media_path, destination: destination.write_bytes(b"cover"),
+    )
+    queued: list[dict] = []
+    monkeypatch.setattr(
+        "jaguartv_factory.source_imports.auto_enqueue_approved_publication",
+        lambda config, candidate_id, **kwargs: queued.append(
+            {"candidate_id": candidate_id, **kwargs}
+        ) or {"status": "SCHEDULED", "publication_id": 7},
+    )
+
+    completed = complete_source_import(
+        config,
+        record["id"],
+        candidate_id="original-upload",
+        media_path=media,
+        original_title="My original video",
+    )
+
+    assert record["source_platform"] == "original"
+    assert completed["publication"]["status"] == "SCHEDULED"
+    assert queued == [{
+        "candidate_id": "original-upload",
+        "reviewer": "admin-1",
+        "review_decision_at": completed["reviewed_at"],
+    }]
 
 
 def test_media_validation_failure_never_enters_success_state(tmp_path: Path, monkeypatch):

@@ -25,7 +25,7 @@ from .publishing_copywriter import (
 QUEUE_STATUSES = {"QUEUED", "SCHEDULED", "PUBLISHING"}
 FINAL_STATUSES = {"PUBLISHED"}
 ACTIVE_PUBLICATION_STATUSES = QUEUE_STATUSES | FINAL_STATUSES
-DEFAULT_ALLOWED_SOURCE_PLATFORMS = {"tiktok", "douyin", "facebook", "bilibili"}
+DEFAULT_ALLOWED_SOURCE_PLATFORMS = {"tiktok", "douyin", "facebook", "bilibili", "original"}
 DEFAULT_BLOCKED_SOURCE_PLATFORMS = {"youtube"}
 DEFAULT_SCHEDULE_TIMES = ("11:00", "15:30", "19:00")
 FOOTBALL_TERMS = (

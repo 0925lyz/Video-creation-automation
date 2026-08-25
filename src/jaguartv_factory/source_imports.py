@@ -23,10 +23,23 @@ from .core import (
     source_duration_limit,
     workspace_dir,
 )
+from .publisher import auto_enqueue_approved_publication
 from .server_store import storage_root
 
 
 SOURCE_TYPE = "source_import"
+UPLOAD_SOURCE_PLATFORMS = {
+    "original",
+    "youtube",
+    "bilibili",
+    "douyin",
+    "xiaohongshu",
+    "tiktok",
+    "facebook",
+    "x",
+    "instagram",
+    "kwai",
+}
 TARGET_PENDING_PRODUCTION = "pending_production"
 TARGET_APPROVED = "approved"
 ALLOWED_TARGET_AREAS = {TARGET_PENDING_PRODUCTION, TARGET_APPROVED}
@@ -331,6 +344,7 @@ def create_uploaded_source_import(
     config: dict[str, Any],
     *,
     upload_id: str,
+    source_platform: str = "original",
     target_area: Any = TARGET_PENDING_PRODUCTION,
     operator_id: str = "",
     can_direct_approve: bool = False,
@@ -342,6 +356,9 @@ def create_uploaded_source_import(
     upload_id = str(upload_id or "").strip()
     if not upload_id:
         raise ValueError("upload_id is required")
+    platform = str(source_platform or "original").strip().lower()
+    if platform not in UPLOAD_SOURCE_PLATFORMS:
+        raise ValueError("source_platform is not allowed for uploaded media")
     actor = str(operator_id or "dashboard").strip()[:200] or "dashboard"
     key = str(idempotency_key or "").strip()[:200] or hashlib.sha256(
         f"{SOURCE_TYPE}\x1fupload\x1f{upload_id}\x1f{target}".encode("utf-8")
@@ -369,14 +386,21 @@ def create_uploaded_source_import(
                 import_id,
                 SOURCE_TYPE,
                 "upload",
-                "server_upload",
+                platform,
                 import_id,
                 key,
                 target,
                 "IMPORT_PENDING",
                 "UPLOADED",
                 actor,
-                json.dumps({"upload_id": upload_id, "source_type": SOURCE_TYPE}, ensure_ascii=False),
+                json.dumps(
+                    {
+                        "upload_id": upload_id,
+                        "source_type": SOURCE_TYPE,
+                        "source_platform": platform,
+                    },
+                    ensure_ascii=False,
+                ),
                 timestamp,
                 timestamp,
             ),
@@ -756,7 +780,15 @@ def _complete_source_import_locked(
     if not import_row:
         raise ValueError("source import does not exist")
     if str(import_row["actual_workflow_status"]) in {"DOWNLOADED", "APPROVED"}:
-        return source_import_row(config, import_id)
+        completed = source_import_row(config, import_id)
+        if str(import_row["actual_workflow_status"]) == "APPROVED":
+            completed["publication"] = auto_enqueue_approved_publication(
+                config,
+                str(import_row["candidate_id"] or candidate_id),
+                reviewer=str(import_row["operator_id"] or ""),
+                review_decision_at=str(import_row["reviewed_at"] or ""),
+            )
+        return completed
     if not connection.execute("SELECT 1 FROM candidates WHERE id=?", (candidate_id,)).fetchone():
         raise ValueError("candidate does not exist")
     try:
@@ -914,4 +946,12 @@ def _complete_source_import_locked(
             candidate_id=candidate_id,
         )
         raise
-    return source_import_row(config, import_id)
+    completed = source_import_row(config, import_id)
+    if target == TARGET_APPROVED:
+        completed["publication"] = auto_enqueue_approved_publication(
+            config,
+            candidate_id,
+            reviewer=str(import_row["operator_id"] or ""),
+            review_decision_at=str(completed.get("reviewed_at") or timestamp),
+        )
+    return completed
