@@ -586,6 +586,19 @@ def parse_local_schedule(payload: dict[str, Any], *, now: datetime | None = None
     return local.isoformat(), utc_value.isoformat(), SAO_PAULO_TZ, status
 
 
+def review_package_is_approved(config: dict[str, Any], package_id: str) -> bool:
+    for root in (storage_root(config) / "review", workspace_dir(config) / "ready_for_review"):
+        review_file = root / package_id / "review.json"
+        if not review_file.is_file():
+            continue
+        try:
+            payload = json.loads(review_file.read_text(encoding="utf-8") or "{}")
+        except (OSError, json.JSONDecodeError):
+            return False
+        return str(payload.get("decision") or "").strip().upper() == "APPROVED"
+    return False
+
+
 def candidate_and_asset(config: dict[str, Any], payload: dict[str, Any]) -> tuple[dict[str, Any], Path, str, str, str]:
     candidate_id = clean_identifier(str(payload.get("candidate_id") or "").split(":", 1)[0], "candidate_id")
     asset_id = clean_identifier(payload.get("asset_id") or candidate_id, "asset_id")
@@ -598,7 +611,7 @@ def candidate_and_asset(config: dict[str, Any], payload: dict[str, Any]) -> tupl
     if not row:
         raise ValueError("candidate does not exist")
     candidate = dict(row)
-    if candidate["status"] != "APPROVED":
+    if candidate["status"] != "APPROVED" and not review_package_is_approved(config, candidate_id):
         raise ValueError(f"candidate must be APPROVED before publishing (current status: {candidate['status']})")
     asset_path = review_output_video_path_by_id(config, asset_id)
     if not asset_path or not asset_path.is_file():

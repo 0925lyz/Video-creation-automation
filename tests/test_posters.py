@@ -7,6 +7,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 import pytest
+import yaml
 from PIL import Image
 
 from jaguartv_factory.core import connect_db, now_iso
@@ -658,7 +659,10 @@ def test_poster_frontend_contract_contains_inventory_view_and_preview_controls()
     styles = (web_root / "styles.css").read_text(encoding="utf-8")
 
     assert 'data-view="posters"' in html
+    assert 'data-view="posters" hidden' not in html
+    assert '海报库存（已停用）' not in html
     assert 'id="view-posters"' in html
+    assert 'id="view-posters" hidden' not in html
     assert 'id="posterPreviewDialog"' in html
     assert all(label in html for label in ("全部", "待筛选", "待审核", "审核通过"))
     assert all(label in script for label in ("时间地点", "因素分析", "预测比赛", "多赛程", "球星球迷"))
@@ -675,3 +679,10 @@ def test_poster_frontend_contract_contains_inventory_view_and_preview_controls()
     assert "uploadPosterFile" in script
     assert "openPosterContentDialog" in script
     assert "object-fit: contain" in styles
+
+
+def test_poster_inventory_is_enabled_in_runtime_and_example_configs():
+    root = Path(__file__).parents[1]
+    for name in ("pipeline.yaml", "pipeline.example.yaml"):
+        config = yaml.safe_load((root / "config" / name).read_text(encoding="utf-8"))
+        assert config["features"]["posters"] is True

@@ -16,7 +16,7 @@
     <nav aria-label="主导航">
       <button class="nav-item active" data-view="overview"><span>总览</span><small>01</small></button>
       <button class="nav-item" data-view="inventory"><span>内容库存</span><small id="navInventory">0</small></button>
-      <button class="nav-item" data-view="posters" hidden aria-hidden="true"><span>海报库存（已停用）</span><small id="navPosters">0</small></button>
+      <button class="nav-item" data-view="posters"><span>海报库存</span><small id="navPosters">0</small></button>
       <button class="nav-item" data-view="publishing"><span>发布队列</span><small id="navQueue">0</small></button>
       <button class="nav-item" data-view="analytics"><span>增长分析</span><small>04</small></button>
       <button class="nav-item" data-view="nodes"><span>运行节点</span><small id="navNodes">0</small></button>
@@ -106,7 +106,7 @@
       </div>
     </section>
 
-    <section class="view" id="view-posters" hidden aria-hidden="true">
+    <section class="view" id="view-posters">
       <div class="toolbar poster-toolbar">
         <div class="segmented" id="posterStatusFilters" aria-label="海报状态筛选">
           <button class="active" data-poster-status="">全部 <span data-poster-count="ALL">0</span></button>

@@ -396,6 +396,64 @@ def test_generate_publish_copy_without_ai_key_uses_provenance_fallback(tmp_path:
     assert result["description"] == " ".join(result["tags"])
 
 
+def test_generate_publish_copy_accepts_legacy_package_with_approved_review_file(
+    tmp_path: Path, monkeypatch
+):
+    config = config_for(tmp_path)
+    insert_candidate(config, status="READY_FOR_REVIEW")
+    write_review_asset(config)
+    review_file = (
+        Path(config["_root"])
+        / "workspace"
+        / "server_media"
+        / "review"
+        / "cand-1"
+        / "review.json"
+    )
+    review_file.write_text(json.dumps({"decision": "approved"}), encoding="utf-8")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("JAGUARTV_PUBLISHING_AI_API_KEY", raising=False)
+
+    result = generate_publish_copy_preview(
+        config,
+        {
+            "candidate_id": "cand-1",
+            "asset_id": "cand-1:0803-YouTube-1-通用版",
+            "platform": "youtube",
+            "variant": "通用版",
+        },
+    )
+
+    assert result["title"]
+    assert len(result["tags"]) >= 25
+
+
+def test_generate_publish_copy_rejects_nonapproved_legacy_review_file(tmp_path: Path):
+    config = config_for(tmp_path)
+    insert_candidate(config, status="READY_FOR_REVIEW")
+    write_review_asset(config)
+    review_file = (
+        Path(config["_root"])
+        / "workspace"
+        / "server_media"
+        / "review"
+        / "cand-1"
+        / "review.json"
+    )
+    review_file.write_text(json.dumps({"decision": "revision_required"}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="APPROVED"):
+        generate_publish_copy_preview(
+            config,
+            {
+                "candidate_id": "cand-1",
+                "asset_id": "cand-1:0803-YouTube-1-通用版",
+                "platform": "youtube",
+                "variant": "通用版",
+            },
+        )
+
+
 @pytest.mark.parametrize("platform", ["x", "facebook", "tiktok"])
 def test_social_copy_is_one_combined_pt_br_field_under_250_chars(tmp_path: Path, monkeypatch, platform: str):
     config = config_for(tmp_path)
@@ -432,3 +490,4 @@ def test_publish_dialog_uses_final_field_names_and_platform_switching():
     assert "文案标签" in html
     assert 'new Set(["x", "facebook", "tiktok", "instagram", "kwai"])' in javascript
     assert "configurePublishCopyFields" in javascript
+    assert 'candidate_id: String(asset.id).split(":", 1)[0]' in javascript

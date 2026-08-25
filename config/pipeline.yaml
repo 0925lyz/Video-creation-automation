@@ -322,7 +322,7 @@ trends:
   runtime_keywords_file: workspace/runtime/keywords.trends.yaml
 
 features:
-  posters: false
+  posters: true
 
 compliance:
   require_verified_rights: false
