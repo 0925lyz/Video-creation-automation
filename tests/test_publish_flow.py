@@ -318,6 +318,16 @@ def test_validate_publish_copy_enforces_platform_limits():
         validate_publish_copy("youtube", {"title": "ok", "description": "ok", "tags": [str(i) for i in range(60)]})
 
 
+def test_youtube_uses_tags_as_description_when_copy_field_is_blank():
+    tags = [f"#Tag{i}" for i in range(25)]
+
+    result = validate_publish_copy(
+        "youtube", {"title": "Titulo em portugues", "description": "", "tags": tags}
+    )
+
+    assert result["description"] == " ".join(tags)
+
+
 def test_generate_publish_copy_preview_uses_openai_and_platform_limits(tmp_path: Path, monkeypatch):
     config = config_for(tmp_path)
     config["publishing"] = {"copywriter": {"base_url": "https://relay.example.test/v1"}}
@@ -364,9 +374,75 @@ def test_generate_publish_copy_preview_uses_openai_and_platform_limits(tmp_path:
     assert len([tag for tag in result["tags"] if "jaguar" in tag.lower() or "unitv" in tag.lower() or "tv" in tag.lower()]) >= 10
     assert result["description"] == " ".join(result["tags"])
     assert calls[0][0] == "https://relay.example.test/v1/responses"
-    assert calls[0][2]["model"] == "gpt-5.5"
-    assert calls[0][2]["reasoning"]["effort"] == "high"
+    assert calls[0][2]["model"] == "gpt-5.6-terra"
+    assert calls[0][2]["reasoning"]["effort"] == "medium"
+    assert calls[0][2]["store"] is False
+    assert calls[0][2]["text"]["format"]["type"] == "json_schema"
+    assert calls[0][2]["text"]["format"]["strict"] is True
     assert calls[0][1]["Authorization"] == "Bearer sk-test"
+
+
+def test_generate_publish_copy_retries_transient_openai_failure(tmp_path: Path, monkeypatch):
+    config = config_for(tmp_path)
+    config["publishing"] = {"copywriter": {"attempts": 3, "retry_delay_sec": 0}}
+    insert_candidate(config)
+    write_review_asset(config)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    statuses = [503, 200]
+
+    class FakeResponse:
+        def __init__(self, status_code):
+            self.status_code = status_code
+
+        def json(self):
+            return {
+                "output_text": json.dumps(
+                    {"title": "Esse lance virou assunto", "description": "", "tags": ["Futebol"]}
+                )
+            }
+
+    def fake_post(*_args, **_kwargs):
+        return FakeResponse(statuses.pop(0))
+
+    monkeypatch.setattr("jaguartv_factory.publish_flow.requests.post", fake_post)
+
+    result = generate_publish_copy_preview(
+        config,
+        {"candidate_id": "cand-1", "asset_id": "cand-1:0803-YouTube-1-通用版", "platform": "youtube"},
+    )
+
+    assert result["model"] == "gpt-5.6-terra"
+    assert not statuses
+
+
+def test_generate_publish_copy_falls_back_after_openai_is_unavailable(tmp_path: Path, monkeypatch):
+    config = config_for(tmp_path)
+    config["publishing"] = {"copywriter": {"attempts": 2, "retry_delay_sec": 0}}
+    insert_candidate(config)
+    write_review_asset(config)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    calls = []
+
+    class FakeResponse:
+        status_code = 503
+
+        def json(self):
+            return {}
+
+    def fake_post(*_args, **_kwargs):
+        calls.append(1)
+        return FakeResponse()
+
+    monkeypatch.setattr("jaguartv_factory.publish_flow.requests.post", fake_post)
+
+    result = generate_publish_copy_preview(
+        config,
+        {"candidate_id": "cand-1", "asset_id": "cand-1:0803-YouTube-1-通用版", "platform": "youtube"},
+    )
+
+    assert result["model"] == "deterministic-provenance"
+    assert result["fallback_reason"] == "openai_unavailable"
+    assert len(calls) == 2
 
 
 def test_generate_publish_copy_without_ai_key_uses_provenance_fallback(tmp_path: Path, monkeypatch):
@@ -482,6 +558,7 @@ def test_social_copy_is_one_combined_pt_br_field_under_250_chars(tmp_path: Path,
 def test_publish_dialog_uses_final_field_names_and_platform_switching():
     html = Path("src/jaguartv_factory/web/index.html").read_text(encoding="utf-8")
     javascript = Path("src/jaguartv_factory/web/app.js").read_text(encoding="utf-8")
+    styles = Path("src/jaguartv_factory/web/styles.css").read_text(encoding="utf-8")
 
     assert "AI 标题" not in html
     assert "AI 文案" not in html
@@ -491,3 +568,26 @@ def test_publish_dialog_uses_final_field_names_and_platform_switching():
     assert 'new Set(["x", "facebook", "tiktok", "instagram", "kwai"])' in javascript
     assert "configurePublishCopyFields" in javascript
     assert 'candidate_id: String(asset.id).split(":", 1)[0]' in javascript
+    assert 'document.querySelector("#publishDescription").value = platform === "youtube" ? ""' in javascript
+    assert "[hidden] { display: none !important; }" in styles
+
+
+def test_inventory_uses_compact_rows_and_concise_publication_status():
+    javascript = Path("src/jaguartv_factory/web/app.js").read_text(encoding="utf-8")
+    styles = Path("src/jaguartv_factory/web/styles.css").read_text(encoding="utf-8")
+
+    assert "计划发布时间" not in javascript
+    assert "${escapeHtml(state.youtube_video_id)}" not in javascript
+    assert "已排队发布至 YouTube 账号" in javascript
+    assert ".inventory-table th, .inventory-table td { padding-top: 7px; padding-bottom: 7px; }" in styles
+    assert ".output-menu-row { padding: 4px 0;" in styles
+
+
+def test_x_account_controls_use_real_accounts_without_content_roles():
+    javascript = Path("src/jaguartv_factory/web/app.js").read_text(encoding="utf-8")
+
+    assert "const xAccountSlots" in javascript
+    assert "JaguarTV Hoje" not in javascript
+    assert "JaguarTV Futebol" not in javascript
+    assert 'username ? `@${item.username}`' in javascript
+    assert " · ${escapeHtml(item.status" not in javascript

@@ -192,6 +192,9 @@ bash scripts/install-source-services.sh
 echo "==> Installing YouTube analytics worker"
 bash scripts/install-youtube-analytics-worker.sh
 
+echo "==> Installing keyword maintenance timers"
+bash scripts/install-keyword-maintenance.sh
+
 echo "==> Verifying install"
 .venv/bin/python -m pytest tests/test_core.py tests/test_platform_and_brand.py tests/test_localization.py
 ./.agents/skills/jaguartv-content-factory/scripts/factory.sh doctor

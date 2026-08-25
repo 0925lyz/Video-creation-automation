@@ -15,6 +15,19 @@
 - 发布闭环：YouTube/X 支持审核后发布；其他平台当前只生成文案和本地成片，不假装已自动发布。
 - 热点反馈：每日热点进入运行时关键词层，不会再把服务器 Git 配置改脏；数据分析只生成优化建议，需审核后应用。
 
+## 发布文案 AI
+
+审核页发布弹窗使用 OpenAI Responses API 生成巴西葡语标题和标签，默认模型为 `gpt-5.6-terra`。服务端执行结构化输出校验和最多三次短重试；AI 未配置或暂时不可用时回退到来源关键词规则，发布按钮不会因此失效。
+
+生产服务器只需在私有 `.env` 中设置 `JAGUARTV_PUBLISHING_AI_API_KEY`。可选的 `JAGUARTV_PUBLISHING_AI_MODEL` 和 `JAGUARTV_OPENAI_BASE_URL` 分别覆盖模型和兼容 API 地址。密钥不得写入 Git。YouTube 弹窗只显示“标题文案”和“说明标签”；说明标签最终进入 YouTube 说明框，隐藏的通用“文案标签”保持空白。
+
+## 分类关键词维护
+
+- `scripts/import_daily_keywords.py`：每天读取 `workspace/runtime/daily_keywords.txt`，按“分类：关键词1、关键词2”格式导入。
+- `scripts/carry_forward_tag_keywords.py`：当天没有分类关键词时，继承最近一天的数据。
+- `scripts/clear_tag_keywords.py`：每两天清空一次 `daily_keywords:*`，清空前先备份数据库；Google Trends 数据不受影响。
+- `scripts/install-keyword-maintenance.sh`：由服务器安装和同步脚本自动安装并启用上述 systemd 定时任务。
+
 ## 本地启动
 
 ```bash

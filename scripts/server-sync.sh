@@ -88,6 +88,7 @@ npm --prefix "$APP_DIR" run build
 echo "==> Restarting service"
 bash "$APP_DIR/scripts/install-source-services.sh"
 bash "$APP_DIR/scripts/install-youtube-analytics-worker.sh"
+bash "$APP_DIR/scripts/install-keyword-maintenance.sh"
 sudo systemctl restart "$SERVICE_NAME"
 sudo systemctl status "$SERVICE_NAME" --no-pager
 

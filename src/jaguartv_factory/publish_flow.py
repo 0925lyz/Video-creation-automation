@@ -5,6 +5,7 @@ import json
 import os
 import random
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -453,32 +454,66 @@ def generate_publish_copy_preview(config: dict[str, Any], payload: dict[str, Any
     ):
         raise ValueError("source provenance is missing; copy generation is blocked")
     key = openai_api_key()
-    model = str(((config.get("publishing") or {}).get("copywriter") or {}).get("model") or "gpt-5.5")
+    settings = ((config.get("publishing") or {}).get("copywriter") or {})
+    model = str(
+        os.environ.get("JAGUARTV_PUBLISHING_AI_MODEL")
+        or settings.get("model")
+        or "gpt-5.6-terra"
+    ).strip()
+    attempts = max(1, min(int(settings.get("attempts") or 3), 4))
+    timeout_sec = max(10, min(float(settings.get("timeout_sec") or 60), 120))
+    retry_delay_sec = max(0, min(float(settings.get("retry_delay_sec") or 0.75), 5))
     raw: dict[str, Any] = {
         "title": _fallback_title(source_material),
         "description": "",
         "tags": _content_hashtags([], source_material),
     }
     generation_model = "deterministic-provenance"
+    fallback_reason = ""
     if key:
         prompt = build_openai_copy_prompt(source_material, platform=platform, variant=variant)
-        response = requests.post(
-            openai_responses_url(config),
-            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-            data=json.dumps(
-                {
-                    "model": model,
-                    "reasoning": {"effort": "high"},
-                    "input": prompt,
-                },
-                ensure_ascii=False,
-            ).encode("utf-8"),
-            timeout=90,
-        )
-        if response.status_code >= 400:
-            raise RuntimeError(f"OpenAI copywriter failed: HTTP {response.status_code}")
-        raw = parse_openai_output(response.json())
-        generation_model = model
+        request_body = {
+            "model": model,
+            "reasoning": {"effort": "medium"},
+            "input": prompt,
+            "store": False,
+            "max_output_tokens": 800,
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "jaguartv_publish_copy",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"},
+                            "description": {"type": "string"},
+                            "tags": {"type": "array", "items": {"type": "string"}},
+                        },
+                        "required": ["title", "description", "tags"],
+                        "additionalProperties": False,
+                    },
+                }
+            },
+        }
+        for attempt in range(attempts):
+            try:
+                response = requests.post(
+                    openai_responses_url(config),
+                    headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                    data=json.dumps(request_body, ensure_ascii=False).encode("utf-8"),
+                    timeout=timeout_sec,
+                )
+                if response.status_code >= 400:
+                    raise RuntimeError(f"OpenAI copywriter failed: HTTP {response.status_code}")
+                raw = parse_openai_output(response.json())
+                generation_model = model
+                break
+            except (requests.RequestException, RuntimeError, ValueError, json.JSONDecodeError):
+                if attempt + 1 < attempts:
+                    time.sleep(retry_delay_sec * (attempt + 1))
+                    continue
+                fallback_reason = "openai_unavailable"
     if platform == "youtube":
         result = youtube_copy_from_provenance(raw, source_material, seed=f"{candidate['id']}:{asset_id}")
     elif platform in COMBINED_COPY_PLATFORMS:
@@ -489,8 +524,9 @@ def generate_publish_copy_preview(config: dict[str, Any], payload: dict[str, Any
     return {
         **result,
         "model": generation_model,
-        "reasoning_effort": "high" if key else "not_applicable",
+        "reasoning_effort": "medium" if generation_model == model else "not_applicable",
         "platform": platform,
+        **({"fallback_reason": fallback_reason} if fallback_reason else {}),
     }
 
 
@@ -548,7 +584,7 @@ def validate_publish_copy(platform: str, payload: dict[str, Any]) -> dict[str, A
         raise ValueError("YouTube title must not contain hashtags")
     if not title or len(title) > limits["title"]:
         raise ValueError("title is required and must fit platform limits")
-    if not description or len(description) > limits["description"]:
+    if platform != "youtube" and (not description or len(description) > limits["description"]):
         raise ValueError("description is required and must fit platform limits")
     minimum_tags = 25 if platform == "youtube" else 1
     if len(tags) < minimum_tags or len(tags) > limits["tags"]:

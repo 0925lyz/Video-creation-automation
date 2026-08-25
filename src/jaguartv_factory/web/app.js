@@ -113,15 +113,15 @@ const posterCategoryLabels = [
   ["star_fans", "球星球迷"],
 ];
 
-const matrixAccounts = [
-  ["consumer_main", "JaguarTV Hoje"],
-  ["consumer_football", "JaguarTV Futebol"],
-  ["consumer_guide", "JaguarTV Guia"],
-  ["consumer_entertainment", "JaguarTV Entretenimento"],
-  ["partner_main", "JaguarTV Parceiros"],
-  ["partner_embaixador", "JaguarTV Embaixador"],
-  ["partner_revendedor", "JaguarTV Revendedor"],
-  ["partner_academia", "Academia JaguarTV"],
+const xAccountSlots = [
+  "consumer_main",
+  "consumer_football",
+  "consumer_guide",
+  "consumer_entertainment",
+  "partner_main",
+  "partner_embaixador",
+  "partner_revendedor",
+  "partner_academia",
 ];
 
 function scoreTooltip(breakdown) {
@@ -189,6 +189,7 @@ async function refreshAll(showToast = false) {
     toast(`刷新失败：${error.message}`, "error");
   } finally {
     button.disabled = false;
+    document.querySelector("#discoverButton").disabled = false;
   }
 }
 
@@ -930,12 +931,10 @@ function publicationStateText(state) {
   if (!state || !Object.keys(state).length) return "";
   const account = escapeHtml(state.account_label || state.account || "jaguartv vivo");
   if (state.status === "PUBLISHED") {
-    const link = state.youtube_url ? ` · <a href="${escapeHtml(state.youtube_url)}" target="_blank" rel="noopener">YouTube 链接</a>` : "";
-    const videoId = state.youtube_video_id ? ` · ${escapeHtml(state.youtube_video_id)}` : "";
-    return `<small class="publication-note ready">已发布至 YouTube 账号：${account}${link}${videoId}</small>`;
+    return `<small class="publication-note ready">已发布至 YouTube 账号：${account}</small>`;
   }
   if (["QUEUED", "SCHEDULED", "PUBLISHING"].includes(state.status)) {
-    return `<small class="publication-note ready">已排队发布至 YouTube 账号：${account} · 计划发布时间：${dateText(state.scheduled_at)} ${escapeHtml(state.timezone || "")}</small>`;
+    return `<small class="publication-note ready">已排队发布至 YouTube 账号：${account}</small>`;
   }
   if (state.event_type === "PUBLISH_BLOCKED_SOURCE_PLATFORM") {
     return `<small class="publication-note blocked">审核通过，但 YouTube 发布被来源门禁拦截：源素材来自 ${escapeHtml(state.source_platform || "YouTube")}</small>`;
@@ -1218,17 +1217,24 @@ function authStatusLabel(status) {
 
 function renderXAuths() {
   const accountSelect = document.querySelector("#xAuthAccount");
-  if (accountSelect && !accountSelect.options.length) {
-    accountSelect.innerHTML = matrixAccounts.map(([id, label]) => `<option value="${id}">${label} · ${id}</option>`).join("");
-  }
   const byAccount = new Map(state.xAuths.map((item) => [item.account, item]));
-  const rows = matrixAccounts.map(([id, label]) => {
+  if (accountSelect) {
+    const selected = accountSelect.value;
+    accountSelect.innerHTML = xAccountSlots.map((id, index) => {
+      const item = byAccount.get(id);
+      const username = String(item?.username || "").trim();
+      const label = username ? `@${username}` : `X 账号 ${index + 1}`;
+      return `<option value="${id}">${escapeHtml(label)}</option>`;
+    }).join("");
+    if (xAccountSlots.includes(selected)) accountSelect.value = selected;
+  }
+  const rows = xAccountSlots.map((id, index) => {
     const item = byAccount.get(id) || { account: id, status: "", username: "", x_user_id: "", scopes: "", updated_at: "" };
     const isPending = item.status === "PENDING_CONFIRMATION";
     const canRevoke = item.status === "AUTHORIZED" || item.status === "PENDING_CONFIRMATION" || item.status === "NEEDS_REAUTH";
     return `
       <tr>
-        <td><strong>${escapeHtml(label)}</strong><small>${escapeHtml(id)}</small></td>
+        <td><strong>X 账号 ${index + 1}</strong></td>
         <td>${item.username ? `@${escapeHtml(item.username)}` : "未授权"}<small>${escapeHtml(item.display_name || "")}</small></td>
         <td>${escapeHtml(item.x_user_id || "")}</td>
         <td title="${escapeHtml(item.scopes || "")}">${escapeHtml((item.scopes || "").slice(0, 48))}</td>
@@ -1528,7 +1534,11 @@ async function loadPublishAccounts(platform) {
     select.disabled = true;
   } else {
     select.innerHTML = accounts.length
-      ? accounts.map((item) => `<option value="${escapeHtml(item.id)}" ${item.status === "AVAILABLE" ? "" : "disabled"}>${escapeHtml(item.username || item.id)} · ${escapeHtml(item.status === "AVAILABLE" ? "可用" : item.status_reason || "不可用")}</option>`).join("")
+      ? accounts.map((item) => {
+        const username = item.username ? `@${item.username}` : item.display_name || "未命名账号";
+        const unavailable = item.status === "AVAILABLE" ? "" : `（${item.status_reason || "不可用"}）`;
+        return `<option value="${escapeHtml(item.id)}" ${item.status === "AVAILABLE" ? "" : "disabled"}>${escapeHtml(username + unavailable)}</option>`;
+      }).join("")
       : `<option value="">没有可用账号</option>`;
     select.disabled = !accounts.length;
   }
@@ -1557,7 +1567,8 @@ async function generatePublishCopy() {
       }),
     });
     document.querySelector("#publishTitle").value = result.title || "";
-    document.querySelector("#publishDescription").value = result.description || "";
+    const platform = document.querySelector("#publishPlatform").value;
+    document.querySelector("#publishDescription").value = platform === "youtube" ? "" : result.description || "";
     document.querySelector("#publishTags").value = (result.tags || []).join(" ");
     renderPublishPreview();
   } catch (error) {

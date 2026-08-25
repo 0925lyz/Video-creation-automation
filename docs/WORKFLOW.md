@@ -5,11 +5,13 @@
 ## 视频闭环
 
 1. 北京时间每日 05:00 运行 pytrends；失败时由 Scrapling 读取 Google Trends RSS，再写入数据库和 `workspace/runtime/keywords.trends.yaml`。
+   每日分类关键词文件 `workspace/runtime/daily_keywords.txt` 在 05:10 导入；当天没有新文件或新记录时，05:20 继承最近一天的分类关键词。`daily_keywords:*` 每两天清空一次并先备份数据库，Google Trends 来源不受清理影响。
 2. Agent Reach 与 MediaCrawler 的标准化结果、内置平台适配器、浏览器会话及手动导入统一进入候选库，并保留关键词、分类、源标题和源标签。
 3. `yt-dlp` 下载 YouTube、TikTok、Facebook、X、Instagram、Kwai，`f2` 只下载抖音；B站和小红书沿用独立适配器。源媒体进入 `workspace/jobs/<candidate_id>/`，Cookie 和登录会话只保存在服务器私有目录。
 4. 制作服务执行尾卡检测、智能切片、OCR、pt-BR 本地化、配音和音频策略，再用 Remotion 生成通用版和 FB 版。
 5. 自动制作必须通过双版本、媒体流、路径、哈希和渲染任务门禁，才能进入 `READY_FOR_REVIEW`。管理员也可以把已经制作完成的外部成片作为“导入成片”直接批准，这类记录会明确标记 `external_import`，不冒充自动二创。
 6. 人工批准后才能建立发布任务。YouTube 和 X 支持自动发布；TikTok、Facebook、抖音、B站、Kwai、Instagram 当前只生成文案并下载本地成片，不声称自动发布成功。
+   发布文案默认调用 `gpt-5.6-terra`，结构化校验失败或短暂网络错误会重试，最终仍不可用时使用来源关键词规则回退。YouTube 只使用标题文案和说明标签；通用文案标签字段保持空白。
 7. YouTube worker 回收公开状态和数据，Dashboard 汇总关键词、文案和转化归因。反馈目前生成建议，不会未经审核自动改写生产策略。
 
 ## 独立海报库存

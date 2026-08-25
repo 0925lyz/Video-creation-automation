@@ -269,6 +269,11 @@ brand:
 publishing:
   enabled: true
   timezone: America/Sao_Paulo
+  copywriter:
+    model: gpt-5.6-terra
+    attempts: 3
+    timeout_sec: 60
+    retry_delay_sec: 0.75
   youtube_category_accounts:
     足球类: jaguartv_vivo
   accounts:
