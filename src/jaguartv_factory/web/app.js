@@ -89,6 +89,8 @@ const statusLabels = {
   QUEUED: "排队中",
   SCHEDULED: "已计划",
   PUBLISHED: "已发布",
+  CANCELLING: "取消中",
+  CANCELLED: "已取消发布",
   FAILED: "失败",
   IMPORT_FAILED: "导入失败",
 };
@@ -1202,8 +1204,36 @@ async function pollTask(taskId) {
 
 function renderPublications() {
   document.querySelector("#publicationTable").innerHTML = state.publications.length ? state.publications.map((item) => `
-    <tr><td title="${escapeHtml(item.title || item.candidate_id)}">${escapeHtml((item.title || item.candidate_id).slice(0, 42))}</td><td class="platform-name">${escapeHtml(item.platform)}</td><td>${escapeHtml(item.account || "未指定")}</td><td>${dateText(item.scheduled_at)}</td><td><span class="status-pill ${statusClass(item.status)}">${statusLabels[item.status] || item.status}</span></td></tr>
+    <tr><td title="${escapeHtml(item.title || item.candidate_id)}">${escapeHtml((item.title || item.candidate_id).slice(0, 42))}</td><td class="platform-name">${escapeHtml(item.platform)}</td><td>${escapeHtml(item.account || "未指定")}</td><td>${dateText(item.scheduled_at)}</td><td><div class="publication-status-actions"><span class="status-pill ${statusClass(item.status)}">${statusLabels[item.status] || item.status}</span>${canCancelPublication(item) ? `<button class="table-action danger-action" type="button" data-publication-cancel="${Number(item.id)}">取消发布</button>` : ""}</div></td></tr>
   `).join("") : `<tr><td colspan="5"><div class="empty-state">尚无发布任务<br>先选择审核通过的成片加入队列</div></td></tr>`;
+}
+
+function canCancelPublication(item) {
+  if (["QUEUED", "SCHEDULED"].includes(item.status)) return true;
+  return item.status === "PUBLISHED"
+    && item.publication_origin === "SYSTEM_AUTO_PUBLISH"
+    && ["youtube", "x"].includes(String(item.platform || "").toLowerCase())
+    && Boolean(item.youtube_video_id || item.platform_video_id);
+}
+
+async function cancelPublication(item, button) {
+  const removesRemote = item.status === "PUBLISHED";
+  const message = removesRemote
+    ? `确认从 ${item.platform} 删除这条已发布内容吗？此操作无法撤销。`
+    : "确认取消这条排队发布任务吗？";
+  if (!window.confirm(message)) return;
+  button.disabled = true;
+  try {
+    const result = await api(`/api/publications/${Number(item.id)}/cancel`, {
+      method: "POST",
+      body: JSON.stringify({ actor: "dashboard" }),
+    });
+    toast(result.remote_deleted ? "平台内容已删除，发布记录已取消" : "发布任务已取消");
+    await refreshAll();
+  } catch (error) {
+    toast(`取消发布失败：${error.message}`, "error");
+    button.disabled = false;
+  }
 }
 
 function authStatusLabel(status) {
@@ -2252,6 +2282,12 @@ document.querySelector("#assetUploadForm").addEventListener("submit", async (eve
 document.querySelectorAll(".nav-item").forEach((button) => button.addEventListener("click", () => openView(button.dataset.view)));
 document.querySelectorAll("[data-open-view]").forEach((button) => button.addEventListener("click", () => openView(button.dataset.openView)));
 document.querySelector("#refreshButton").addEventListener("click", () => refreshAll(true));
+document.querySelector("#publicationTable").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-publication-cancel]");
+  if (!button) return;
+  const item = state.publications.find((publication) => Number(publication.id) === Number(button.dataset.publicationCancel));
+  if (item) cancelPublication(item, button);
+});
 document.querySelector("#logoutButton").addEventListener("click", async () => {
   await fetch("/api/auth/logout", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
   window.location.replace("/login");

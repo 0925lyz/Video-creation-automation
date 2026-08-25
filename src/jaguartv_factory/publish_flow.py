@@ -772,7 +772,7 @@ def create_publish_operation(
                 scheduled_local_at,
                 scheduled_utc_at,
                 operation_type,
-                candidate["status"],
+                "APPROVED",
                 snapshot["id"],
                 snapshot["username"],
                 "public",

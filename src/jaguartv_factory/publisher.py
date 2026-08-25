@@ -507,13 +507,13 @@ def enqueue_approved_publication(
         INSERT INTO publications(
           candidate_id,package_id,asset_id,variant,source_platform,platform,account,account_label,
           channel_id,scheduled_at,status,title,description,tags_json,privacy_status,timezone,
-          reviewer,review_decision_at,platform_account_id,authorized_account_id,
+          reviewer,review_decision_at,operation_type,review_status,platform_account_id,authorized_account_id,
           platform_username_snapshot,scheduled_local_at,scheduled_utc_at,source_category,
           source_keyword,slice_id,version_id,created_at,updated_at
         ) VALUES(
           :candidate_id,:package_id,:asset_id,:variant,:source_platform,'youtube',:account,:account_label,
           :channel_id,:scheduled_at,'SCHEDULED',:title,:description,:tags_json,:privacy_status,:timezone,
-          :reviewer,:review_decision_at,:account,:account,:account_label,:scheduled_local_at,
+          :reviewer,:review_decision_at,'PUBLICATION','APPROVED',:account,:account,:account_label,:scheduled_local_at,
           :scheduled_utc_at,:source_category,:source_keyword,:slice_id,:version_id,:created_at,:updated_at
         )
         """,

@@ -17,6 +17,7 @@ from .core import workspace_dir
 
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 YOUTUBE_RESUMABLE_UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status"
+YOUTUBE_VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
 
 
 def account_env_name(account: str, suffix: str) -> str:
@@ -215,3 +216,25 @@ def upload_youtube_publication(config: dict[str, Any], publication_id: int) -> d
         "probe_streams": len(probe.get("streams") or []),
         "published_at": now_iso(),
     }
+
+
+def delete_youtube_publication(
+    config: dict[str, Any],
+    publication: dict[str, Any],
+    *,
+    session: Any = requests,
+) -> None:
+    video_id = str(
+        publication.get("youtube_video_id") or publication.get("platform_video_id") or ""
+    ).strip()
+    if not video_id:
+        raise ValueError("published YouTube task has no video id")
+    token = youtube_access_token(config, str(publication.get("account") or ""))
+    response = session.delete(
+        YOUTUBE_VIDEOS_URL,
+        params={"id": video_id},
+        headers={"Authorization": f"Bearer {token['access_token']}"},
+        timeout=30,
+    )
+    if response.status_code not in {204, 404}:
+        raise RuntimeError(f"YouTube delete failed: HTTP {response.status_code}")

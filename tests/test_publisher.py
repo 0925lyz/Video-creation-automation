@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 from jaguartv_factory.core import connect_db, now_iso
 from jaguartv_factory.dashboard import candidate_rows, save_review
-from jaguartv_factory.publish_worker import publish_due_once
+from jaguartv_factory.publish_worker import due_publications, publish_due_once
 from jaguartv_factory.publisher import enqueue_approved_publication
 from jaguartv_factory.publishing_copywriter import (
     DOUBAO_CROSS_BORDER_GROWTH_PROMPT,
@@ -317,3 +317,38 @@ def test_publish_success_updates_dashboard_candidate_row(tmp_path: Path):
     assert row["publication_state"]["account_label"] == "jaguartv vivo"
     assert row["publication_state"]["youtube_video_id"] == "yt123"
     assert row["publication_state"]["youtube_url"] == "https://www.youtube.com/watch?v=yt123"
+
+
+def test_publish_worker_ignores_tasks_that_are_not_approved(tmp_path: Path):
+    config = publishing_config(tmp_path)
+    insert_candidate(config, "pending-review", "facebook", status="READY_FOR_REVIEW")
+    connection = connect_db(config)
+    timestamp = now_iso()
+    connection.execute(
+        """
+        INSERT INTO publications(
+          candidate_id,platform,account,scheduled_at,status,operation_type,review_status,
+          created_at,updated_at
+        ) VALUES(?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            "pending-review",
+            "youtube",
+            "jaguartv_vivo",
+            "2026-08-15T10:00:00-03:00",
+            "QUEUED",
+            "PUBLICATION",
+            "READY_FOR_REVIEW",
+            timestamp,
+            timestamp,
+        ),
+    )
+    connection.commit()
+
+    due = due_publications(
+        config,
+        limit=10,
+        now=datetime(2026, 8, 15, 11, 0, tzinfo=ZoneInfo("America/Sao_Paulo")),
+    )
+
+    assert due == []

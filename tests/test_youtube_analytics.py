@@ -1051,13 +1051,13 @@ def test_successful_publish_atomically_creates_first_sync_task(tmp_path: Path):
     connection.execute(
         """
         INSERT INTO publications(
-          candidate_id,platform,account,account_label,channel_id,scheduled_at,scheduled_utc_at,
-          status,privacy_status,public_status,source_platform,title,created_at,updated_at
-        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+              candidate_id,platform,account,account_label,channel_id,scheduled_at,scheduled_utc_at,
+              operation_type,review_status,status,privacy_status,public_status,source_platform,title,created_at,updated_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
             "candidate-publish", "youtube", "account-a", "Snapshot channel", "channel-a",
-            "2026-07-01T11:00:00+00:00", "2026-07-01T11:00:00+00:00", "QUEUED",
+                "2026-07-01T11:00:00+00:00", "2026-07-01T11:00:00+00:00", "PUBLICATION", "APPROVED", "QUEUED",
             "public", "public", "facebook", "Demo", published_at, published_at,
         ),
     )

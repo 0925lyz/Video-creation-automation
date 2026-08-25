@@ -112,11 +112,11 @@ def test_x_worker_records_public_url_without_youtube_sync(tmp_path: Path):
     connection.execute(
         """
         INSERT INTO publications(
-          candidate_id,platform,account,account_label,platform_account_id,
-          scheduled_at,scheduled_utc_at,operation_type,status,privacy_status,
-          public_status,title,description,tags_json,created_at,updated_at
-        ) VALUES('candidate-x','x','consumer_main','JaguarTVBrasil','x-user-main',
-          ?,?,'PUBLICATION','QUEUED','public','public','Hook','Copy','["Futebol"]',?,?)
+              candidate_id,platform,account,account_label,platform_account_id,
+              scheduled_at,scheduled_utc_at,operation_type,review_status,status,privacy_status,
+              public_status,title,description,tags_json,created_at,updated_at
+            ) VALUES('candidate-x','x','consumer_main','JaguarTVBrasil','x-user-main',
+              ?,?,'PUBLICATION','APPROVED','QUEUED','public','public','Hook','Copy','["Futebol"]',?,?)
         """,
         (timestamp, timestamp, timestamp, timestamp),
     )

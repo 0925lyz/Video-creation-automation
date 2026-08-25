@@ -42,7 +42,10 @@ def due_publications(config: dict[str, Any], *, limit: int = 3, now: datetime | 
         """
         SELECT *
         FROM publications
-        WHERE platform IN ('youtube','x') AND operation_type='PUBLICATION' AND status IN ('QUEUED','SCHEDULED')
+        WHERE platform IN ('youtube','x')
+          AND operation_type='PUBLICATION'
+          AND review_status='APPROVED'
+          AND status IN ('QUEUED','SCHEDULED')
         ORDER BY COALESCE(scheduled_utc_at, scheduled_at) ASC,id ASC
         LIMIT 100
         """
@@ -114,7 +117,7 @@ def publish_due_once(
             """
             UPDATE publications
             SET status='PUBLISHING',started_at=COALESCE(started_at,?),updated_at=?
-            WHERE id=? AND status IN ('QUEUED','SCHEDULED')
+            WHERE id=? AND review_status='APPROVED' AND status IN ('QUEUED','SCHEDULED')
             """,
             (timestamp, timestamp, publication["id"]),
         )

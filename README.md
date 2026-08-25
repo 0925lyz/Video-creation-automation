@@ -13,6 +13,7 @@
 - 人工审核交接：系统记录权利状态和风险等级，不在制作前自动阻断；内部人员在服务器审核页确认授权与发布范围。
 - 可解释审核：保存内容类型、命中规则、片段时间、精彩度、原因、Reaction 和音频参数。
 - 发布闭环：YouTube/X 支持审核后发布；其他平台当前只生成文案和本地成片，不假装已自动发布。
+- 发布队列：`jaguartv-youtube-publish-worker` 由安装和同步脚本自动启用；只领取审核通过的任务。排队任务可直接取消，内容工厂已发布的 YouTube/X 内容可在确认后从平台删除。
 - 热点反馈：每日热点进入运行时关键词层，不会再把服务器 Git 配置改脏；数据分析只生成优化建议，需审核后应用。
 
 ## 发布文案 AI
@@ -27,6 +28,7 @@
 - `scripts/carry_forward_tag_keywords.py`：当天没有分类关键词时，继承最近一天的数据。
 - `scripts/clear_tag_keywords.py`：每两天清空一次 `daily_keywords:*`，清空前先备份数据库；Google Trends 数据不受影响。
 - `scripts/install-keyword-maintenance.sh`：由服务器安装和同步脚本自动安装并启用上述 systemd 定时任务。
+- `scripts/install-publish-worker.sh`：安装并启用 YouTube/X 发布 worker，服务器重启后自动恢复队列消费。
 
 ## 本地启动
 

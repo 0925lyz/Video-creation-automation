@@ -207,6 +207,28 @@ def create_x_post(access_token: str, text: str, media_id: str, *, session: Any =
     return {"x_post_id": post_id, "x_url": f"https://x.com/i/web/status/{post_id}"}
 
 
+def delete_x_publication(
+    config: dict[str, Any],
+    publication: dict[str, Any],
+    *,
+    session: Any = requests,
+) -> None:
+    post_id = str(publication.get("platform_video_id") or "").strip()
+    if not post_id:
+        raise ValueError("published X task has no post id")
+    token = x_access_token(config, str(publication.get("account") or ""))
+    response = session.delete(
+        f"{X_CREATE_POST_URL}/{post_id}",
+        headers={"Authorization": f"Bearer {token['access_token']}"},
+        timeout=30,
+    )
+    if response.status_code == 404:
+        return
+    payload = _response_json(response, "post deletion")
+    if (payload.get("data") or {}).get("deleted") is not True:
+        raise RuntimeError("X post deletion did not confirm deletion")
+
+
 def upload_x_publication(config: dict[str, Any], publication_id: int) -> dict[str, Any]:
     connection = connect_db(config)
     row = connection.execute("SELECT * FROM publications WHERE id=?", (publication_id,)).fetchone()

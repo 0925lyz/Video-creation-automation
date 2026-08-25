@@ -46,6 +46,7 @@ from .core import (
     workspace_dir,
 )
 from .publisher import auto_enqueue_approved_publication, publication_state_for_candidates
+from .publication_cancellation import cancel_publication
 from .production import assert_candidate_ready_for_review
 from .posters import (
     PosterError,
@@ -2736,10 +2737,21 @@ def save_publication(config: dict[str, Any], payload: dict[str, Any]) -> int:
     timestamp = now_iso()
     cursor = connection.execute(
         """
-        INSERT INTO publications(candidate_id,platform,account,scheduled_at,status,created_at,updated_at)
-        VALUES(?,?,?,?,?,?,?)
+        INSERT INTO publications(
+          candidate_id,platform,account,scheduled_at,status,operation_type,review_status,created_at,updated_at
+        ) VALUES(?,?,?,?,?,?,?,?,?)
         """,
-        (candidate, platform, account, payload.get("scheduled_at") or None, "QUEUED", timestamp, timestamp),
+        (
+            candidate,
+            platform,
+            account,
+            payload.get("scheduled_at") or None,
+            "QUEUED",
+            "PUBLICATION",
+            "APPROVED",
+            timestamp,
+            timestamp,
+        ),
     )
     connection.commit()
     return int(cursor.lastrowid)
@@ -4153,6 +4165,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 result["download_url"] = signed_upload_url(result["id"])
                 return self.send_json(result, HTTPStatus.CREATED)
             payload = self.read_json()
+            publication_parts = parsed.path.strip("/").split("/")
+            if (
+                len(publication_parts) == 4
+                and publication_parts[:2] == ["api", "publications"]
+                and publication_parts[3] == "cancel"
+            ):
+                try:
+                    result = cancel_publication(
+                        self.server.config,
+                        validated_positive_int(publication_parts[2], "publication_id", 0),
+                        actor=str(payload.get("actor") or self.headers.get("X-Operator", "") or "dashboard"),
+                    )
+                except RuntimeError as error:
+                    return self.send_json({"error": str(error)}, HTTPStatus.BAD_GATEWAY)
+                return self.send_json(result, HTTPStatus.OK)
             analytics_parts = parsed.path.strip("/").split("/")
             if len(analytics_parts) == 5 and analytics_parts[:3] == ["api", "youtube-analytics", "publications"] and analytics_parts[4] == "retry":
                 return self.send_json(

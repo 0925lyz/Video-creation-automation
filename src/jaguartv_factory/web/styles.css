@@ -148,6 +148,7 @@ tbody tr:hover { background: #fafcfb; }
 .status-pill.ready { background: var(--green-soft); color: #096344; }
 .status-pill.failed { background: #fbe7e1; color: #a13b21; }
 .status-pill.running { background: #fff2cb; color: #735400; }
+.publication-status-actions { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
 .failure-reason { display: block; max-width: 260px; margin-top: 6px; overflow: hidden; color: #a13b21; font-size: 10px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
 .row-progress { color: var(--yellow); font-size: 11px; font-weight: 800; }
 .task-progress-panel { margin-bottom: 14px; border: 1px solid #d7c27c; background: #fffaf0; border-radius: var(--radius); overflow: hidden; }
