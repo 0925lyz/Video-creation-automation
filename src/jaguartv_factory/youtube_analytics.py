@@ -13,6 +13,13 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+from .analytics_schedule import (
+    POST_PUBLISH_SYNC_CHECKPOINTS,
+    POST_PUBLISH_SYNC_SCHEDULE_VERSION,
+    checkpoint_due_at,
+    initial_checkpoint,
+    next_checkpoint,
+)
 from .core import connect_db, now_iso
 from .youtube_publisher import youtube_access_token
 
@@ -24,12 +31,14 @@ DATA_API_SOURCE = "youtube_data_api_v3"
 ANALYTICS_API_SOURCE = "youtube_analytics_api_v2"
 RETENTION_SOURCE = "youtube_analytics_audience_retention"
 NEEDS_REAUTH_CATEGORIES = {"AUTH_REVOKED", "AUTH_DECRYPT_FAILED"}
+CHANNEL_IMPORT_ACCOUNT_STATUSES = {"AUTHORIZED", "ANALYTICS_SCOPE_MISSING"}
 DATA_API_VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
 DATA_API_CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels"
 DATA_API_PLAYLIST_ITEMS_URL = "https://www.googleapis.com/youtube/v3/playlistItems"
 ANALYTICS_REPORTS_URL = "https://youtubeanalytics.googleapis.com/v2/reports"
 SYSTEM_PUBLICATION_ORIGIN = "SYSTEM_AUTO_PUBLISH"
 CHANNEL_IMPORT_ORIGIN = "YOUTUBE_CHANNEL_IMPORT"
+SYNC_SCHEDULE_VERSION = POST_PUBLISH_SYNC_SCHEDULE_VERSION
 RANKING_FIELDS = {
     "views": "s.view_count",
     "comments": "s.comment_count",
@@ -37,6 +46,7 @@ RANKING_FIELDS = {
     "average_view_duration": "s.average_view_duration",
     "completion_rate": "s.completion_rate",
     "shares": "s.share_count",
+    "published_at": "p.published_at",
 }
 
 
@@ -126,7 +136,12 @@ def backfill_publication_local_times(config: dict[str, Any]) -> int:
     return changed
 
 
-def schedule_first_sync(config: dict[str, Any], publication_id: int) -> dict[str, Any]:
+def schedule_first_sync(
+    config: dict[str, Any],
+    publication_id: int,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
     connection = connect_db(config)
     row = connection.execute(
         """
@@ -150,19 +165,21 @@ def schedule_first_sync(config: dict[str, Any], publication_id: int) -> dict[str
     account_id = str(row["authorized_account_id"] or row["account"] or "")
     if not account_id:
         raise ValueError("publication is missing authorized account id")
-    first_analytics_due = published.astimezone(timezone.utc) + timedelta(hours=24)
-    first_data_due = published.astimezone(timezone.utc)
+    first_sync_due = published.astimezone(timezone.utc) + POST_PUBLISH_SYNC_CHECKPOINTS[0][1]
+    initial_stage, initial_due = initial_checkpoint(published, now or published)
     timestamp = now_iso()
     connection.execute(
         """
         INSERT INTO youtube_sync_states(
-          publication_id,account_id,first_sync_due_at,next_sync_at,sync_status,created_at,updated_at
-        ) VALUES(?,?,?,?,?,?,?)
+          publication_id,account_id,first_sync_due_at,next_sync_at,sync_status,
+          next_sync_stage,schedule_version,created_at,updated_at
+        ) VALUES(?,?,?,?,?,?,?,?,?)
         ON CONFLICT(publication_id) DO NOTHING
         """,
         (
-            int(publication_id), account_id, _iso(first_analytics_due),
-            _iso(first_data_due), "PENDING", timestamp, timestamp,
+            int(publication_id), account_id, _iso(first_sync_due),
+            _iso(initial_due), "PENDING", initial_stage, SYNC_SCHEDULE_VERSION,
+            timestamp, timestamp,
         ),
     )
     _publication_local_time(connection, int(publication_id), str(row["published_at"]))
@@ -170,31 +187,62 @@ def schedule_first_sync(config: dict[str, Any], publication_id: int) -> dict[str
     return dict(connection.execute("SELECT * FROM youtube_sync_states WHERE publication_id=?", (int(publication_id),)).fetchone())
 
 
-def _normalize_pending_data_sync_due(connection: Any, current: datetime) -> None:
-    timestamp = _iso(current)
-    connection.execute(
+def _normalize_periodic_sync_schedule(connection: Any, current: datetime) -> None:
+    rows = connection.execute(
         """
-        UPDATE youtube_sync_states
-        SET next_sync_at=(
-              SELECT p.published_at FROM publications p
-              WHERE p.id=youtube_sync_states.publication_id
-          ),
-          updated_at=?
-        WHERE youtube_sync_states.sync_status='PENDING'
-          AND youtube_sync_states.next_sync_at IS NOT NULL
-          AND youtube_sync_states.next_sync_at>?
-          AND EXISTS (
-              SELECT 1 FROM publications p
-              WHERE p.id=youtube_sync_states.publication_id
-                AND p.published_at IS NOT NULL
-                AND p.published_at<=?
-                AND p.platform='youtube'
-                AND p.status='PUBLISHED'
-                AND COALESCE(NULLIF(p.youtube_video_id,''),p.platform_video_id,'')!=''
-          )
+        SELECT s.publication_id,s.sync_status,s.last_successful_at,p.published_at
+        FROM youtube_sync_states s
+        JOIN publications p ON p.id=s.publication_id
+        WHERE COALESCE(s.schedule_version,'')<>?
         """,
-        (timestamp, timestamp, timestamp),
-    )
+        (SYNC_SCHEDULE_VERSION,),
+    ).fetchall()
+    if not rows:
+        return
+    timestamp = _iso(current)
+    connection.execute("BEGIN IMMEDIATE")
+    for row in rows:
+        published = _parse_datetime(str(row["published_at"] or ""))
+        if not published:
+            continue
+        first_due = checkpoint_due_at(published, "12h")
+        last_successful = _parse_datetime(str(row["last_successful_at"] or ""))
+        last_completed = ""
+        if last_successful:
+            completed = [
+                stage for stage, delay in POST_PUBLISH_SYNC_CHECKPOINTS
+                if published.astimezone(timezone.utc) + delay <= last_successful.astimezone(timezone.utc)
+            ]
+            last_completed = completed[-1] if completed else ""
+        if last_completed:
+            next_checkpoint_value = next_checkpoint(published, last_completed)
+        else:
+            next_checkpoint_value = initial_checkpoint(published, current)
+        active = str(row["sync_status"] or "") in {"PENDING", "RETRY", "SUCCESS", "PARTIAL", "IN_PROGRESS"}
+        if next_checkpoint_value is None:
+            next_stage = ""
+            next_due = None
+            new_status = "COMPLETE" if active else str(row["sync_status"] or "")
+            completed_at = str(row["last_successful_at"] or timestamp)
+        else:
+            next_stage, next_due_value = next_checkpoint_value
+            next_due = _iso(next_due_value) if active else None
+            new_status = str(row["sync_status"] or "")
+            completed_at = None
+        connection.execute(
+            """
+            UPDATE youtube_sync_states
+            SET first_sync_due_at=?,next_sync_at=?,next_sync_stage=?,last_completed_stage=?,
+                schedule_version=?,schedule_completed_at=?,sync_status=?,lease_owner='',
+                lease_expires_at=NULL,updated_at=?
+            WHERE publication_id=?
+            """,
+            (
+                _iso(first_due), next_due, next_stage, last_completed,
+                SYNC_SCHEDULE_VERSION, completed_at, new_status, timestamp,
+                int(row["publication_id"]),
+            ),
+        )
     connection.commit()
 
 
@@ -208,7 +256,7 @@ def restore_sync_tasks(
         raise ValueError("limit must be between 1 and 1000")
     connection = connect_db(config)
     current_dt = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-    _normalize_pending_data_sync_due(connection, current_dt)
+    _normalize_periodic_sync_schedule(connection, current_dt)
     current = _iso(current_dt)
     rows = connection.execute(
         """
@@ -477,7 +525,7 @@ class YouTubeAnalyticsClient:
 
 def _channel_import_interval_minutes(config: dict[str, Any]) -> int:
     settings = config.get("youtube_analytics", {}) or {}
-    return max(1, int(settings.get("channel_import_interval_minutes") or 5))
+    return max(1, int(settings.get("channel_import_interval_minutes") or 60))
 
 
 def _channel_import_account(config: dict[str, Any], account_id: str) -> dict[str, Any]:
@@ -488,7 +536,7 @@ def _channel_import_account(config: dict[str, Any], account_id: str) -> dict[str
     connection.close()
     if not row:
         raise ValueError("YouTube account is not authorized")
-    if str(row["status"] or "") != "AUTHORIZED":
+    if str(row["status"] or "") not in CHANNEL_IMPORT_ACCOUNT_STATUSES:
         raise YouTubeApiError("YouTube account requires authorization", category="AUTH_REVOKED", retryable=False)
     return dict(row)
 
@@ -624,7 +672,7 @@ def _write_imported_publications(
         ).fetchone()
         connection.close()
         if not has_state:
-            schedule_first_sync(config, publication_id)
+            schedule_first_sync(config, publication_id, now=now)
     return imported_count, publication_ids
 
 
@@ -664,8 +712,6 @@ def import_channel_publications(
         page_ids = [str(value) for value in page.get("video_ids") or [] if str(value)]
         new_ids = [video_id for video_id in page_ids if video_id not in known and video_id not in seen]
         selected_ids = page_ids if not incremental else new_ids
-        if incremental and not selected_ids:
-            break
         details = api.fetch_data_videos(account, selected_ids) if selected_ids else {}
         for video_id in selected_ids:
             seen.add(video_id)
@@ -683,8 +729,6 @@ def import_channel_publications(
                 continue
             discovered.append(video)
         next_page_token = str(page.get("next_page_token") or "")
-        if incremental and any(video_id in known for video_id in page_ids):
-            break
         if not next_page_token or (max_pages is not None and pages >= max_pages):
             break
         page_token = next_page_token
@@ -793,7 +837,8 @@ def run_channel_import_due(
         INSERT OR IGNORE INTO youtube_channel_import_states(
           account_id,channel_id,next_scan_at,sync_status,created_at,updated_at
         )
-        SELECT account,channel_id,?,'PENDING',?,? FROM youtube_channel_auths WHERE status='AUTHORIZED'
+        SELECT account,channel_id,?,'PENDING',?,? FROM youtube_channel_auths
+        WHERE status IN ('AUTHORIZED','ANALYTICS_SCOPE_MISSING')
         """,
         (timestamp, timestamp, timestamp),
     )
@@ -802,7 +847,8 @@ def run_channel_import_due(
     due = connection.execute(
         """
         SELECT s.account_id FROM youtube_channel_import_states s
-        JOIN youtube_channel_auths a ON a.account=s.account_id AND a.status='AUTHORIZED'
+        JOIN youtube_channel_auths a ON a.account=s.account_id
+          AND a.status IN ('AUTHORIZED','ANALYTICS_SCOPE_MISSING')
         WHERE ((s.sync_status IN ('PENDING','RETRY','SUCCESS') AND s.next_scan_at IS NOT NULL AND s.next_scan_at<=?)
           OR (s.sync_status='IN_PROGRESS' AND s.lease_expires_at IS NOT NULL AND s.lease_expires_at<=?))
         ORDER BY s.next_scan_at,s.account_id LIMIT ?
@@ -862,7 +908,7 @@ def channel_import_report(
         if len(account_id) > 128 or not re.fullmatch(r"[A-Za-z0-9_.@-]+", account_id):
             raise ValueError("invalid account_id")
         rows = connection.execute(
-            "SELECT account FROM youtube_channel_auths WHERE account=? AND status='AUTHORIZED'",
+            "SELECT account FROM youtube_channel_auths WHERE account=? AND status IN ('AUTHORIZED','ANALYTICS_SCOPE_MISSING')",
             (account_id,),
         ).fetchall()
         if not rows:
@@ -870,7 +916,7 @@ def channel_import_report(
             raise ValueError("authorized account was not found")
     else:
         rows = connection.execute(
-            "SELECT account FROM youtube_channel_auths WHERE status='AUTHORIZED' ORDER BY account"
+            "SELECT account FROM youtube_channel_auths WHERE status IN ('AUTHORIZED','ANALYTICS_SCOPE_MISSING') ORDER BY account"
         ).fetchall()
     accounts = [str(row[0]) for row in rows]
     connection.close()
@@ -943,10 +989,13 @@ def store_metric_snapshot(config: dict[str, Any], publication_id: int, values: d
         "completion_raw_ratio", "completion_bucket_ratio", "completion_calculation_version",
         "completion_weight_views", "fetched_at", "data_through_date", "data_api_source",
         "analytics_api_source", "retention_source", "api_response_status", "raw_status_json",
+        "sync_stage", "scheduled_for", "schedule_version",
     )
     payload = {field: values.get(field) for field in fields}
     payload["completion_calculation_version"] = str(payload["completion_calculation_version"] or "")
     payload["api_response_status"] = str(payload["api_response_status"] or "UNKNOWN")
+    payload["sync_stage"] = str(payload["sync_stage"] or "")
+    payload["schedule_version"] = str(payload["schedule_version"] or "")
     payload["raw_status_json"] = json.dumps(payload["raw_status_json"] or {}, ensure_ascii=False) if not isinstance(payload["raw_status_json"], str) else payload["raw_status_json"]
     placeholders = ",".join("?" for _ in fields)
     updates = ",".join(f"{field}=excluded.{field}" for field in fields)
@@ -1048,7 +1097,6 @@ def sync_due_once(
     batch_limit = min(50, int(limit or settings.get("batch_size") or 50))
     if batch_limit < 1:
         raise ValueError("limit must be positive")
-    poll_minutes = max(15, int(settings.get("poll_interval_minutes") or 60))
     api = client or YouTubeAnalyticsClient(config)
     claimed = _claim_due_tasks(config, current, batch_limit)
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -1104,20 +1152,29 @@ def sync_due_once(
             analytics = {"analytics_views": None, "share_count": None, "average_view_duration": None, "average_view_percentage": None}
             completion = derive_completion_rate({"rows": []})
             published = _parse_datetime(str(row.get("published_at") or "")) or current
+            sync_stage = str(row.get("next_sync_stage") or "")
+            if not sync_stage:
+                sync_stage, _unused_due = initial_checkpoint(published, current)
+            scheduled_for = checkpoint_due_at(published, sync_stage)
             start_date = published.astimezone(SAO_PAULO).date().isoformat()
             end_day = max(current.astimezone(SAO_PAULO).date() - timedelta(days=1), date.fromisoformat(start_date))
             end_date = end_day.isoformat()
-            analytics_due = _parse_datetime(str(row.get("first_sync_due_at") or "")) or (published + timedelta(hours=24))
+            analytics_due = published.astimezone(timezone.utc) + timedelta(hours=24)
             analytics_ready = current >= analytics_due.astimezone(timezone.utc)
             retention_error: YouTubeApiError | None = None
-            data_through_date: str | None = end_date if analytics_ready else None
+            analytics_fetched = False
+            retention_fetched = False
+            data_through_date: str | None = None
             if api_status == "SUCCESS" and not analytics_ready:
                 api_status = "PARTIAL_ANALYTICS_PENDING_24H"
             elif api_status == "SUCCESS" and has_analytics_scope and analytics_api_enabled:
                 try:
                     analytics = api.fetch_analytics(account, video_id, start_date, end_date)
+                    analytics_fetched = True
+                    data_through_date = end_date
                     try:
                         completion = api.fetch_retention(account, video_id, start_date, end_date)
+                        retention_fetched = True
                     except YouTubeApiError as error:
                         if error.category in {
                             "AUTH_REVOKED", "QUOTA_EXHAUSTED", "RATE_LIMIT",
@@ -1144,7 +1201,7 @@ def sync_due_once(
                     else "PARTIAL_ANALYTICS_API_DISABLED"
                 )
             fetched_at = _iso(current)
-            sync_window = current.replace(minute=0, second=0, microsecond=0).isoformat()
+            sync_window = f"{SYNC_SCHEDULE_VERSION}:{sync_stage}"
             previous = connection.execute(
                 "SELECT * FROM youtube_metric_snapshots WHERE publication_id=? ORDER BY fetched_at DESC,id DESC LIMIT 1",
                 (int(row["publication_id"]),),
@@ -1164,15 +1221,23 @@ def sync_due_once(
                 "fetched_at": fetched_at,
                 "data_through_date": data_through_date,
                 "data_api_source": DATA_API_SOURCE,
-                "analytics_api_source": ANALYTICS_API_SOURCE if analytics_ready and has_analytics_scope and analytics_api_enabled else None,
-                "retention_source": RETENTION_SOURCE if analytics_ready and has_analytics_scope and analytics_api_enabled else None,
+                "analytics_api_source": ANALYTICS_API_SOURCE if analytics_fetched else None,
+                "retention_source": RETENTION_SOURCE if retention_fetched else None,
                 "api_response_status": api_status,
                 "sync_window": sync_window,
+                "sync_stage": sync_stage,
+                "scheduled_for": _iso(scheduled_for),
+                "schedule_version": SYNC_SCHEDULE_VERSION,
                 "raw_status_json": {
                     "analytics_scope": has_analytics_scope,
                     "analytics_api_enabled": analytics_api_enabled,
                     "analytics_ready": analytics_ready,
+                    "analytics_fetched": analytics_fetched,
+                    "retention_fetched": retention_fetched,
                     "first_analytics_due_at": _iso(analytics_due),
+                    "sync_stage": sync_stage,
+                    "scheduled_for": _iso(scheduled_for),
+                    "schedule_version": SYNC_SCHEDULE_VERSION,
                     "decreases": decreases,
                     "retention_error_category": retention_error.category if retention_error else None,
                 },
@@ -1202,7 +1267,16 @@ def sync_due_once(
                     (data.get("thumbnail_url") or "", data.get("privacy_status") or "", fetched_at, row["publication_id"]),
                 )
             sync_status = "SUCCESS" if api_status == "SUCCESS" else "PARTIAL" if api_status.startswith("PARTIAL") else "BLOCKED"
-            next_sync = _iso(current + timedelta(minutes=poll_minutes)) if sync_status in {"SUCCESS", "PARTIAL"} else None
+            stage_completed = sync_status in {"SUCCESS", "PARTIAL"}
+            next_checkpoint_value = next_checkpoint(published, sync_stage) if stage_completed else None
+            next_sync_stage = next_checkpoint_value[0] if next_checkpoint_value else "" if stage_completed else sync_stage
+            next_sync = _iso(next_checkpoint_value[1]) if next_checkpoint_value else None
+            stored_sync_status = (
+                "COMPLETE"
+                if sync_status in {"SUCCESS", "PARTIAL"} and next_checkpoint_value is None
+                else sync_status
+            )
+            schedule_completed_at = fetched_at if stored_sync_status == "COMPLETE" else None
             error_category = ""
             error_summary = ""
             if api_status == "PARTIAL_ANALYTICS_SCOPE_MISSING":
@@ -1226,17 +1300,24 @@ def sync_due_once(
                   last_successful_at=CASE WHEN ? IN ('SUCCESS','PARTIAL') THEN ? ELSE last_successful_at END,
                   next_sync_at=?,
                   retry_count=0,sync_status=?,last_error_category=?,last_error_summary=?,
-                  lease_owner='',lease_expires_at=NULL,backfill_run_id=NULL,updated_at=? WHERE publication_id=?
+                  lease_owner='',lease_expires_at=NULL,backfill_run_id=NULL,updated_at=?,
+                  next_sync_stage=?,last_completed_stage=CASE WHEN ? IN ('SUCCESS','PARTIAL') THEN ? ELSE last_completed_stage END,
+                  schedule_version=?,schedule_completed_at=? WHERE publication_id=?
                 """,
                 (
                     fetched_at,
                     sync_status,
                     fetched_at,
                     next_sync,
-                    sync_status,
+                    stored_sync_status,
                     error_category,
                     error_summary,
                     fetched_at,
+                    next_sync_stage,
+                    sync_status,
+                    sync_stage,
+                    SYNC_SCHEDULE_VERSION,
+                    schedule_completed_at,
                     row["publication_id"],
                 ),
             )
@@ -1245,7 +1326,12 @@ def sync_due_once(
                 successful += 1
             else:
                 failed += 1
-            results.append({"publication_id": row["publication_id"], "snapshot_id": snapshot_id, "status": sync_status})
+            results.append({
+                "publication_id": row["publication_id"],
+                "snapshot_id": snapshot_id,
+                "status": stored_sync_status,
+                "sync_stage": sync_stage,
+            })
     connection.execute(
         """
         UPDATE youtube_backfill_runs
@@ -1419,6 +1505,7 @@ def analytics_ranking(
                s.completion_raw_ratio,s.completion_bucket_ratio,s.completion_calculation_version,
                s.fetched_at,s.data_through_date,s.api_response_status,
                st.sync_status,st.last_attempted_at,st.last_successful_at,st.next_sync_at,
+               st.next_sync_stage,st.last_completed_stage,st.schedule_version,st.schedule_completed_at,
                st.last_error_category,st.last_error_summary
         FROM publications p
         LEFT JOIN latest s ON s.publication_id=p.id
@@ -1487,16 +1574,19 @@ def retry_publication_sync(config: dict[str, Any], publication_id: int, *, now: 
     connection = connect_db(config)
     row = connection.execute("SELECT * FROM youtube_sync_states WHERE publication_id=?", (int(publication_id),)).fetchone()
     if not row:
-        schedule_first_sync(config, int(publication_id))
+        schedule_first_sync(config, int(publication_id), now=now)
+        connection = connect_db(config)
+        row = connection.execute("SELECT * FROM youtube_sync_states WHERE publication_id=?", (int(publication_id),)).fetchone()
     timestamp = _iso(now or datetime.now(timezone.utc))
+    retry_stage = str(row["next_sync_stage"] or row["last_completed_stage"] or "12h")
     cursor = connection.execute(
         """
         UPDATE youtube_sync_states SET sync_status='PENDING',next_sync_at=?,retry_count=0,
           last_error_category='',last_error_summary='',lease_owner='',lease_expires_at=NULL,
-          backfill_run_id=NULL,updated_at=?
+          backfill_run_id=NULL,next_sync_stage=?,schedule_completed_at=NULL,updated_at=?
         WHERE publication_id=? AND sync_status!='IN_PROGRESS'
         """,
-        (timestamp, timestamp, int(publication_id)),
+        (timestamp, retry_stage, timestamp, int(publication_id)),
     )
     connection.commit()
     if not cursor.rowcount:
@@ -1506,7 +1596,7 @@ def retry_publication_sync(config: dict[str, Any], publication_id: int, *, now: 
 
 def _backfill_candidates(config: dict[str, Any], now: datetime) -> list[dict[str, Any]]:
     connection = connect_db(config)
-    cutoff = _iso(now - timedelta(hours=24))
+    cutoff = _iso(now - timedelta(hours=12))
     rows = connection.execute(
         """
         SELECT p.*,a.scopes,a.channel_title
@@ -1585,20 +1675,25 @@ def backfill_report(
         published = _parse_datetime(str(row.get("published_at") or ""))
         if not published:
             continue
-        first_due = published.astimezone(timezone.utc) + timedelta(hours=24)
+        first_due = checkpoint_due_at(published, "12h")
+        initial_stage, _initial_due = initial_checkpoint(published, current)
         connection.execute(
             """
             INSERT INTO youtube_sync_states(
               publication_id,account_id,backfill_run_id,first_sync_due_at,next_sync_at,
-              sync_status,created_at,updated_at
-            ) VALUES(?,?,?,?,?,'PENDING',?,?)
+              sync_status,next_sync_stage,schedule_version,created_at,updated_at
+            ) VALUES(?,?,?,?,?,'PENDING',?,?,?,?)
             ON CONFLICT(publication_id) DO UPDATE SET
               account_id=excluded.account_id,backfill_run_id=excluded.backfill_run_id,
               next_sync_at=excluded.next_sync_at,sync_status='PENDING',retry_count=0,
-              last_error_category='',last_error_summary='',updated_at=excluded.updated_at
+              next_sync_stage=excluded.next_sync_stage,schedule_version=excluded.schedule_version,
+              schedule_completed_at=NULL,last_error_category='',last_error_summary='',updated_at=excluded.updated_at
             WHERE youtube_sync_states.sync_status!='IN_PROGRESS'
             """,
-            (row["id"], account_id, run_id, _iso(first_due), _iso(due), timestamp, timestamp),
+            (
+                row["id"], account_id, run_id, _iso(first_due), _iso(due),
+                initial_stage, SYNC_SCHEDULE_VERSION, timestamp, timestamp,
+            ),
         )
         if not row.get("published_local_at"):
             connection.execute(

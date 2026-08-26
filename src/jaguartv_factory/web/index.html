@@ -161,7 +161,7 @@
           <div>
             <p class="eyebrow">YOUTUBE GROWTH</p>
             <h2 id="youtubeGrowthTitle">发布后数据与增长分析</h2>
-            <p class="muted">已授权频道的公开视频每60分钟自动导入并更新；平台数据存在处理延迟，统计按视频在圣保罗的公开发布时间筛选。</p>
+            <p class="muted">已授权频道的全部公开视频（含 Shorts 和长视频）会自动导入，并在发布后 12 小时、24 小时、3 天、7 天四个观察点回传数据；平台数据存在处理延迟。</p>
           </div>
           <span class="muted" id="youtubeGrowthFreshness">正在加载数据新鲜度</span>
         </div>
@@ -191,6 +191,7 @@
               <option value="average_view_duration">平均观看时长</option>
               <option value="completion_rate">完播率估算</option>
               <option value="shares">分享数量</option>
+              <option value="published_at">最新发布时间</option>
             </select>
           </label>
           <button class="primary-button" type="submit">应用筛选</button>
@@ -199,7 +200,7 @@
         <p class="youtube-completion-note">完播率是基于视频末段留存的完播率估算。由于存在重复观看，原始 audienceWatchRatio 及估算结果可能超过 100%，系统不会截断原始值；留存不可用时显示“暂不可用”。观看数遵循 YouTube Data API 当前口径，Shorts 的开始播放与重播可计入观看数。</p>
 
         <div class="section-heading youtube-ranking-heading">
-          <div><p class="eyebrow">VIDEO RANKING</p><h2>系统发布视频排行榜</h2></div>
+          <div><p class="eyebrow">VIDEO RANKING</p><h2>授权频道视频排行榜</h2></div>
           <span class="muted" id="youtubeGrowthPageStatus"></span>
         </div>
         <div class="youtube-growth-state" id="youtubeGrowthLoading">正在加载 YouTube 数据</div>
@@ -567,6 +568,6 @@
   </dialog>
 
   <div class="toast" id="toast" role="status"></div>
-  <script src="/app.js?v=20260825-publication-cancel-v1"></script>
+  <script src="/app.js?v=20260826-youtube-four-stage-v1"></script>
 </body>
 </html>

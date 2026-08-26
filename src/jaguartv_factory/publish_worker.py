@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
+from .analytics_schedule import POST_PUBLISH_SYNC_SCHEDULE_VERSION
 from .core import append_event, connect_db, now_iso
 from .publisher import parse_datetime, publishing_timezone
 from .youtube_publisher import upload_youtube_publication
@@ -152,7 +153,7 @@ def publish_due_once(
             published_utc = published_dt.astimezone(timezone.utc)
             timezone_name = str(publication.get("timezone") or publishing_timezone(config, None))
             published_local = published_utc.astimezone(ZoneInfo(timezone_name)).isoformat()
-            first_sync_due = (published_utc + timedelta(hours=24)).isoformat()
+            first_sync_due = (published_utc + timedelta(hours=12)).isoformat()
             discovered_category, discovered_keyword = _publication_source_metadata(
                 connection, str(publication["candidate_id"])
             )
@@ -213,13 +214,15 @@ def publish_due_once(
                 connection.execute(
                     """
                     INSERT INTO youtube_sync_states(
-                      publication_id,account_id,first_sync_due_at,next_sync_at,sync_status,created_at,updated_at
-                    ) VALUES(?,?,?,?,?,?,?)
+                      publication_id,account_id,first_sync_due_at,next_sync_at,sync_status,
+                      next_sync_stage,schedule_version,created_at,updated_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(publication_id) DO NOTHING
                     """,
                     (
                         publication["id"], account_id, first_sync_due, first_sync_due,
-                        "PENDING", published_at, published_at,
+                        "PENDING", "12h", POST_PUBLISH_SYNC_SCHEDULE_VERSION,
+                        published_at, published_at,
                     ),
                 )
             connection.commit()

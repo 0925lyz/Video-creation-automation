@@ -352,6 +352,6 @@ tracking:
 
 youtube_analytics:
   poll_interval_minutes: 60
-  channel_import_interval_minutes: 5
+  channel_import_interval_minutes: 60
   batch_size: 50
   backfill_rate_limit_per_minute: 6

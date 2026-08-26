@@ -175,6 +175,10 @@ def test_growth_dashboard_key_flow_desktop_and_mobile(tmp_path: Path):
             assert "Primeiro video" in page.locator("#youtubeRankingBody").inner_text()
             assert_no_page_overflow_or_filter_overlap(page)
 
+            page.locator("#youtubeGrowthMetric").select_option("published_at")
+            page.wait_for_function("document.querySelector('#youtubeRankingBody tr:first-child')?.innerText.includes('Segundo video')")
+            page.locator("#youtubeGrowthMetric").select_option("views")
+            page.wait_for_function("document.querySelector('#youtubeRankingBody tr:first-child')?.innerText.includes('Primeiro video')")
             page.locator("#youtubeGrowthMetric").select_option("comments")
             page.wait_for_function("document.querySelector('#youtubeRankingBody tr:first-child')?.innerText.includes('Segundo video')")
 

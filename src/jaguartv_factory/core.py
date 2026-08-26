@@ -509,6 +509,9 @@ def _connect_db_unlocked(config: dict[str, Any]) -> sqlite3.Connection:
           retention_source TEXT,
           api_response_status TEXT NOT NULL,
           raw_status_json TEXT NOT NULL DEFAULT '{}',
+          sync_stage TEXT NOT NULL DEFAULT '',
+          scheduled_for TEXT,
+          schedule_version TEXT NOT NULL DEFAULT '',
           UNIQUE(publication_id,sync_window)
         );
         CREATE TABLE IF NOT EXISTS youtube_sync_states (
@@ -525,6 +528,10 @@ def _connect_db_unlocked(config: dict[str, Any]) -> sqlite3.Connection:
           last_error_summary TEXT NOT NULL DEFAULT '',
           lease_owner TEXT NOT NULL DEFAULT '',
           lease_expires_at TEXT,
+          next_sync_stage TEXT NOT NULL DEFAULT '',
+          last_completed_stage TEXT NOT NULL DEFAULT '',
+          schedule_version TEXT NOT NULL DEFAULT '',
+          schedule_completed_at TEXT,
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
         );
@@ -714,8 +721,27 @@ def _connect_db_unlocked(config: dict[str, Any]) -> sqlite3.Connection:
     youtube_sync_columns = {
         str(row["name"]) for row in connection.execute("PRAGMA table_info(youtube_sync_states)")
     }
-    if "backfill_run_id" not in youtube_sync_columns:
-        connection.execute("ALTER TABLE youtube_sync_states ADD COLUMN backfill_run_id INTEGER")
+    youtube_sync_column_sql = {
+        "backfill_run_id": "ALTER TABLE youtube_sync_states ADD COLUMN backfill_run_id INTEGER",
+        "next_sync_stage": "ALTER TABLE youtube_sync_states ADD COLUMN next_sync_stage TEXT NOT NULL DEFAULT ''",
+        "last_completed_stage": "ALTER TABLE youtube_sync_states ADD COLUMN last_completed_stage TEXT NOT NULL DEFAULT ''",
+        "schedule_version": "ALTER TABLE youtube_sync_states ADD COLUMN schedule_version TEXT NOT NULL DEFAULT ''",
+        "schedule_completed_at": "ALTER TABLE youtube_sync_states ADD COLUMN schedule_completed_at TEXT",
+    }
+    for column, statement in youtube_sync_column_sql.items():
+        if column not in youtube_sync_columns:
+            connection.execute(statement)
+    youtube_snapshot_columns = {
+        str(row["name"]) for row in connection.execute("PRAGMA table_info(youtube_metric_snapshots)")
+    }
+    youtube_snapshot_column_sql = {
+        "sync_stage": "ALTER TABLE youtube_metric_snapshots ADD COLUMN sync_stage TEXT NOT NULL DEFAULT ''",
+        "scheduled_for": "ALTER TABLE youtube_metric_snapshots ADD COLUMN scheduled_for TEXT",
+        "schedule_version": "ALTER TABLE youtube_metric_snapshots ADD COLUMN schedule_version TEXT NOT NULL DEFAULT ''",
+    }
+    for column, statement in youtube_snapshot_column_sql.items():
+        if column not in youtube_snapshot_columns:
+            connection.execute(statement)
     poster_columns = {
         str(row["name"]) for row in connection.execute("PRAGMA table_info(posters)")
     }
@@ -837,6 +863,12 @@ def _connect_db_unlocked(config: dict[str, Any]) -> sqlite3.Connection:
     )
     connection.execute(
         "CREATE INDEX IF NOT EXISTS youtube_sync_backfill ON youtube_sync_states(backfill_run_id,sync_status,next_sync_at)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS youtube_sync_stage ON youtube_sync_states(schedule_version,next_sync_stage,next_sync_at)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS youtube_snapshots_stage ON youtube_metric_snapshots(publication_id,schedule_version,sync_stage)"
     )
     connection.execute(
         "CREATE INDEX IF NOT EXISTS youtube_channel_import_due ON youtube_channel_import_states(sync_status,next_scan_at,account_id)"

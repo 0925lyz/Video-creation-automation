@@ -1324,10 +1324,15 @@ function youtubeSyncStatus(value) {
     IN_PROGRESS: "同步中",
     SUCCESS: "同步成功",
     PARTIAL: "部分数据",
+    COMPLETE: "四次回传完成",
     RETRY: "等待重试",
     BLOCKED: "暂不可用",
     NEEDS_REAUTH: "需要重新授权",
   }[value] || value || "尚未调度";
+}
+
+function youtubeSyncStage(value) {
+  return { "12h": "12 小时", "24h": "24 小时", "3d": "3 天", "7d": "7 天" }[value] || value || "";
 }
 
 function youtubeGrowthQuery() {
@@ -1405,7 +1410,7 @@ function renderYouTubeRanking(payload) {
       <td title="原始秒数：${item.average_view_duration ?? "暂无数据"}">${youtubeDuration(item.average_view_duration)}</td>
       <td title="末段桶 ${item.completion_bucket_ratio ?? "暂不可用"} · 原始比例 ${item.completion_raw_ratio ?? "暂不可用"}">${youtubePercentage(item.completion_rate, true)}</td>
       <td>${ptBRNumber(item.share_count)}</td>
-      <td><span>最后请求：${saoPauloDateTime(item.last_attempted_at)}</span><small>Analytics 截至：${escapeHtml(item.data_through_date || "暂无数据")} · 下次：${saoPauloDateTime(item.next_sync_at)}</small></td>
+      <td><span>最后请求：${saoPauloDateTime(item.last_attempted_at)}</span><small>Analytics 截至：${escapeHtml(item.data_through_date || "暂无数据")} · ${item.next_sync_at ? `下次 ${escapeHtml(youtubeSyncStage(item.next_sync_stage))}：${saoPauloDateTime(item.next_sync_at)}` : item.sync_status === "COMPLETE" ? "周期回传已结束" : "暂无下次计划"}</small></td>
       <td><span class="status-pill ${statusClass(item.sync_status)}">${escapeHtml(youtubeSyncStatus(item.sync_status))}</span>${error}</td>
     </tr>`;
   }).join("");
