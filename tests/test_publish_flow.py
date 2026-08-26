@@ -584,6 +584,7 @@ def test_inventory_uses_compact_rows_and_concise_publication_status():
 
 
 def test_x_account_controls_use_real_accounts_without_content_roles():
+    html = Path("src/jaguartv_factory/web/index.html").read_text(encoding="utf-8")
     javascript = Path("src/jaguartv_factory/web/app.js").read_text(encoding="utf-8")
 
     assert "const xAccountSlots" in javascript
@@ -591,3 +592,6 @@ def test_x_account_controls_use_real_accounts_without_content_roles():
     assert "JaguarTV Futebol" not in javascript
     assert 'username ? `@${item.username}`' in javascript
     assert " · ${escapeHtml(item.status" not in javascript
+    assert 'id="xAuthVerifyAll"' in html
+    assert 'data-x-auth-action="start"' in javascript
+    assert 'action: "verify_all"' in javascript

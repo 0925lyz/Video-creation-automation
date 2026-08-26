@@ -143,13 +143,10 @@
       </div>
       <section class="settings-panel auth-panel">
         <div class="section-heading compact">
-          <div><p class="eyebrow">X AUTHORIZATION</p><h2>X 账号授权中心</h2><p>每个账号单独授权；授权后核对 X User ID，再确认可发布。</p></div>
-          <form id="xAuthForm" class="inline-auth-form">
-            <select id="xAuthAccount" required></select>
-            <button class="secondary-button" type="submit">发起 X 授权</button>
-          </form>
+          <div><p class="eyebrow">X AUTHORIZATION</p><h2>X 账号授权中心</h2><p>8 个账号分别授权；系统校验真实 X User ID、视频上传权限和长期刷新权限。</p></div>
+          <button class="secondary-button" id="xAuthVerifyAll" type="button">检测全部账号</button>
         </div>
-        <div class="table-wrap"><table><thead><tr><th>账号配置</th><th>X 账号</th><th>User ID</th><th>权限</th><th>状态</th><th>更新时间</th><th></th></tr></thead><tbody id="xAuthTable"></tbody></table></div>
+        <div class="table-wrap"><table><thead><tr><th>授权位</th><th>X 账号</th><th>User ID</th><th>权限</th><th>状态</th><th>更新时间</th><th></th></tr></thead><tbody id="xAuthTable"></tbody></table></div>
       </section>
       <div class="section-heading"><div><p class="eyebrow">QUEUE</p><h2>发布任务</h2></div></div>
       <div class="table-wrap"><table><thead><tr><th>内容</th><th>平台</th><th>账号</th><th>计划时间</th><th>状态</th></tr></thead><tbody id="publicationTable"></tbody></table></div>

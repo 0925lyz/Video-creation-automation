@@ -1246,21 +1246,11 @@ function authStatusLabel(status) {
 }
 
 function renderXAuths() {
-  const accountSelect = document.querySelector("#xAuthAccount");
   const byAccount = new Map(state.xAuths.map((item) => [item.account, item]));
-  if (accountSelect) {
-    const selected = accountSelect.value;
-    accountSelect.innerHTML = xAccountSlots.map((id, index) => {
-      const item = byAccount.get(id);
-      const username = String(item?.username || "").trim();
-      const label = username ? `@${username}` : `X 账号 ${index + 1}`;
-      return `<option value="${id}">${escapeHtml(label)}</option>`;
-    }).join("");
-    if (xAccountSlots.includes(selected)) accountSelect.value = selected;
-  }
   const rows = xAccountSlots.map((id, index) => {
     const item = byAccount.get(id) || { account: id, status: "", username: "", x_user_id: "", scopes: "", updated_at: "" };
     const isPending = item.status === "PENDING_CONFIRMATION";
+    const isAuthorized = item.status === "AUTHORIZED";
     const canRevoke = item.status === "AUTHORIZED" || item.status === "PENDING_CONFIRMATION" || item.status === "NEEDS_REAUTH";
     return `
       <tr>
@@ -1271,7 +1261,9 @@ function renderXAuths() {
         <td><span class="status-pill ${statusClass(item.status || "FAILED")}">${escapeHtml(authStatusLabel(item.status))}</span></td>
         <td>${dateText(item.updated_at || item.authorized_at)}</td>
         <td class="table-actions">
+          <button class="secondary-button tiny-button" data-x-auth-action="start" data-account="${id}" type="button">${item.username ? "重新授权" : "发起授权"}</button>
           ${isPending ? `<button class="secondary-button tiny-button" data-x-auth-action="confirm" data-account="${id}" type="button">确认</button>` : ""}
+          ${isAuthorized ? `<button class="secondary-button tiny-button" data-x-auth-action="verify" data-account="${id}" type="button">检测</button>` : ""}
           ${canRevoke ? `<button class="secondary-button danger-button tiny-button" data-x-auth-action="revoke" data-account="${id}" type="button">撤销</button>` : ""}
         </td>
       </tr>
@@ -2867,22 +2859,43 @@ document.querySelector("#scheduleForm").addEventListener("submit", async (event)
   } catch (error) { toast(error.message, "error"); }
 });
 
-document.querySelector("#xAuthForm").addEventListener("submit", (event) => {
-  event.preventDefault();
-  const account = document.querySelector("#xAuthAccount").value || "consumer_main";
-  window.open(`/oauth/x/start?account=${encodeURIComponent(account)}`, "_blank", "noopener");
-  toast("已打开 X 授权页面；完成后回到这里刷新并确认账号");
-});
-
 document.querySelector("#xAuthTable").addEventListener("click", async (event) => {
   const button = event.target.closest("[data-x-auth-action]");
   if (!button) return;
   const action = button.dataset.xAuthAction;
   const account = button.dataset.account;
+  if (action === "start") {
+    window.open(`/oauth/x/start?account=${encodeURIComponent(account)}`, "_blank", "noopener");
+    toast("已打开该账号的 X 授权页面");
+    return;
+  }
   button.disabled = true;
   try {
-    await api("/api/x-auths", { method: "POST", body: JSON.stringify({ account, action }) });
-    toast(action === "confirm" ? "X 账号已确认，可发布" : "X 授权已撤销");
+    const result = await api("/api/x-auths", { method: "POST", body: JSON.stringify({ account, action }) });
+    if (action === "confirm") {
+      const verification = await api("/api/x-auths", { method: "POST", body: JSON.stringify({ account, action: "verify" }) });
+      if (verification.verified !== 1) throw new Error(verification.results?.[0]?.reason || "X 发布权限检测失败");
+      toast("X 账号已确认，Token 刷新成功，可发布视频");
+    } else if (action === "verify") {
+      toast(result.verified === 1 ? "X Token 刷新成功，可发布视频" : result.results?.[0]?.reason || "X 账号检测失败", result.verified === 1 ? "ok" : "error");
+    } else {
+      toast("X 授权已撤销");
+    }
+    state.xAuths = await api("/api/x-auths");
+    renderXAuths();
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    button.disabled = false;
+  }
+});
+
+document.querySelector("#xAuthVerifyAll").addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  try {
+    const result = await api("/api/x-auths", { method: "POST", body: JSON.stringify({ action: "verify_all" }) });
+    toast(`X 账号检测完成：${result.verified}/8 可发布`, result.verified === 8 ? "ok" : "error");
     state.xAuths = await api("/api/x-auths");
     renderXAuths();
   } catch (error) {

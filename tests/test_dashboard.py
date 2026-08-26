@@ -35,6 +35,7 @@ from jaguartv_factory.dashboard import (
     signed_upload_url,
     upload_kind_requires_token,
     update_x_auth,
+    verify_x_auths,
     x_auth_rows,
     x_oauth_start_url,
     sign_youtube_auth_link,
@@ -1011,9 +1012,9 @@ def test_x_oauth_start_url_uses_pkce_and_expected_scopes(tmp_path: Path, monkeyp
     assert query["redirect_uri"] == ["https://factory.jarg.top/oauth/x/callback"]
     assert query["code_challenge_method"] == ["S256"]
     assert "tweet.write" in query["scope"][0]
-    assert "media.write" not in query["scope"][0]
+    assert "media.write" in query["scope"][0]
     assert "offline.access" in query["scope"][0]
-    assert "scope=tweet.read%20users.read%20tweet.write%20offline.access" in url
+    assert "scope=tweet.read%20users.read%20tweet.write%20media.write%20offline.access" in url
     connection = connect_db(config)
     row = connection.execute("SELECT account,code_verifier FROM x_oauth_states WHERE state=?", (query["state"][0],)).fetchone()
     assert row["account"] == "consumer_football"
@@ -1030,6 +1031,15 @@ def test_x_oauth_start_url_can_use_configured_scopes(tmp_path: Path, monkeypatch
     query = parse_qs(urlparse(url).query)
 
     assert query["scope"] == ["tweet.read users.read tweet.write media.write offline.access"]
+
+
+def test_x_oauth_start_rejects_unknown_account_slot(tmp_path: Path, monkeypatch):
+    config = dashboard_config(tmp_path)
+    monkeypatch.setenv("JAGUARTV_X_CLIENT_ID", "x-client-id")
+    monkeypatch.setenv("JAGUARTV_OAUTH_TOKEN_KEY", "token-encryption-key")
+
+    with pytest.raises(ValueError, match="unknown X account slot"):
+        x_oauth_start_url(config, "unexpected-account")
 
 
 def test_x_auth_rows_creates_missing_auth_table(tmp_path: Path):
@@ -1084,6 +1094,48 @@ def test_x_oauth_callback_saves_pending_confirmation_without_plain_tokens(tmp_pa
     assert "x-refresh-token-secret" not in row["encrypted_refresh_token"]
 
 
+def test_x_oauth_callback_refreshes_existing_slot_instead_of_creating_duplicate(tmp_path: Path, monkeypatch):
+    config = dashboard_config(tmp_path)
+    monkeypatch.setenv("JAGUARTV_X_CLIENT_ID", "x-client-id")
+    monkeypatch.setenv("JAGUARTV_OAUTH_TOKEN_KEY", "token-encryption-key")
+    timestamp = now_iso()
+    connection = connect_db(config)
+    connection.execute(
+        """
+        INSERT INTO x_account_auths(
+          account,x_user_id,username,display_name,scopes,encrypted_access_token,
+          encrypted_refresh_token,status,authorized_at,confirmed_at,updated_at
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            "consumer_main", "same-user", "same", "Same", "tweet.write media.write offline.access",
+            "old-access", "old-refresh", "AUTHORIZED", timestamp, timestamp, timestamp,
+        ),
+    )
+    connection.commit()
+    state = parse_qs(urlparse(x_oauth_start_url(config, "consumer_guide")).query)["state"][0]
+    monkeypatch.setattr(
+        "jaguartv_factory.dashboard.post_form_json",
+        lambda *args, **kwargs: {
+            "access_token": "new-access",
+            "refresh_token": "new-refresh",
+            "scope": "tweet.read users.read tweet.write media.write offline.access",
+        },
+    )
+    monkeypatch.setattr(
+        "jaguartv_factory.dashboard.get_authorized_x_user",
+        lambda access_token: {"x_user_id": "same-user", "username": "same", "display_name": "Same"},
+    )
+
+    result = save_x_oauth_callback(config, {"code": ["code"], "state": [state]})
+
+    rows = x_auth_rows(config)
+    assert result["account"] == "consumer_main"
+    assert result["duplicate"] is True
+    assert [row["account"] for row in rows] == ["consumer_main"]
+    assert rows[0]["status"] == "AUTHORIZED"
+
+
 def test_x_auth_can_be_confirmed_and_revoked(tmp_path: Path, monkeypatch):
     config = dashboard_config(tmp_path)
     monkeypatch.setenv("JAGUARTV_X_CLIENT_ID", "x-client-id")
@@ -1099,7 +1151,7 @@ def test_x_auth_can_be_confirmed_and_revoked(tmp_path: Path, monkeypatch):
         """,
         (
             "consumer_main", "42", "JaguarTVHoje", "JaguarTV Hoje",
-            "tweet.write offline.access", "encrypted-access", "encrypted-refresh",
+            "tweet.write media.write offline.access", "encrypted-access", "encrypted-refresh",
             "bearer", 7200, "PENDING_CONFIRMATION", timestamp, timestamp,
         ),
     )
@@ -1112,6 +1164,89 @@ def test_x_auth_can_be_confirmed_and_revoked(tmp_path: Path, monkeypatch):
     row = connect_db(config).execute("SELECT encrypted_access_token,encrypted_refresh_token FROM x_account_auths WHERE account='consumer_main'").fetchone()
     assert row["encrypted_access_token"] == ""
     assert row["encrypted_refresh_token"] == ""
+
+
+def test_x_auth_confirmation_rejects_missing_publish_scope(tmp_path: Path, monkeypatch):
+    config = dashboard_config(tmp_path)
+    timestamp = now_iso()
+    connection = connect_db(config)
+    connection.execute(
+        """
+        INSERT INTO x_account_auths(
+          account,x_user_id,username,display_name,scopes,encrypted_access_token,
+          encrypted_refresh_token,status,authorized_at,updated_at
+        ) VALUES(?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            "consumer_guide", "x-1", "guide", "Guide", "tweet.write offline.access",
+            "encrypted-access", "encrypted-refresh", "PENDING_CONFIRMATION", timestamp, timestamp,
+        ),
+    )
+    connection.commit()
+
+    with pytest.raises(ValueError, match="media.write"):
+        update_x_auth(config, {"account": "consumer_guide", "action": "confirm"})
+
+
+def test_x_auth_confirmation_rejects_duplicate_authorized_user(tmp_path: Path):
+    config = dashboard_config(tmp_path)
+    timestamp = now_iso()
+    connection = connect_db(config)
+    for account, status, confirmed_at in (
+        ("consumer_main", "AUTHORIZED", timestamp),
+        ("consumer_guide", "PENDING_CONFIRMATION", ""),
+    ):
+        connection.execute(
+            """
+            INSERT INTO x_account_auths(
+              account,x_user_id,username,display_name,scopes,encrypted_access_token,
+              encrypted_refresh_token,status,authorized_at,confirmed_at,updated_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                account, "same-user", "same", "Same", "tweet.write media.write offline.access",
+                "encrypted-access", "encrypted-refresh", status, timestamp, confirmed_at, timestamp,
+            ),
+        )
+    connection.commit()
+
+    with pytest.raises(ValueError, match="already authorized"):
+        update_x_auth(config, {"account": "consumer_guide", "action": "confirm"})
+
+
+def test_verify_x_auths_refreshes_every_authorized_account(tmp_path: Path, monkeypatch):
+    config = dashboard_config(tmp_path)
+    timestamp = now_iso()
+    connection = connect_db(config)
+    for account, user_id in (("consumer_main", "x-1"), ("consumer_football", "x-2")):
+        connection.execute(
+            """
+            INSERT INTO x_account_auths(
+              account,x_user_id,username,display_name,scopes,encrypted_access_token,
+              encrypted_refresh_token,status,authorized_at,confirmed_at,updated_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                account, user_id, account, account, "tweet.write media.write offline.access",
+                "encrypted-access", "encrypted-refresh", "AUTHORIZED", timestamp, timestamp, timestamp,
+            ),
+        )
+    connection.commit()
+    refreshed = []
+    monkeypatch.setattr(
+        "jaguartv_factory.x_publisher.x_access_token",
+        lambda _config, account: refreshed.append(account) or {"username": account, "source": "oauth_refresh"},
+    )
+
+    result = verify_x_auths(config)
+
+    assert refreshed == ["consumer_main", "consumer_football"]
+    assert result["verified"] == 2
+    assert result["failed"] == 6
+    by_account = {item["account"]: item for item in result["results"]}
+    assert by_account["consumer_main"]["status"] == "AVAILABLE"
+    assert by_account["consumer_football"]["status"] == "AVAILABLE"
+    assert by_account["consumer_guide"]["status"] == "UNAVAILABLE"
 
 
 def test_render_job_rows_include_candidate_title_and_metadata(tmp_path: Path):

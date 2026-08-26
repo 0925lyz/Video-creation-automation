@@ -265,7 +265,7 @@ GOOGLE_OAUTH_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 YOUTUBE_CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels"
 YOUTUBE_AUTH_LINK_MAX_TTL_SECONDS = 7 * 24 * 3600
-DEFAULT_X_OAUTH_SCOPES = ("tweet.read", "users.read", "tweet.write", "offline.access")
+DEFAULT_X_OAUTH_SCOPES = ("tweet.read", "users.read", "tweet.write", "media.write", "offline.access")
 X_OAUTH_AUTH_URL = "https://x.com/i/oauth2/authorize"
 X_OAUTH_TOKEN_URL = "https://api.x.com/2/oauth2/token"
 X_USERS_ME_URL = "https://api.x.com/2/users/me"
@@ -290,6 +290,17 @@ ACCOUNT_ALIASES = {
     "partner_academia": "partner_academia",
     "academia jaguartv": "partner_academia",
 }
+X_ACCOUNT_SLOTS = (
+    "consumer_main",
+    "consumer_football",
+    "consumer_guide",
+    "consumer_entertainment",
+    "partner_main",
+    "partner_embaixador",
+    "partner_revendedor",
+    "partner_academia",
+)
+X_REQUIRED_PUBLISH_SCOPES = {"tweet.write", "media.write", "offline.access"}
 YOUTUBE_SOURCE_BLOCKED_ACCOUNTS = {*YOUTUBE_SOURCE_BLOCKED_ACCOUNTS, "jaguartv_vivo"}
 SOURCE_MEDIA_SUFFIXES = {".mp4", ".mkv", ".webm", ".mov", ".m4v"}
 PRODUCTION_RUNNING_STATUS = "PRODUCTION_RUNNING"
@@ -2010,6 +2021,8 @@ def pkce_code_challenge(verifier: str) -> str:
 
 def make_x_oauth_state(config: dict[str, Any], account: str) -> dict[str, str]:
     account_id = canonical_account_id(account or "consumer_main")
+    if account_id not in X_ACCOUNT_SLOTS:
+        raise ValueError(f"unknown X account slot: {account_id}")
     state = secrets.token_urlsafe(32)
     verifier = secrets.token_urlsafe(64)[:96]
     scopes = " ".join(x_oauth_scopes())
@@ -2130,58 +2143,85 @@ def save_x_oauth_callback(config: dict[str, Any], query: dict[str, list[str]]) -
     scopes = str(token.get("scope") or state["scopes"] or " ".join(x_oauth_scopes()))
     ensure_oauth_tables(config)
     connection = connect_db(config)
-    connection.execute(
-        """
-        INSERT INTO x_account_auths(
-          account,x_user_id,username,display_name,scopes,encrypted_access_token,
-          encrypted_refresh_token,token_type,expires_in,expires_at,status,
-          authorized_at,confirmed_at,revoked_at,updated_at,metadata_json
-        )
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(account) DO UPDATE SET
-          x_user_id=excluded.x_user_id,
-          username=excluded.username,
-          display_name=excluded.display_name,
-          scopes=excluded.scopes,
-          encrypted_access_token=excluded.encrypted_access_token,
-          encrypted_refresh_token=excluded.encrypted_refresh_token,
-          token_type=excluded.token_type,
-          expires_in=excluded.expires_in,
-          expires_at=excluded.expires_at,
-          status=excluded.status,
-          authorized_at=excluded.authorized_at,
-          confirmed_at='',
-          revoked_at='',
-          updated_at=excluded.updated_at,
-          metadata_json=excluded.metadata_json
-        """,
-        (
-            state["account"],
-            user["x_user_id"],
-            user["username"],
-            user["display_name"],
-            scopes,
-            encrypt_oauth_secret(access_token),
-            encrypt_oauth_secret(refresh_token),
-            str(token.get("token_type") or ""),
-            expires_in,
-            expires_at,
-            "PENDING_CONFIRMATION",
-            timestamp,
-            "",
-            "",
-            timestamp,
-            json.dumps({"provider": "x_oauth_pkce", "redirect_uri": state["redirect_uri"]}, ensure_ascii=False),
-        ),
+    encrypted_access = encrypt_oauth_secret(access_token)
+    encrypted_refresh = encrypt_oauth_secret(refresh_token)
+    metadata_json = json.dumps(
+        {"provider": "x_oauth_pkce", "redirect_uri": state["redirect_uri"]},
+        ensure_ascii=False,
     )
+    duplicate = connection.execute(
+        """
+        SELECT account,status,confirmed_at
+        FROM x_account_auths
+        WHERE x_user_id=? AND account<>?
+        ORDER BY CASE status WHEN 'AUTHORIZED' THEN 0 WHEN 'PENDING_CONFIRMATION' THEN 1 ELSE 2 END,
+                 updated_at DESC
+        LIMIT 1
+        """,
+        (user["x_user_id"], state["account"]),
+    ).fetchone()
+    result_account = state["account"]
+    result_status = "PENDING_CONFIRMATION"
+    if duplicate:
+        result_account = str(duplicate["account"] or "")
+        result_status = "AUTHORIZED" if str(duplicate["status"] or "") == "AUTHORIZED" else "PENDING_CONFIRMATION"
+        confirmed_at = str(duplicate["confirmed_at"] or "") if result_status == "AUTHORIZED" else ""
+        connection.execute(
+            """
+            UPDATE x_account_auths
+            SET username=?,display_name=?,scopes=?,encrypted_access_token=?,encrypted_refresh_token=?,
+                token_type=?,expires_in=?,expires_at=?,status=?,authorized_at=?,confirmed_at=?,
+                revoked_at='',updated_at=?,metadata_json=?
+            WHERE account=?
+            """,
+            (
+                user["username"], user["display_name"], scopes, encrypted_access, encrypted_refresh,
+                str(token.get("token_type") or ""), expires_in, expires_at, result_status, timestamp,
+                confirmed_at, timestamp, metadata_json, result_account,
+            ),
+        )
+    else:
+        connection.execute(
+            """
+            INSERT INTO x_account_auths(
+              account,x_user_id,username,display_name,scopes,encrypted_access_token,
+              encrypted_refresh_token,token_type,expires_in,expires_at,status,
+              authorized_at,confirmed_at,revoked_at,updated_at,metadata_json
+            )
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(account) DO UPDATE SET
+              x_user_id=excluded.x_user_id,
+              username=excluded.username,
+              display_name=excluded.display_name,
+              scopes=excluded.scopes,
+              encrypted_access_token=excluded.encrypted_access_token,
+              encrypted_refresh_token=excluded.encrypted_refresh_token,
+              token_type=excluded.token_type,
+              expires_in=excluded.expires_in,
+              expires_at=excluded.expires_at,
+              status=excluded.status,
+              authorized_at=excluded.authorized_at,
+              confirmed_at='',
+              revoked_at='',
+              updated_at=excluded.updated_at,
+              metadata_json=excluded.metadata_json
+            """,
+            (
+                state["account"], user["x_user_id"], user["username"], user["display_name"], scopes,
+                encrypted_access, encrypted_refresh, str(token.get("token_type") or ""), expires_in,
+                expires_at, "PENDING_CONFIRMATION", timestamp, "", "", timestamp, metadata_json,
+            ),
+        )
     connection.commit()
     return {
-        "account": state["account"],
+        "account": result_account,
+        "requested_account": state["account"],
         "x_user_id": user["x_user_id"],
         "username": user["username"],
         "display_name": user["display_name"],
         "authorized_at": timestamp,
-        "status": "PENDING_CONFIRMATION",
+        "status": result_status,
+        "duplicate": bool(duplicate),
     }
 
 
@@ -2203,18 +2243,87 @@ def x_auth_rows(config: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def verify_x_auths(config: dict[str, Any], accounts: list[str] | None = None) -> dict[str, Any]:
+    requested = [canonical_account_id(account) for account in (accounts or list(X_ACCOUNT_SLOTS))]
+    if not requested or any(account not in X_ACCOUNT_SLOTS for account in requested):
+        raise ValueError("unknown X account slot")
+    availability = {item["id"]: item for item in list_publish_accounts(config, "x")}
+    results: list[dict[str, str]] = []
+    from .x_publisher import x_access_token
+
+    for account in X_ACCOUNT_SLOTS:
+        if account not in requested:
+            continue
+        item = availability.get(account) or {
+            "id": account,
+            "username": "",
+            "status": "UNAVAILABLE",
+            "status_reason": "X 账号尚未授权",
+        }
+        username = str(item.get("username") or "")
+        if item.get("status") != "AVAILABLE":
+            results.append({
+                "account": account,
+                "username": username,
+                "status": "UNAVAILABLE",
+                "reason": str(item.get("status_reason") or "X 账号不可用"),
+            })
+            continue
+        try:
+            x_access_token(config, account)
+        except Exception as error:
+            reason = str(error)[:240] or "X token refresh failed"
+            if any(marker in reason for marker in ("HTTP 400", "HTTP 401", "no refresh token")):
+                connection = connect_db(config)
+                connection.execute(
+                    "UPDATE x_account_auths SET status='NEEDS_REAUTH',updated_at=? WHERE account=?",
+                    (now_iso(), account),
+                )
+                connection.commit()
+            results.append({"account": account, "username": username, "status": "FAILED", "reason": reason})
+        else:
+            results.append({"account": account, "username": username, "status": "AVAILABLE", "reason": ""})
+    verified = sum(item["status"] == "AVAILABLE" for item in results)
+    return {"verified": verified, "failed": len(results) - verified, "results": results}
+
+
 def update_x_auth(config: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     account = canonical_account_id(str(payload.get("account") or ""))
     action = str(payload.get("action") or "").strip().lower()
-    if not account or action not in {"confirm", "revoke"}:
-        raise ValueError("account and action=confirm|revoke are required")
+    if action == "verify_all":
+        return verify_x_auths(config)
+    if account not in X_ACCOUNT_SLOTS or action not in {"confirm", "revoke", "verify"}:
+        raise ValueError("account and action=confirm|revoke|verify are required")
+    if action == "verify":
+        return verify_x_auths(config, [account])
     ensure_oauth_tables(config)
     connection = connect_db(config)
-    row = connection.execute("SELECT account,status FROM x_account_auths WHERE account=?", (account,)).fetchone()
+    row = connection.execute(
+        """
+        SELECT account,x_user_id,scopes,encrypted_access_token,encrypted_refresh_token,status
+        FROM x_account_auths WHERE account=?
+        """,
+        (account,),
+    ).fetchone()
     if not row:
         raise ValueError("X authorization does not exist for this account")
     timestamp = now_iso()
     if action == "confirm":
+        missing = sorted(X_REQUIRED_PUBLISH_SCOPES - set(str(row["scopes"] or "").split()))
+        if missing:
+            raise ValueError("X authorization is missing required scopes: " + ", ".join(missing))
+        if not str(row["encrypted_access_token"] or "") or not str(row["encrypted_refresh_token"] or ""):
+            raise ValueError("X authorization is missing access token or refresh token")
+        duplicate = connection.execute(
+            """
+            SELECT account FROM x_account_auths
+            WHERE x_user_id=? AND account<>? AND status='AUTHORIZED'
+            LIMIT 1
+            """,
+            (str(row["x_user_id"] or ""), account),
+        ).fetchone()
+        if duplicate:
+            raise ValueError(f"X user is already authorized in slot {duplicate['account']}")
         connection.execute(
             "UPDATE x_account_auths SET status='AUTHORIZED',confirmed_at=?,revoked_at='',updated_at=? WHERE account=?",
             (timestamp, timestamp, account),
@@ -4732,14 +4841,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
             )
         return self.send_html(
             oauth_result_html(
-                "X 授权待确认",
+                "X 授权已更新" if result.get("duplicate") else "X 授权待确认",
                 [
-                    f"账号配置：{result['account']}",
+                    f"授权位：{X_ACCOUNT_SLOTS.index(result['account']) + 1}",
                     f"实际授权账号：@{result['username']}",
                     f"X User ID：{result['x_user_id']}",
                     f"授权时间：{result['authorized_at']}",
                     "access token 和 refresh token 已加密保存。",
-                    "请回到发布队列页核对账号后点击确认，确认后才会标记为可发布。",
+                    (
+                        "该 X 账号已经绑定，系统已更新原授权位的 Token，没有创建重复绑定。"
+                        if result.get("duplicate")
+                        else "请回到发布队列页核对账号后点击确认，确认后系统会立即检测视频发布权限。"
+                    ),
                 ],
                 ok=True,
             )
