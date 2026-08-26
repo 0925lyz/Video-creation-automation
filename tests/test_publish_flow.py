@@ -580,7 +580,7 @@ def test_inventory_uses_compact_rows_and_concise_publication_status():
     assert "${escapeHtml(state.youtube_video_id)}" not in javascript
     assert "已排队发布至 YouTube 账号" in javascript
     assert ".inventory-table th, .inventory-table td { padding-top: 7px; padding-bottom: 7px; }" in styles
-    assert ".output-menu-row { padding: 4px 0;" in styles
+    assert ".output-menu-row { min-height: 27px; padding: 2px 0;" in styles
 
 
 def test_x_account_controls_use_real_accounts_without_content_roles():
