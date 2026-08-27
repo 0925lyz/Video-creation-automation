@@ -38,4 +38,4 @@ Run `factory.sh ui --host 127.0.0.1 --port 8787`. Use `0.0.0.0` only on a truste
 
 ## KrillinAI Providers
 
-The ignored `workspace/external_tools/KrillinAI/config/config.toml` selects transcription, OpenAI-compatible translation, and TTS providers. The default Edge provider runs through KrillinAI with the pinned official `edge-tts` package and a compatibility wrapper; OpenAI, Aliyun, and MiniMax remain selectable in the private config. Run `scripts/install-krillinai.sh` after synchronization. `doctor` reports the factory unavailable when the pinned binary or private config is missing.
+The ignored `workspace/external_tools/KrillinAI/config/config.toml` selects transcription, OpenAI-compatible translation, and TTS providers. The server defaults to KrillinAI's local `fasterwhisper/tiny` transcription. The default Edge provider runs through KrillinAI with the pinned official `edge-tts` package and a compatibility wrapper; OpenAI, Aliyun, and MiniMax remain selectable in the private config. Run `scripts/install-krillinai.sh` after synchronization. `doctor` reports the factory unavailable when the pinned binary or private config is missing.

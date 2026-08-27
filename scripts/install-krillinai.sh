@@ -77,8 +77,10 @@ base_url = (
 if base_url.rstrip("/").endswith("/responses"):
     base_url = base_url.rstrip("/")[:-len("/responses")]
 llm_model = values.get("KRILLINAI_LLM_MODEL") or values.get("JAGUARTV_PUBLISHING_AI_MODEL") or "gpt-4o-mini"
-transcribe_provider = values.get("KRILLINAI_TRANSCRIBE_PROVIDER") or "openai"
-transcribe_model = values.get("KRILLINAI_TRANSCRIBE_MODEL") or "whisper-1"
+transcribe_provider = values.get("KRILLINAI_TRANSCRIBE_PROVIDER") or "fasterwhisper"
+transcribe_model = values.get("KRILLINAI_TRANSCRIBE_MODEL") or (
+    "tiny" if transcribe_provider == "fasterwhisper" else "whisper-1"
+)
 tts_provider = values.get("KRILLINAI_TTS_PROVIDER") or "edge-tts"
 tts_model = values.get("KRILLINAI_TTS_MODEL") or "gpt-4o-mini-tts"
 
@@ -113,7 +115,7 @@ api_key = {quote(api_key)}
 model = {quote(transcribe_model)}
 
 [transcribe.fasterwhisper]
-model = "medium"
+model = {quote(transcribe_model)}
 
 [transcribe.whisperkit]
 model = "large-v2"
@@ -152,6 +154,55 @@ PY
 fi
 
 chmod 600 "$KRILLIN_CONFIG"
+IFS=$'\t' read -r TRANSCRIBE_PROVIDER TRANSCRIBE_MODEL < <(
+  "$PYTHON_BIN" - "$KRILLIN_CONFIG" <<'PY'
+import sys
+import tomllib
+from pathlib import Path
+
+config = tomllib.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+transcribe = config.get("transcribe") or {}
+provider = str(transcribe.get("provider") or "")
+model = str((transcribe.get("fasterwhisper") or {}).get("model") or "")
+print(f"{provider}\t{model}")
+PY
+)
+
+if [[ "$TRANSCRIBE_PROVIDER" == "fasterwhisper" ]]; then
+  if [[ "$TRANSCRIBE_MODEL" != "tiny" ]]; then
+    echo "Automatic verified Faster Whisper install currently supports the tiny model only." >&2
+    exit 2
+  fi
+  FASTER_ROOT="$KRILLIN_DIR/bin/faster-whisper/Whisper-Faster-XXL"
+  FASTER_BIN="$FASTER_ROOT/whisper-faster-xxl"
+  FASTER_REAL="$FASTER_ROOT/whisper-faster-xxl.real"
+  FASTER_ARCHIVE="$KRILLIN_DIR/bin/faster-whisper.zip"
+  FASTER_URL="https://modelscope.cn/models/Maranello/KrillinAI_dependency_cn/resolve/master/Faster-Whisper-XXL_r192.3.1_linux.zip"
+  FASTER_SHA256="f01cf0cb30593e5b47e746dae1b536440f374fd6074fe108b1d407cc7db2f139"
+  MODEL_ARCHIVE="$KRILLIN_DIR/models/faster-whisper-tiny.zip"
+  MODEL_FILE="$KRILLIN_DIR/models/faster-whisper-tiny/model.bin"
+  MODEL_URL="https://modelscope.cn/models/Maranello/KrillinAI_dependency_cn/resolve/master/faster-whisper-tiny.zip"
+  MODEL_SHA256="8870b31777025e654120c605b7f4520d91efaf25dddf69221e52a5b43d9c628e"
+
+  if [[ ! -x "$FASTER_REAL" ]]; then
+    if [[ ! -x "$FASTER_BIN" ]]; then
+      mkdir -p "$KRILLIN_DIR/bin"
+      curl -fL --retry 3 --output "$FASTER_ARCHIVE" "$FASTER_URL"
+      echo "$FASTER_SHA256  $FASTER_ARCHIVE" | sha256sum --check --status
+      unzip -oq "$FASTER_ARCHIVE" -d "$KRILLIN_DIR/bin/faster-whisper"
+      chmod 755 "$FASTER_BIN"
+    fi
+    mv "$FASTER_BIN" "$FASTER_REAL"
+  fi
+  if [[ ! -s "$MODEL_FILE" ]]; then
+    mkdir -p "$KRILLIN_DIR/models"
+    curl -fL --retry 3 --output "$MODEL_ARCHIVE" "$MODEL_URL"
+    echo "$MODEL_SHA256  $MODEL_ARCHIVE" | sha256sum --check --status
+    unzip -oq "$MODEL_ARCHIVE" -d "$KRILLIN_DIR/models/faster-whisper-tiny"
+  fi
+  install -m 755 "$APP_DIR/scripts/krillin-fasterwhisper-wrapper.sh" "$FASTER_BIN"
+fi
+
 EDGE_TTS_VENV="$APP_DIR/workspace/tool_venvs/krillin-edge-tts"
 if [[ ! -x "$EDGE_TTS_VENV/bin/python" ]]; then
   "$PYTHON_BIN" -m venv "$EDGE_TTS_VENV"
