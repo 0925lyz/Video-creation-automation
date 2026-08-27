@@ -32,7 +32,8 @@ fi
 mkdir -p "$KRILLIN_DIR/build"
 (
   cd "$KRILLIN_DIR"
-  go build -o build/krillinai-cli ./cmd/cli
+  GOPROXY="${KRILLINAI_GOPROXY:-https://proxy.golang.org,direct}" \
+    go build -o build/krillinai-cli ./cmd/cli
   ./build/krillinai-cli help >/dev/null
 )
 
