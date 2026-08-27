@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_PATH="$(realpath "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 APP_DIR="${JAGUARTV_APP_DIR:-$(cd "$SCRIPT_DIR/../../../.." && pwd)}"
 EDGE_TTS_BIN="${KRILLIN_EDGE_TTS_BIN:-$APP_DIR/workspace/tool_venvs/krillin-edge-tts/bin/edge-tts}"
 FFMPEG_BIN="${KRILLIN_FFMPEG_BIN:-$(command -v ffmpeg || true)}"
