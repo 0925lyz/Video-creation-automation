@@ -6,7 +6,7 @@
 - Download refuses unknown or longer metadata and removes a downloaded file if `ffprobe` reports more than 900 seconds.
 - The original frame is preserved. There is no promotional-tail trim, OCR pass, caption crop, or subtitle blur.
 - KrillinAI performs transcription, pt-BR translation, line timing, and TTS. Its configured providers may be changed without modifying factory code.
-- A task can override only the TTS voice with `--krillinai-voice`; an empty value uses the selected KrillinAI provider default.
+- A task can override the TTS voice with `--krillinai-voice`; an empty Edge voice uses `KRILLIN_EDGE_TTS_DEFAULT_VOICE`, while other providers use their configured default.
 - Any transcription, translation, Portuguese language-gate, or TTS failure stops production. There is no generic script or system-voice fallback.
 - Remotion places at most two compact subtitle lines inside the source-frame safe area. Subtitle positions do not follow OCR detections.
 
@@ -38,4 +38,4 @@ Run `factory.sh ui --host 127.0.0.1 --port 8787`. Use `0.0.0.0` only on a truste
 
 ## KrillinAI Providers
 
-The ignored `workspace/external_tools/KrillinAI/config/config.toml` selects transcription, OpenAI-compatible translation, and TTS providers. Run `scripts/install-krillinai.sh` after synchronization. `doctor` reports the factory unavailable when the pinned binary or private config is missing.
+The ignored `workspace/external_tools/KrillinAI/config/config.toml` selects transcription, OpenAI-compatible translation, and TTS providers. The default Edge provider runs through KrillinAI with the pinned official `edge-tts` package and a compatibility wrapper; OpenAI, Aliyun, and MiniMax remain selectable in the private config. Run `scripts/install-krillinai.sh` after synchronization. `doctor` reports the factory unavailable when the pinned binary or private config is missing.

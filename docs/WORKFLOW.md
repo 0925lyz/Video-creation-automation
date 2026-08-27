@@ -9,7 +9,7 @@
 2. Agent Reach 与 MediaCrawler 的标准化结果、内置平台适配器、浏览器会话及手动导入统一进入候选库，并保留关键词、分类、源标题和源标签。
 3. 候选素材必须能确认时长且不超过 15 分钟；超过或时长未知的发现结果不入下载队列。`yt-dlp` 下载 YouTube、TikTok、Facebook、X、Instagram、Kwai，`f2` 只下载抖音；B站和小红书沿用独立适配器。下载前再次检查元数据，下载后再用 `ffprobe` 检查真实文件，超过 15 分钟的文件立即移除并标记 `TOO_LONG`。源媒体进入 `workspace/jobs/<candidate_id>/`，Cookie 和登录会话只保存在服务器私有目录。
 4. 制作服务直接分析原视频，不再检查或裁剪宣传尾卡，不判断 B站/抖音中文内容，也不执行 OCR、中文字幕区域识别、裁剪或模糊。智能切片使用 `segment_overlap_sec: 3` 控制片段之间最多重叠 3 秒；没有合格片段就进入失败/人工处理，不拿原片冒充切片。
-5. 固定提交的 `krillinai/KrillinAI` CLI 负责“语音转字幕 → 逐句翻译为巴西葡语 → 按片段生成配音”。转录、翻译模型和 TTS 供应商由服务器私密配置切换，每个任务还可单独指定音色。任何一步失败都会停止制作；系统不再使用 pyvideotrans、Google 非正式翻译、MyMemory、Edge/system TTS 或通用足球文案兜底。
+5. 固定提交的 `krillinai/KrillinAI` CLI 负责“语音转字幕 → 逐句翻译为巴西葡语 → 按片段生成配音”。转录、翻译模型和 TTS 供应商由服务器私密配置切换，每个任务还可单独指定音色。当前服务器通过 KrillinAI 调用固定版本的官方 `edge-tts`，也可改为 OpenAI、阿里云或 MiniMax；任何一步失败都会停止制作，系统不再退回 pyvideotrans、Google 非正式翻译、MyMemory、系统语音或通用足球文案。
 6. Remotion 把最多两行紧凑字幕放在真实视频画面的安全区域内，再生成通用版和 FB 版。字幕不会跟随 OCR 区域移动，也不会使用截图中那种横跨大半画面的左下黑框。
 7. 自动制作必须通过双版本、媒体流、路径、哈希和渲染任务门禁，才能进入 `READY_FOR_REVIEW`。管理员也可以把已经制作完成的外部成片作为“导入成片”直接批准，这类记录会明确标记 `external_import`，不冒充自动二创。
 8. 人工批准后才能建立发布任务。YouTube 和 X 支持自动发布；TikTok、Facebook、抖音、B站、Kwai、Instagram 当前只生成文案并下载本地成片，不声称自动发布成功。

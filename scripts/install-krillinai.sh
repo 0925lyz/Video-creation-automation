@@ -79,7 +79,7 @@ if base_url.rstrip("/").endswith("/responses"):
 llm_model = values.get("KRILLINAI_LLM_MODEL") or values.get("JAGUARTV_PUBLISHING_AI_MODEL") or "gpt-4o-mini"
 transcribe_provider = values.get("KRILLINAI_TRANSCRIBE_PROVIDER") or "openai"
 transcribe_model = values.get("KRILLINAI_TRANSCRIBE_MODEL") or "whisper-1"
-tts_provider = values.get("KRILLINAI_TTS_PROVIDER") or "openai"
+tts_provider = values.get("KRILLINAI_TTS_PROVIDER") or "edge-tts"
 tts_model = values.get("KRILLINAI_TTS_MODEL") or "gpt-4o-mini-tts"
 
 quote = lambda value: json.dumps(str(value), ensure_ascii=False)
@@ -152,6 +152,14 @@ PY
 fi
 
 chmod 600 "$KRILLIN_CONFIG"
+EDGE_TTS_VENV="$APP_DIR/workspace/tool_venvs/krillin-edge-tts"
+if [[ ! -x "$EDGE_TTS_VENV/bin/python" ]]; then
+  "$PYTHON_BIN" -m venv "$EDGE_TTS_VENV"
+fi
+"$EDGE_TTS_VENV/bin/python" -m pip install --disable-pip-version-check "edge-tts==7.2.8"
+mkdir -p "$KRILLIN_DIR/bin"
+install -m 755 "$APP_DIR/scripts/krillin-edge-tts-wrapper.sh" "$KRILLIN_DIR/bin/edge-tts"
+
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 printf '1\n00:00:00,000 --> 00:00:02,000\nTeste seguro do JaguarTV.\n' > "$TMP_DIR/test.srt"
