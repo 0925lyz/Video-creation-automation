@@ -209,9 +209,11 @@ def _candidate_centers(
     return sorted(set(round(max(0.0, min(duration, center)), 1) for center in centers))
 
 
-def _overlap_ratio(left: HighlightSegment, right: HighlightSegment) -> float:
-    overlap = max(0.0, min(left.start + left.duration, right.start + right.duration) - max(left.start, right.start))
-    return overlap / max(1.0, min(left.duration, right.duration))
+def _overlap_seconds(left: HighlightSegment, right: HighlightSegment) -> float:
+    return max(
+        0.0,
+        min(left.start + left.duration, right.start + right.duration) - max(left.start, right.start),
+    )
 
 
 def rank_highlight_windows(
@@ -223,6 +225,7 @@ def rank_highlight_windows(
     transcript_cues: Sequence[TranscriptCue] = (),
     max_segments: int = 3,
     max_duration: float = 30.0,
+    segment_overlap_sec: float = 0.0,
     strategy: str = "sports_highlight",
 ) -> list[dict[str, Any]]:
     max_segments = max(1, min(10, int(max_segments)))
@@ -268,8 +271,9 @@ def rank_highlight_windows(
         candidates.append(HighlightSegment(start, segment_duration, score, reasons, component_scores, strategy))
 
     selected: list[HighlightSegment] = []
+    allowed_overlap = max(0.0, min(segment_duration - 0.1, float(segment_overlap_sec)))
     for candidate in sorted(candidates, key=lambda item: (item.highlight_score, -item.start), reverse=True):
-        if all(_overlap_ratio(candidate, current) <= 0.25 for current in selected):
+        if all(_overlap_seconds(candidate, current) <= allowed_overlap for current in selected):
             selected.append(candidate)
         if len(selected) >= max_segments:
             break
@@ -286,6 +290,7 @@ def analyze_video(
     source_duration: float,
     max_segments: int = 3,
     max_duration: float = 30.0,
+    segment_overlap_sec: float = 0.0,
     strategy: str = "sports_highlight",
     transcript_path: Path | None = None,
     max_signal_duration: float = 900.0,
@@ -306,6 +311,7 @@ def analyze_video(
         transcript_cues=cues,
         max_segments=max_segments,
         max_duration=max_duration,
+        segment_overlap_sec=segment_overlap_sec,
         strategy=strategy,
     )
 

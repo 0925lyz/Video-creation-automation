@@ -1,16 +1,14 @@
 # Pipeline Reference
 
-## Audio Policy
+## Source And Localization Policy
 
-- `audio.source_mode: auto` localizes only when downloaded subtitles or enabled ASR provide speech evidence.
-- Speech clips remove source audio and use pt-BR voice/subtitles plus Funk BGM.
-- Clips without speech evidence preserve source music and do not generate voice or subtitles.
-- Silent clips receive Funk BGM without generated narration/subtitles.
-- BGM comes from `assets/bgm/`; if empty, the factory generates an original 150 BPM funk-inspired instrumental. Adjust `audio.bgm_volume` in `config/pipeline.yaml`.
-
-## Burned-in Caption Cleanup
-
-`edit.source_subtitle_cleanup: crop` removes the configured lower portion of the source foreground before vertical placement. The default `source_subtitle_crop_bottom_ratio: 0.18` handles common bottom-positioned Chinese captions. Raise it only when frame inspection shows captions remaining; set the mode to `off` for clean sources.
+- Candidate discovery requires a known duration at or below 900 seconds.
+- Download refuses unknown or longer metadata and removes a downloaded file if `ffprobe` reports more than 900 seconds.
+- The original frame is preserved. There is no promotional-tail trim, OCR pass, caption crop, or subtitle blur.
+- KrillinAI performs transcription, pt-BR translation, line timing, and TTS. Its configured providers may be changed without modifying factory code.
+- A task can override only the TTS voice with `--krillinai-voice`; an empty value uses the selected KrillinAI provider default.
+- Any transcription, translation, Portuguese language-gate, or TTS failure stops production. There is no generic script or system-voice fallback.
+- Remotion places at most two compact subtitle lines inside the source-frame safe area. Subtitle positions do not follow OCR detections.
 
 ## States
 
@@ -22,8 +20,9 @@ Failure states include `LANGUAGE_REJECTED`, `DOWNLOAD_FAILED`, `PRODUCTION_FAILE
 
 - `workspace/factory.db`: shared candidate and event state.
 - `workspace/jobs/<id>/source.mp4`: downloaded source.
-- `workspace/jobs/<id>/script_ptbr.json`: audio decision plus localized narration when required.
-- `workspace/jobs/<id>/subtitles_ptbr.srt`: subtitle timing, only for localized speech clips.
+- `workspace/jobs/<id>/source.krillinai.srt`: KrillinAI source-language transcription.
+- `workspace/jobs/<id>/subtitles_ptbr.srt`: KrillinAI pt-BR subtitle timing.
+- `workspace/jobs/<id>/krillinai/`: per-stage manifests, stdout/stderr logs, and per-segment TTS audio.
 - `workspace/jobs/<id>/master_9x16.mp4`: rendered master.
 - `workspace/ready_for_review/<id>/video.mp4`: review-ready video.
 - `workspace/ready_for_review/<id>/metadata.json`: Facebook, YouTube, TikTok, and Kwai copy package.
@@ -37,6 +36,6 @@ Platform adapters fail independently. Continue healthy platforms when one adapte
 
 Run `factory.sh ui --host 127.0.0.1 --port 8787`. Use `0.0.0.0` only on a trusted LAN. The current SQLite database must have one writer host; production multi-machine operation should use the central API with PostgreSQL and object storage rather than a shared SQLite file.
 
-## ASR
+## KrillinAI Providers
 
-Set `localization.asr_enabled: true` in `config/pipeline.yaml` after a Whisper model is cached. Keep it false for the no-model demo path, which localizes platform title and description metadata.
+The ignored `workspace/external_tools/KrillinAI/config/config.toml` selects transcription, OpenAI-compatible translation, and TTS providers. Run `scripts/install-krillinai.sh` after synchronization. `doctor` reports the factory unavailable when the pinned binary or private config is missing.

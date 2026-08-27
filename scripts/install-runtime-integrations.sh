@@ -9,7 +9,7 @@ cd "$APP_DIR"
 mkdir -p "$VENV_ROOT" "$APP_DIR/workspace/runtime/integration-status"
 
 "$PYTHON_BIN" -m jaguartv_factory.cli integrations \
-  --name mediacrawler --name scrapling --name f2 --name agent_reach --sync
+  --name mediacrawler --name scrapling --name f2 --name agent_reach --name krillinai --sync
 
 install_tool() {
   local name="$1"
@@ -46,3 +46,5 @@ MEDIACRAWLER_ENV="$VENV_ROOT/mediacrawler"
 )
 "$MEDIACRAWLER_ENV/bin/python" -c 'import playwright; print("cli-and-playwright-ready")' \
   > "$APP_DIR/workspace/runtime/integration-status/mediacrawler-runtime.txt"
+
+APP_DIR="$APP_DIR" PYTHON_BIN="$PYTHON_BIN" bash "$APP_DIR/scripts/install-krillinai.sh"

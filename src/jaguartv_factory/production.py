@@ -116,7 +116,7 @@ def normalize_production_options(options: dict[str, Any] | None = None) -> dict[
             public_options[key] = int(public_options[key])
     if "max_duration" in public_options:
         public_options["max_duration"] = float(public_options["max_duration"])
-    for key in ("reaction_source", "batch_label"):
+    for key in ("reaction_source", "batch_label", "krillinai_voice"):
         if key in public_options:
             value = str(public_options[key] or "").strip()
             if value:

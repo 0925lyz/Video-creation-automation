@@ -141,7 +141,6 @@ tbody tr:hover { background: #fafcfb; }
 .content-cell strong, .content-cell small { display: block; }
 .content-cell strong { max-width: 305px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .content-cell small { max-width: 305px; margin-top: 3px; overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.source-outro { display: block; margin-top: 5px; max-width: 260px; overflow: hidden; color: var(--muted); font-size: 10px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
 .badge-published { display: inline-flex; margin-left: 8px; padding: 2px 8px; border-radius: 4px; background: #22c55e; color: #fff; font-size: 10px; font-weight: 800; vertical-align: 1px; }
 .publication-note { display: block; margin-top: 4px; font-size: 11px; line-height: 1.35; color: var(--muted); }
 .publication-note.ready { color: #137333; }

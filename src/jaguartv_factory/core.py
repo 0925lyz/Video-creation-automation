@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import html
 import json
 import math
 import os
@@ -31,29 +30,15 @@ from PIL import Image, ImageDraw, ImageFont
 from .binaries import common_binary_candidates, require_binary as resolve_binary
 from .compliance import assert_render_allowed
 from .highlight import analyze_video
+from .krillinai_adapter import krillinai_settings, krillinai_subtitle, krillinai_tts
 from .reaction import compose_reaction, reaction_spec
 from .scoring import score_candidate_v2
 from .server_store import archive_review_package, storage_root
-from .source_outro import detect_source_outro, review_source_outro_summary
 from .strategy import render_audio_mode, resolve_production_strategy
-from .pyvideotrans_adapter import (
-    pyvideotrans_enabled,
-    pyvideotrans_stt,
-    pyvideotrans_translate_srt,
-    pyvideotrans_tts,
-)
-from .localization import (
-    classify_chinese_audio,
-    demucs_backing_track,
-    detect_chinese_text_regions,
-    edge_tts_ptbr,
-    prepare_ocr_blurred_segment,
-)
 
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG = ROOT / "config" / "pipeline.yaml"
-LOCALIZABLE_CHINESE_AUDIO_PLATFORMS = {"bilibili", "douyin"}
 DB_SCHEMA_LOCK = threading.RLock()
 
 
@@ -1202,7 +1187,7 @@ def discover(
     stats = {
         "discovered": 0, "inserted": 0, "language_rejected": 0,
         "market_rejected": 0, "too_long": 0, "errors": 0, "categories_skipped": 0,
-        "duplicates": 0, "error_details": [],
+        "duration_unknown": 0, "duplicates": 0, "error_details": [],
     }
     for platform in enabled:
         if platform not in SEARCHABLE_PLATFORMS:
@@ -1243,6 +1228,17 @@ def discover(
                     cid = candidate_id(actual_platform, source_id, url)
                     title = str(info.get("title") or "")
                     timestamp = now_iso()
+                    duration = info.get("duration")
+                    try:
+                        known_duration = float(duration) > 0
+                    except (TypeError, ValueError):
+                        known_duration = False
+                    if not known_duration:
+                        stats["duration_unknown"] += 1
+                        continue
+                    if candidate_too_long(config, duration):
+                        stats["too_long"] += 1
+                        continue
                     if not remember_seen_source(connection, actual_platform, source_id, url, cid, timestamp=timestamp):
                         stats["duplicates"] += 1
                         continue
@@ -1252,12 +1248,9 @@ def discover(
                         continue
                     language, confidence = likely_language(f"{title} {info.get('description') or ''}")
                     rejected = language.lower() in excluded_languages and confidence >= 0.7
-                    too_long = candidate_too_long(config, info.get("duration"))
-                    status = "LANGUAGE_REJECTED" if rejected else ("TOO_LONG" if too_long else "DISCOVERED")
+                    status = "LANGUAGE_REJECTED" if rejected else "DISCOVERED"
                     if rejected:
                         stats["language_rejected"] += 1
-                    if too_long:
-                        stats["too_long"] += 1
                     score, breakdown = score_candidate_v2(info, str(term), scoring_config_path(config))
                     values = (
                         cid,
@@ -1275,7 +1268,7 @@ def discover(
                             **info, "category": category, "keyword": term,
                             "duration_gate": {
                                 "max_source_duration_sec": source_duration_limit(config),
-                                "too_long": too_long,
+                                "too_long": False,
                             },
                             "score_breakdown": breakdown,
                         }, ensure_ascii=False),
@@ -1574,6 +1567,20 @@ def download_candidate(config: dict[str, Any], row: sqlite3.Row) -> Path:
     except json.JSONDecodeError:
         metadata = {}
     duration = row["duration"] or metadata.get("duration")
+    try:
+        duration_known = float(duration) > 0
+    except (TypeError, ValueError):
+        duration_known = False
+    if not duration_known:
+        connection.execute(
+            "UPDATE candidates SET status='DOWNLOAD_FAILED',updated_at=? WHERE id=?",
+            (now_iso(), row["id"]),
+        )
+        append_event(connection, row["id"], "DOWNLOAD_FAILED", {
+            "stderr": "source duration is unknown; refusing download before the 15-minute gate can be verified",
+            "max_source_duration_sec": source_duration_limit(config),
+        })
+        raise RuntimeError("source duration is unknown; download is blocked by the 15-minute source gate")
     if candidate_too_long(config, duration):
         connection.execute("UPDATE candidates SET status='TOO_LONG',updated_at=? WHERE id=?", (now_iso(), row["id"]))
         append_event(connection, row["id"], "TOO_LONG", {
@@ -1624,6 +1631,19 @@ def download_candidate(config: dict[str, Any], row: sqlite3.Row) -> Path:
         append_event(connection, row["id"], "DOWNLOAD_FAILED", {"stderr": "downloaded media has zero duration"})
         connection.commit()
         raise RuntimeError("download completed but media file has zero duration")
+    if candidate_too_long(config, probed_duration):
+        media.unlink(missing_ok=True)
+        connection.execute("UPDATE candidates SET status='TOO_LONG',updated_at=? WHERE id=?", (now_iso(), row["id"]))
+        append_event(connection, row["id"], "TOO_LONG", {
+            "duration": probed_duration,
+            "max_source_duration_sec": source_duration_limit(config),
+            "stderr": "downloaded media exceeded the source duration gate and was removed",
+        })
+        connection.commit()
+        raise RuntimeError(
+            f"downloaded source duration {probed_duration:.1f}s exceeds "
+            f"max_source_duration_sec={source_duration_limit(config):.0f}"
+        )
     subtitle_result = run_command([
         require_binary("yt-dlp"), "--ignore-config", "--force-ipv4", "--skip-download", "--write-auto-subs", "--write-subs",
         "--sub-langs", "en,zh-Hans,zh-Hant,es,fr,de,ja,ko", "--convert-subs", "srt",
@@ -1674,262 +1694,12 @@ def parse_srt(path: Path) -> str:
     return " ".join(lines)
 
 
-def transcribe_with_whisper(media: Path, output_dir: Path, config: dict[str, Any] | None = None) -> str:
-    if config and pyvideotrans_enabled(config, "stt"):
-        try:
-            srt = pyvideotrans_stt(config, media, output_dir / "source.pyvideotrans.srt")
-            transcript = parse_srt(srt)
-            if transcript.strip():
-                (output_dir / "transcript_source.json").write_text(
-                    json.dumps({"provider": "pyvideotrans", "subtitle": str(srt), "text": transcript}, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
-                return transcript
-        except RuntimeError as error:
-            (output_dir / "pyvideotrans_stt_fallback.json").write_text(
-                json.dumps({"error": str(error)}, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-    try:
-        from faster_whisper import WhisperModel
-    except ImportError as error:
-        raise RuntimeError("No subtitles found and faster-whisper is not installed") from error
-    model_name = os.environ.get("JAGUARTV_WHISPER_MODEL", "tiny")
-    model = WhisperModel(model_name, device="cpu", compute_type="int8")
-    segments, info = model.transcribe(str(media), vad_filter=True)
-    segment_blocks: list[tuple[float, float, str]] = []
-    for segment in segments:
-        text = segment.text.strip()
-        if text:
-            segment_blocks.append((float(segment.start), float(segment.end), text))
-    transcript = " ".join(text for _, _, text in segment_blocks)
-    if segment_blocks:
-        write_srt_blocks(segment_blocks, output_dir / "source.asr.srt")
-    (output_dir / "transcript_source.json").write_text(
-        json.dumps({
-            "model": model_name,
-            "language": info.language,
-            "probability": info.language_probability,
-            "subtitle": str(output_dir / "source.asr.srt") if segment_blocks else "",
-            "text": transcript,
-        }, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    return transcript
-
-
-def source_text(
-    work: Path,
-    media: Path,
-    fallback: str,
-    *,
-    enable_asr: bool = True,
-    config: dict[str, Any] | None = None,
-    allow_metadata_fallback: bool = True,
-) -> str:
-    subtitles = sorted([*work.glob("source*.srt"), *work.glob("source*.vtt")])
-    for subtitle in subtitles:
-        text = parse_srt(subtitle)
-        if len(text) >= 30:
-            return text
-    if enable_asr:
-        try:
-            return transcribe_with_whisper(media, work, config)
-        except RuntimeError:
-            pass
-    if not allow_metadata_fallback:
-        payload = {
-            "provider": "speech_required",
-            "language": "unknown",
-            "text": "",
-            "fallback_rejected": fallback[:500],
-        }
-        (work / "transcript_source.json").write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        raise RuntimeError(
-            "Chinese localization requires real source subtitles or ASR transcript; "
-            "metadata fallback is disabled to avoid repeated generic pt-BR narration"
-        )
-    payload = {"provider": "metadata_fallback", "language": "unknown", "text": fallback}
-    (work / "transcript_source.json").write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    return fallback
-
-
 def media_has_audio(path: Path) -> bool:
     result = run_command([
         "ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
         "stream=index", "-of", "csv=p=0", str(path),
     ], check=False)
     return result.returncode == 0 and bool(result.stdout.strip())
-
-
-def audio_mode_after_required_asr(
-    audio_mode: str, transcript: str, *, require_transcript: bool, source_has_audio: bool
-) -> tuple[str, str]:
-    if audio_mode != "localized" or not require_transcript or transcript.strip():
-        return audio_mode, ""
-    if source_has_audio:
-        return "preserve_source", "asr_found_no_speech_preserved_source_audio"
-    return "silent", "asr_found_no_speech_source_has_no_audio"
-
-
-def choose_audio_strategy(
-    config: dict[str, Any], work: Path, media: Path
-) -> tuple[str, str, str]:
-    """Return (mode, transcript, reason) for the render audio policy.
-
-    `auto` only localizes when subtitles or ASR provide speech evidence. This
-    prevents music-only clips from receiving invented narration and captions.
-    """
-    requested = str(config.get("audio", {}).get("source_mode", "auto")).strip().lower()
-    if requested not in {"auto", "localize", "preserve"}:
-        raise RuntimeError("audio.source_mode must be auto, localize, or preserve")
-
-    subtitle_files = sorted([*work.glob("source*.srt"), *work.glob("source*.vtt")])
-    for subtitle in subtitle_files:
-        transcript = parse_srt(subtitle)
-        if len(transcript) >= 30:
-            return "localized", transcript, f"subtitle:{subtitle.name}"
-
-    if requested != "preserve" and bool(config.get("localization", {}).get("asr_enabled", False)):
-        try:
-            transcript = transcribe_with_whisper(media, work, config).strip()
-        except RuntimeError:
-            transcript = ""
-        if len(transcript) >= 30:
-            return "localized", transcript, "asr_speech_detected"
-
-    has_audio = media_has_audio(media)
-    if requested == "localize":
-        return "localized", "", "forced_localization_without_transcript"
-    if has_audio:
-        return "preserve_source", "", "no_speech_evidence_source_audio_preserved"
-    return "silent", "", "no_speech_evidence_source_has_no_audio"
-
-
-def chinese_audio_evidence(
-    config: dict[str, Any] | None,
-    media: Path,
-) -> tuple[bool | None, dict[str, Any]]:
-    settings = (config or {}).get("localization", {}) or {}
-    if not bool(settings.get("chinese_audio_detection_enabled", True)):
-        return None, {"enabled": False, "reason": "disabled"}
-    model_name = str(settings.get("chinese_audio_detection_model") or settings.get("whisper_model") or "tiny")
-    threshold = int(settings.get("chinese_audio_threshold") or 3)
-    try:
-        result = classify_chinese_audio(media, model_name=model_name, threshold=threshold)
-    except Exception as error:
-        return None, {"enabled": True, "reason": f"unavailable:{error}"}
-    return bool(result.get("chinese_audio")), {
-        "enabled": True,
-        "model": model_name,
-        "language": result.get("language", "unknown"),
-        "language_probability": result.get("language_probability", 0.0),
-        "chinese_characters": result.get("chinese_characters", 0),
-        "transcript_preview": str(result.get("transcript") or "")[:500],
-        "reason": "chinese_audio_detected" if result.get("chinese_audio") else "no_chinese_audio_detected",
-    }
-
-
-def localization_class_id(profile: dict[str, Any]) -> int:
-    try:
-        return int(profile.get("class") or 0)
-    except (TypeError, ValueError):
-        return 0
-
-
-def localization_profile_for_candidate(
-    row: sqlite3.Row,
-    metadata: dict[str, Any],
-    work: Path,
-    media: Path,
-    config: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    subtitle_files = sorted([*work.glob("source*.srt"), *work.glob("source*.vtt")])
-    subtitle_text = ""
-    for subtitle in subtitle_files[:3]:
-        try:
-            subtitle_text += " " + parse_srt(subtitle)
-        except OSError:
-            pass
-    chinese_subtitles = bool(re.search(r"[\u4e00-\u9fff]", subtitle_text))
-    detected_language = str(row["detected_language"] or metadata.get("language") or "").lower()
-    title_text = f"{row['title']} {row['description']} {metadata.get('title') or ''} {metadata.get('description') or ''}"
-    title_has_chinese = bool(re.search(r"[\u4e00-\u9fff]", title_text))
-    has_audio = media_has_audio(media)
-    platform = str(row["platform"] or "").strip().lower()
-    ocr_regions: list[list[float]] = []
-    ocr_reason = ""
-    can_localize_chinese_audio = platform in LOCALIZABLE_CHINESE_AUDIO_PLATFORMS
-    if not chinese_subtitles and can_localize_chinese_audio:
-        try:
-            ocr_regions = detect_chinese_text_regions(
-                media,
-                sample_count=8,
-                backend=str(((config or {}).get("edit", {}) or {}).get("ocr_backend", "tesseract")),
-            )
-            ocr_reason = "ocr_screen_chinese_detected" if ocr_regions else "ocr_no_screen_chinese"
-        except RuntimeError as error:
-            ocr_reason = f"ocr_unavailable:{error}"
-    chinese_on_screen = chinese_subtitles or bool(ocr_regions)
-    detected_chinese_audio, audio_detection = (
-        chinese_audio_evidence(config, media) if can_localize_chinese_audio and has_audio else (False, {"reason": "not_checked"})
-    )
-    inferred_chinese_audio = bool(detected_chinese_audio)
-    if detected_chinese_audio is None:
-        inferred_chinese_audio = bool(chinese_on_screen and has_audio)
-    if can_localize_chinese_audio and chinese_on_screen and has_audio:
-        class_id = 1
-        mode = "localized"
-        subtitle_mode = "ptbr_subtitles"
-        reason = "chinese_subtitles_detected" if chinese_subtitles else (ocr_reason or "ocr_screen_chinese_detected")
-    elif can_localize_chinese_audio and inferred_chinese_audio:
-        class_id = 3
-        mode = "localized"
-        subtitle_mode = "none"
-        reason = "chinese_audio_detected_without_screen_subtitles"
-    else:
-        class_id = 2
-        mode = "preserve_source" if has_audio else "silent"
-        subtitle_mode = "none"
-        reason = "no_chinese_speech_or_subtitle_evidence"
-    return {
-        "class": class_id,
-        "audio_mode": mode,
-        "subtitle_mode": subtitle_mode,
-        "chinese_subtitles": chinese_subtitles,
-        "chinese_on_screen": chinese_on_screen,
-        "ocr_regions": ocr_regions,
-        "audio_detection": audio_detection,
-        "title_has_chinese": title_has_chinese,
-        "detected_language": detected_language or "unknown",
-        "subtitle_files": [path.name for path in subtitle_files],
-        "reason": reason,
-    }
-
-
-def should_ocr_blur_source_subtitles(
-    cleanup_mode: str,
-    *,
-    platform: str,
-    detected_language: str,
-    title_text: str,
-    localization_profile: dict[str, Any],
-) -> bool:
-    if str(cleanup_mode).strip().lower() != "ocr_blur":
-        return False
-    chinese_platforms = LOCALIZABLE_CHINESE_AUDIO_PLATFORMS
-    normalized_platform = platform.strip().lower()
-    if normalized_platform not in chinese_platforms:
-        return False
-    if (
-        str(localization_profile.get("subtitle_mode") or "") == "ptbr_subtitles"
-        and bool(localization_profile.get("chinese_on_screen", localization_profile.get("chinese_subtitles")))
-    ):
-        return True
-    return False
 
 
 DEFAULT_HOOK = "Olha só o que aconteceu aqui."
@@ -1964,117 +1734,6 @@ def build_tracking_url(config: dict[str, Any], candidate: str, platform: str) ->
 
 def tracking_links(config: dict[str, Any], candidate: str) -> dict[str, str]:
     return {platform: build_tracking_url(config, candidate, platform) for platform in PUBLISH_PLATFORMS}
-
-
-def translate_to_ptbr(text: str) -> str:
-    clean = re.sub(r"\s+", " ", text).strip()[:1600]
-    if not clean:
-        return "Veja este momento incrível e descubra mais no JaguarTV Hoje."
-    google_error: Exception | None = None
-    translated = ""
-    for attempt in range(3):
-        query = urllib.parse.urlencode(
-            {"client": "gtx", "sl": "auto", "tl": "pt", "dt": "t", "q": clean}
-        )
-        request = urllib.request.Request(
-            f"https://translate.googleapis.com/translate_a/single?{query}",
-            headers={"User-Agent": "Mozilla/5.0"},
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=20) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-            translated = "".join(part[0] for part in payload[0] if part and part[0])
-            if translated.strip():
-                break
-        except Exception as error:
-            google_error = error
-            if attempt < 2:
-                time.sleep(attempt + 1)
-
-    if not translated.strip():
-        try:
-            source_language = "zh-CN" if re.search(r"[\u4e00-\u9fff]", clean) else "en"
-            chunks: list[str] = []
-            current = ""
-            for character in clean:
-                if current and len((current + character).encode("utf-8")) > 450:
-                    chunks.append(current)
-                    current = character
-                else:
-                    current += character
-            if current:
-                chunks.append(current)
-            translated_chunks = []
-            for chunk in chunks:
-                query = urllib.parse.urlencode(
-                    {"q": chunk, "langpair": f"{source_language}|pt-BR", "mt": "1"}
-                )
-                request = urllib.request.Request(
-                    f"https://api.mymemory.translated.net/get?{query}",
-                    headers={"User-Agent": "JaguarTV-Content-Factory/1.0"},
-                )
-                with urllib.request.urlopen(request, timeout=20) as response:
-                    payload = json.loads(response.read().decode("utf-8"))
-                status = int(payload.get("responseStatus") or 0)
-                part = html.unescape(str((payload.get("responseData") or {}).get("translatedText") or ""))
-                if status != 200 or not part.strip():
-                    raise RuntimeError(str(payload.get("responseDetails") or "empty fallback response"))
-                translated_chunks.append(part.strip())
-            translated = " ".join(translated_chunks)
-        except Exception as fallback_error:
-            # Never narrate untranslated source text when both providers fail.
-            raise RuntimeError(
-                f"pt-BR translation failed: google={google_error}; fallback={fallback_error}"
-            ) from fallback_error
-    translated = translated.strip()
-    if not translated:
-        raise RuntimeError("pt-BR translation returned empty text")
-    return translated
-
-
-def source_subtitle_file(work: Path) -> Path | None:
-    return next(iter(sorted([*work.glob("source*.srt"), *work.glob("source*.vtt")])), None)
-
-
-def translate_source_subtitles_to_ptbr(config: dict[str, Any], work: Path, destination: Path) -> Path | None:
-    source = source_subtitle_file(work)
-    if not source or source.suffix.lower() != ".srt":
-        return None
-    if not pyvideotrans_enabled(config, "sts"):
-        return None
-    try:
-        return pyvideotrans_translate_srt(config, source, destination)
-    except RuntimeError as error:
-        (work / "pyvideotrans_sts_fallback.json").write_text(
-            json.dumps({"source": str(source), "error": str(error)}, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        return None
-
-
-def build_ptbr_script(source: str, *, hook: str = DEFAULT_HOOK, max_body_words: int = 105) -> str:
-    clean_source = re.sub(r"https?://\S+", "", source)
-    clean_source = re.sub(r"欢迎.{0,8}(订阅|关注).*$", "", clean_source).strip()
-    translated = translate_to_ptbr(clean_source)
-    if re.search(r"[\u4e00-\u9fff]", translated):
-        candidates = [
-            part.strip()
-            for part in re.split(r"[\n\r#│|｜]+", clean_source)
-            if len(part.strip()) >= 8 and not re.search(r"(訂閱|订阅|追蹤|关注|粉絲團|频道|頻道|http)", part)
-        ]
-        for candidate in candidates[:4]:
-            translated = translate_to_ptbr(candidate)
-            if not re.search(r"[\u4e00-\u9fff]", translated):
-                break
-    if re.search(r"[\u4e00-\u9fff]", translated):
-        translated = (
-            "Uma história forte do futebol brasileiro ganhou atenção hoje. "
-            "O momento envolve uma grande figura do esporte e merece ser acompanhado até o final."
-        )
-    words = translated.split()
-    body = " ".join(words[:max(12, max_body_words)])
-    closing = "Gostou? Descubra mais conteúdos no JaguarTV Hoje."
-    return f"{hook} {body} {closing}".strip()
 
 
 def assert_script_is_portuguese(script: str) -> None:
@@ -2228,49 +1887,6 @@ def render_output_size(config: dict[str, Any], media: Path) -> tuple[int, int]:
     return int(resolution[0]), int(resolution[1])
 
 
-def write_srt(text: str, duration: float, destination: Path) -> None:
-    raw_sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", text) if part.strip()]
-    sentences: list[str] = []
-    for sentence in raw_sentences:
-        words = sentence.split()
-        chunk: list[str] = []
-        for word in words:
-            proposed = " ".join([*chunk, word])
-            if chunk and (len(chunk) >= 7 or len(proposed) > 30):
-                sentences.append(" ".join(chunk))
-                chunk = [word]
-            else:
-                chunk.append(word)
-        if chunk:
-            sentences.append(" ".join(chunk))
-    if not sentences:
-        sentences = [text]
-    total_chars = sum(max(1, len(sentence)) for sentence in sentences)
-    cursor = 0.0
-    blocks = []
-    for index, sentence in enumerate(sentences, start=1):
-        share = max(1, len(sentence)) / total_chars
-        length = max(1.2, duration * share)
-        end = min(duration, cursor + length)
-        blocks.append(f"{index}\n{format_srt_time(cursor)} --> {format_srt_time(end)}\n{sentence}\n")
-        cursor = end
-    destination.write_text("\n".join(blocks), encoding="utf-8")
-
-
-def tts_rate_percent(config: dict[str, Any]) -> str:
-    raw = (config.get("localization", {}) or {}).get("tts_rate", 1.08)
-    if isinstance(raw, str):
-        value = raw.strip()
-        if value.endswith("%"):
-            return value
-        try:
-            raw = float(value)
-        except ValueError:
-            return "+8%"
-    percent = int(round((float(raw) - 1.0) * 100))
-    return f"{percent:+d}%"
-
-
 def format_srt_time(seconds: float) -> str:
     milliseconds = max(0, int(seconds * 1000))
     hours, remainder = divmod(milliseconds, 3_600_000)
@@ -2294,52 +1910,33 @@ def write_srt_blocks(blocks: Sequence[tuple[float, float, str]], destination: Pa
     destination.write_text("\n".join(rendered), encoding="utf-8")
 
 
-def tts_ptbr(
-    text: str,
-    destination: Path,
-    *,
-    provider: str = "auto",
-    edge_voice: str = "pt-BR-AntonioNeural",
-    edge_rate: str = "+8%",
-    config: dict[str, Any] | None = None,
-    subtitles: Path | None = None,
-) -> None:
-    """Generate pt-BR narration with the local edge-tts path first.
+def slice_srt_file(source: Path, destination: Path, *, start: float, duration: float) -> Path:
+    end = start + duration
+    selected: list[tuple[float, float, str]] = []
+    for cue_start, cue_end, text in parse_srt_blocks(source):
+        clipped_start = max(start, cue_start)
+        clipped_end = min(end, cue_end)
+        if clipped_end - clipped_start <= 0.15:
+            continue
+        selected.append((clipped_start - start, clipped_end - start, text))
+    if not selected:
+        raise RuntimeError("KrillinAI target subtitles contain no dialogue for the selected segment")
+    write_srt_blocks(selected, destination)
+    return destination
 
-    Local system voices remain the offline fallback for tests and degraded
-    server operation.
-    """
-    provider = provider.strip().lower()
-    if provider not in {"auto", "edge", "system", "pyvideotrans"}:
-        raise ValueError("localization.tts_provider must be auto, edge, system or pyvideotrans")
-    if config and subtitles and provider in {"auto", "pyvideotrans"} and pyvideotrans_enabled(config, "tts"):
-        try:
-            pyvideotrans_tts(config, subtitles, destination)
-            return
-        except RuntimeError:
-            if provider == "pyvideotrans":
-                raise
-    if provider in {"auto", "edge"}:
-        try:
-            edge_tts_ptbr(text, destination, voice=edge_voice, rate=edge_rate)
-            return
-        except RuntimeError:
-            if provider == "edge":
-                raise
-    if shutil.which("say"):
-        run_command(["say", "-v", "Luciana", "-r", "185", "-o", str(destination), text])
-        return
-    for binary in ("espeak-ng", "espeak"):
-        if shutil.which(binary):
-            wav = destination.with_suffix(".wav")
-            run_command([binary, "-v", "pt-br", "-s", "165", "-w", str(wav), text])
-            if wav != destination:
-                if shutil.which("ffmpeg"):
-                    run_command(["ffmpeg", "-y", "-i", str(wav), str(destination)])
-                else:
-                    wav.replace(destination)
-            return
-    raise RuntimeError("No TTS backend found: install edge-tts, macOS `say`, or espeak-ng")
+
+def extract_krillinai_tts_video(
+    source: Path, destination: Path, *, start: float, duration: float
+) -> Path:
+    result = run_command([
+        "ffmpeg", "-y", "-ss", f"{start:.3f}", "-i", str(source),
+        "-t", f"{duration:.3f}", "-map", "0:v:0", "-an",
+        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart", str(destination),
+    ], check=False)
+    if result.returncode != 0 or not destination.is_file() or destination.stat().st_size <= 0:
+        raise RuntimeError(f"failed to prepare KrillinAI segment video: {result.stderr[-2000:]}")
+    return destination
 
 
 def generate_funk_bgm(destination: Path, duration: float = 32.0, bpm: int = 150) -> Path:
@@ -2425,62 +2022,9 @@ def parse_srt_blocks(path: Path) -> list[tuple[float, float, str]]:
     return blocks
 
 
-def source_text_for_interval(
-    work: Path,
-    *,
-    start: float,
-    duration: float,
-    fallback: str = "",
-    min_chars: int = 8,
-) -> str:
-    end = start + duration
-    parts: list[str] = []
-    for subtitle in sorted([*work.glob("source*.srt"), *work.glob("source*.vtt")]):
-        try:
-            blocks = parse_srt_blocks(subtitle)
-        except OSError:
-            continue
-        for block_start, block_end, text in blocks:
-            overlap = max(0.0, min(end, block_end) - max(start, block_start))
-            midpoint = (block_start + block_end) / 2
-            if overlap > 0.15 or start <= midpoint <= end:
-                parts.append(text)
-        if parts:
-            break
-    text = re.sub(r"\s+", " ", " ".join(parts)).strip()
-    if len(text) >= min_chars:
-        return text
-    fallback = re.sub(r"\s+", " ", fallback).strip()
-    return fallback if len(fallback) >= min_chars else ""
-
-
 def parse_srt_time(value: str) -> float:
     hours, minutes, remainder = value.replace(",", ".").split(":")
     return int(hours) * 3600 + int(minutes) * 60 + float(remainder)
-
-
-def _caption_region_for_interval(
-    start: float,
-    end: float,
-    timed_regions: Sequence[dict[str, Any]] | None,
-) -> list[float] | None:
-    if not timed_regions:
-        return None
-    midpoint = (start + end) / 2
-    candidates: list[tuple[float, list[float]]] = []
-    for event in timed_regions:
-        event_start = float(event.get("start") or 0.0)
-        event_end = float(event.get("end") or event_start)
-        overlap = max(0.0, min(end, event_end) - max(start, event_start))
-        distance = abs(midpoint - ((event_start + event_end) / 2))
-        score = overlap - distance * 0.08
-        for region in event.get("regions") or []:
-            if len(region) != 4:
-                continue
-            candidates.append((score, [float(value) for value in region]))
-    if not candidates:
-        return None
-    return max(candidates, key=lambda item: item[0])[1]
 
 
 def remotion_caption_cues(
@@ -2488,8 +2032,7 @@ def remotion_caption_cues(
     *,
     max_end: float | None = None,
     max_cues: int = 500,
-    max_text_chars: int = 180,
-    timed_regions: Sequence[dict[str, Any]] | None = None,
+    max_text_chars: int = 96,
 ) -> list[dict[str, Any]]:
     if not subtitles:
         return []
@@ -2520,9 +2063,6 @@ def remotion_caption_cues(
             "endSeconds": round(max(0.0, end), 3),
             "text": cleaned[:max_text_chars],
         }
-        region = _caption_region_for_interval(start, end, timed_regions)
-        if region:
-            cue["region"] = region
         cues.append(cue)
         if len(cues) >= max_cues:
             break
@@ -2545,7 +2085,8 @@ def remotion_caption_style(config: dict[str, Any]) -> dict[str, Any]:
     return {
         "position": position,
         "maxWidthRatio": clamp_float(captions.get("max_width_ratio"), 0.82, 0.45, 0.96),
-        "fontSizeRatio": clamp_float(captions.get("font_size_ratio"), 0.052, 0.02, 0.085),
+        "fontSizeRatio": clamp_float(captions.get("font_size_ratio"), 0.034, 0.02, 0.07),
+        "safeInsetRatio": clamp_float(captions.get("safe_inset_ratio"), 0.12, 0.04, 0.25),
         "backgroundOpacity": clamp_float(captions.get("background_opacity"), 0.74, 0.0, 0.95),
         "maxLines": int(clamp_float(captions.get("max_lines"), 2, 1, 2)),
         "textColor": str(captions.get("text_color", "#ffffff")).strip() or "#ffffff",
@@ -2558,7 +2099,7 @@ def remotion_captions_enabled_for_variant(config: dict[str, Any], variant: str) 
     captions = ((config.get("remotion", {}) or {}).get("captions", {}) or {})
     if not bool(captions.get("enabled", False)):
         return False
-    variants = captions.get("variants", ["通用版"])
+    variants = captions.get("variants", ["通用版", "FB版"])
     if isinstance(variants, str):
         variants = [part.strip() for part in variants.split(",")]
     if not isinstance(variants, list):
@@ -2844,18 +2385,10 @@ def render_video_ffmpeg(
     for image in image_inputs:
         args.extend(["-loop", "1", "-i", str(image)])
 
-    cleanup_mode = str(config.get("edit", {}).get("source_subtitle_cleanup", "crop"))
-    crop_ratio = float(config.get("edit", {}).get("source_subtitle_crop_bottom_ratio", 0.18))
-    crop_ratio = max(0.0, min(0.35, crop_ratio))
     if layout_mode == "original":
         foreground_filter = (
             f"scale={output_width}:{output_height}:force_original_aspect_ratio=decrease,"
             f"pad={output_width}:{output_height}:(ow-iw)/2:(oh-ih)/2"
-        )
-    elif cleanup_mode == "crop" and crop_ratio > 0:
-        foreground_filter = (
-            f"crop=iw:trunc(ih*{1.0 - crop_ratio:.4f}/2)*2:0:0,"
-            f"scale={output_width}:{output_height}:force_original_aspect_ratio=decrease"
         )
     else:
         foreground_filter = f"scale={output_width}:{output_height}:force_original_aspect_ratio=decrease"
@@ -3271,27 +2804,12 @@ def render_clean_segment(
     )
     output_width, output_height = render_output_size(config, media)
     layout_mode = str(config.get("edit", {}).get("layout_mode", "vertical")).strip().lower()
-    cleanup_mode = str(config.get("edit", {}).get("source_subtitle_cleanup", "crop"))
-    crop_ratio = max(
-        0.0, min(0.35, float(config.get("edit", {}).get("source_subtitle_crop_bottom_ratio", 0.18)))
-    )
     if layout_mode == "original":
         foreground_filter = (
             f"scale={output_width}:{output_height}:force_original_aspect_ratio=decrease,"
             f"pad={output_width}:{output_height}:(ow-iw)/2:(oh-ih)/2"
         )
         video_chains = [f"[0:v]{foreground_filter}[v]"]
-    elif cleanup_mode == "crop" and crop_ratio > 0:
-        foreground_filter = (
-            f"crop=iw:trunc(ih*{1.0 - crop_ratio:.4f}/2)*2:0:0,"
-            f"scale={output_width}:{output_height}:force_original_aspect_ratio=decrease"
-        )
-        video_chains = [
-            "[0:v]split=2[base][front]",
-            f"[base]scale={output_width}:{output_height}:force_original_aspect_ratio=increase,crop={output_width}:{output_height},gblur=sigma=24[bg]",
-            f"[front]{foreground_filter}[fg]",
-            "[bg][fg]overlay=(W-w)/2:(H-h)/2[v]",
-        ]
     else:
         foreground_filter = f"scale={output_width}:{output_height}:force_original_aspect_ratio=decrease"
         video_chains = [
@@ -3517,7 +3035,6 @@ def render_video_remotion_variant(
     *,
     variant: str,
     subtitles: Path | None = None,
-    caption_regions: Sequence[dict[str, Any]] | None = None,
     job_id: str | None = None,
     candidate_id: str | None = None,
 ) -> dict[str, Any]:
@@ -3575,7 +3092,7 @@ def render_video_remotion_variant(
         "customDesign": custom_design_enabled,
     }
     if remotion_captions_enabled_for_variant(config, variant):
-        caption_cues = remotion_caption_cues(subtitles, max_end=content_duration, timed_regions=caption_regions)
+        caption_cues = remotion_caption_cues(subtitles, max_end=content_duration)
         if caption_cues:
             props["captions"] = caption_cues
             props["captionStyle"] = remotion_caption_style(config)
@@ -3755,7 +3272,8 @@ def short_duration_bounds(config: dict[str, Any]) -> tuple[float, float]:
 
 
 def source_duration_limit(config: dict[str, Any]) -> float:
-    return max(60.0, float(config.get("selection", {}).get("max_source_duration_sec", 1800)))
+    configured = float(config.get("selection", {}).get("max_source_duration_sec", 900))
+    return max(60.0, min(900.0, configured))
 
 
 def candidate_too_long(config: dict[str, Any], duration: float | int | None) -> bool:
@@ -3884,22 +3402,7 @@ def produce_candidate(
         raise RuntimeError(
             f"source duration {original_source_duration:.1f}s exceeds max_source_duration_sec={source_duration_limit(config):.0f}"
         )
-    source_outro_detection = detect_source_outro(
-        config,
-        media,
-        work,
-        duration=original_source_duration,
-        options=options,
-        run_command=run_command,
-    )
-    clean_source = Path(str(source_outro_detection.get("clean_source_path") or ""))
-    if bool(source_outro_detection.get("applied")) and clean_source.is_file():
-        media = clean_source
-        progress(
-            8,
-            f"已裁剪原素材尾部宣传尾卡 {float(source_outro_detection.get('trim_end_sec') or 0):.1f}s",
-        )
-    source_duration = media_duration(media)
+    source_duration = original_source_duration
     candidate_payload = {**dict(row), "metadata": candidate_metadata}
     strategy = resolve_production_strategy(
         candidate_payload,
@@ -3910,134 +3413,60 @@ def produce_candidate(
     compliance = assert_render_allowed(config, strategy.content_type, candidate_metadata, options)
     reaction = reaction_spec(options)
     progress(10, f"内容类型：{strategy.content_type} · 切片：{strategy.segment_strategy}")
-    os.environ.setdefault(
-        "JAGUARTV_WHISPER_MODEL", str(config.get("localization", {}).get("whisper_model", "tiny"))
+    hook_version, _ = active_hook(config)
+    requested_audio_policy = str(options.get("audio_policy") or "auto").strip().lower()
+    localization_enabled = bool((config.get("localization", {}) or {}).get("enabled", True))
+    audio_mode = (
+        "localized"
+        if requested_audio_policy == "auto" and localization_enabled
+        else render_audio_mode(strategy.audio_policy)
     )
-    hook_version, hook_text = active_hook(config)
-    audio_mode = render_audio_mode(strategy.audio_policy)
-    localization_profile = localization_profile_for_candidate(row, candidate_metadata, work, media, config)
-    audio_override = str(options.get("audio_policy") or "auto").strip().lower() != "auto"
-    if not audio_override:
-        audio_mode = str(localization_profile["audio_mode"])
-    transcript = ""
-    audio_reason = f"content_policy:{strategy.content_type}->{strategy.audio_policy}"
-    audio_reason += f":localization_class_{localization_profile['class']}:{localization_profile['reason']}"
-    if audio_mode == "localized":
-        require_source_transcript = (
-            not audio_override
-            and localization_class_id(localization_profile) in {1, 3}
-        )
-        transcript = source_text(
-            work,
-            media,
-            f"{row['title']}. {row['description']}".strip(),
-            enable_asr=bool(config.get("localization", {}).get("asr_enabled", False)),
-            config=config,
-            allow_metadata_fallback=not require_source_transcript,
-        )
-        audio_mode, no_speech_reason = audio_mode_after_required_asr(
-            audio_mode,
-            transcript,
-            require_transcript=require_source_transcript,
-            source_has_audio=media_has_audio(media),
-        )
-        if no_speech_reason:
-            audio_reason += f":{no_speech_reason}"
-    elif audio_mode == "preserve_source" and not media_has_audio(media):
+    if audio_mode == "preserve_source" and not media_has_audio(media):
         audio_mode = "silent"
-        audio_reason += ":source_has_no_audio"
-    elif audio_mode in {"bgm_only", "silent"} and media_has_audio(media):
-        audio_mode = "preserve_source"
-        audio_reason += ":fixed_bgm_policy_disabled_source_audio_preserved"
+    audio_reason = (
+        "krillinai_default_localization"
+        if audio_mode == "localized"
+        else f"operator_or_content_policy:{strategy.audio_policy}"
+    )
     progress(18, f"音轨策略：{audio_mode}")
     script = ""
-    voice: Path | None = None
     subtitles: Path | None = None
+    transcript_file: Path | None = None
     bgm: Path | None = None
     bgm_source = "source_music" if audio_mode == "preserve_source" else "none"
     if audio_mode == "localized":
-        fallback_text = f"{row['title']}. {row['description']}".strip()
-        script = build_ptbr_script(transcript or fallback_text, hook=hook_text)
+        localized = krillinai_subtitle(config, media, work, task_id=str(row["id"]))
+        transcript_file = localized["origin_srt"]
+        subtitles = localized["target_srt"]
+        shutil.copy2(subtitles, work / "subtitles_ptbr.srt")
+        shutil.copy2(transcript_file, work / "source.krillinai.srt")
+        script = parse_srt(subtitles).strip()
+        if not script:
+            raise RuntimeError("KrillinAI returned an empty pt-BR subtitle track")
         assert_script_is_portuguese(script)
-        progress(32, "葡语脚本检查通过")
-        localization_settings = config.get("localization", {}) or {}
-        translated_subtitles = None
-        if localization_profile.get("subtitle_mode") == "ptbr_subtitles":
-            translated_subtitles = translate_source_subtitles_to_ptbr(config, work, work / "subtitles_ptbr.srt")
-        if bool(localization_settings.get("voice_enabled", False)):
-            voice = work / "voice_ptbr.aiff"
-            subtitles_for_tts = translated_subtitles or work / "subtitles_ptbr_script.srt"
-            if not translated_subtitles:
-                write_srt(script, min(60.0, source_duration), subtitles_for_tts)
-            tts_ptbr(
-                script,
-                voice,
-                provider=str(localization_settings.get("tts_provider", "auto")),
-                edge_voice=str(localization_settings.get("edge_tts_voice", "pt-BR-AntonioNeural")),
-                edge_rate=tts_rate_percent(config),
-                config=config,
-                subtitles=subtitles_for_tts,
-            )
-            progress(48, "pt-BR 配音已生成")
-        else:
-            voice = None
-            audio_mode = "preserve_source" if media_has_audio(media) else "silent"
-            audio_reason += ":voice_disabled_source_audio_preserved"
-            progress(48, "葡语脚本检查通过，未启用配音时保留源音且不添加固定音频")
-        if audio_mode == "localized" and voice and bool(config.get("localization", {}).get("preserve_backing_track", False)):
-            try:
-                bgm = demucs_backing_track(media, work)
-                bgm_source = "demucs_no_vocals"
-            except RuntimeError as error:
-                if bool(config.get("localization", {}).get("require_backing_track", False)):
-                    raise RuntimeError(f"background track separation required but failed: {error}") from error
-                bgm = None
-                bgm_source = "none:demucs_unavailable"
-        progress(55, "葡语音轨已准备，未添加固定 BGM")
-    elif audio_mode in {"bgm_only", "silent"}:
-        audio_mode = "silent"
-        progress(55, "源素材无可保留音轨，输出静音且不添加固定音频")
+        progress(48, "KrillinAI转录和巴西葡语逐句翻译已完成")
+    elif audio_mode == "silent":
+        progress(48, "任务明确选择静音输出")
     else:
-        progress(55, "无对白证据，保留源音乐且不生成旁白字幕")
+        progress(48, "任务明确选择保留源音，不生成翻译字幕")
     script_payload = {
-        "hook": hook_text,
         "hook_version": hook_version,
         "text": script,
         "title_source": row["title"],
         "audio_mode": audio_mode,
         "audio_reason": audio_reason,
+        "provider": "krillinai" if audio_mode == "localized" else "none",
     }
     (work / "script_ptbr.json").write_text(json.dumps(script_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    if audio_mode in {"bgm_only", "silent"} and subtitles:
-        preferred_duration = min(60.0, source_duration)
-    elif audio_mode == "localized" and voice and (work / "subtitles_ptbr.srt").is_file():
-        voice_duration = media_duration(voice)
-        preferred_duration = min(60.0, source_duration, max(20.0, voice_duration + 3.0))
-        subtitles = work / "subtitles_ptbr.srt"
-    elif audio_mode == "localized" and voice and localization_profile.get("subtitle_mode") == "ptbr_subtitles":
-        voice_duration = media_duration(voice)
-        preferred_duration = min(60.0, source_duration, max(20.0, voice_duration + 3.0))
-        subtitles = work / "subtitles_ptbr.srt"
-        write_srt(script, max(1.0, voice_duration), subtitles)
-    elif audio_mode == "localized" and voice:
-        voice_duration = media_duration(voice)
-        preferred_duration = min(60.0, source_duration, max(20.0, voice_duration + 3.0))
-    else:
-        preferred_duration = min(60.0, source_duration)
-        stale_paths = [work / "voice_ptbr.aiff"]
-        if subtitles is None:
-            stale_paths.append(work / "subtitles_ptbr.srt")
-        for stale in stale_paths:
-            stale.unlink(missing_ok=True)
     render_engine = str(config.get("edit", {}).get("render_engine", "ffmpeg")).strip().lower()
     enforce_dual_variant_remotion(config)
-    transcript_file = next(iter(sorted([*work.glob("source*.srt"), *work.glob("source*.vtt")])), None)
     custom_design = ((config.get("remotion", {}) or {}).get("custom_design", {}) or {})
     segments = analyze_video(
         media,
         source_duration=source_duration,
         max_segments=strategy.max_segments,
-        max_duration=min(strategy.max_duration, preferred_duration),
+        max_duration=min(strategy.max_duration, source_duration),
+        segment_overlap_sec=float(config.get("edit", {}).get("segment_overlap_sec", 0)),
         strategy=strategy.segment_strategy,
         transcript_path=transcript_file,
     )
@@ -4050,11 +3479,7 @@ def produce_candidate(
         encoding="utf-8",
     )
     progress(60, f"智能切片：{len(segments)} 段 · {strategy.segment_strategy}")
-    cleanup_mode = str(config.get("edit", {}).get("source_subtitle_cleanup", "crop"))
-    crop_ratio = max(
-        0.0, min(0.35, float(config.get("edit", {}).get("source_subtitle_crop_bottom_ratio", 0.18)))
-    )
-    publishing_text = script or "Assista aos melhores momentos no Jaguar TV."
+    publishing_text = script or f"{row['title']}. {row['description']}".strip()
     reviews: list[Path] = []
     qa_results: list[dict[str, Any]] = []
     review_root = workspace_dir(config) / "ready_for_review"
@@ -4077,97 +3502,41 @@ def produce_candidate(
         progress(62 + int((segment_index - 1) * 24 / max(1, segment_total)), f"正在渲染第 {segment_index}/{segment_total} 个 Short")
         render_media = media
         render_start = float(segment["start"])
-        ocr_cleanup: dict[str, Any] = {
-            "used": False,
-            "regions": [],
-            "reason": "not_requested",
-            "media": str(media),
-        }
-        should_ocr_cleanup = should_ocr_blur_source_subtitles(
-            cleanup_mode,
-            platform=str(row["platform"]),
-            detected_language=str(row["detected_language"] or candidate_metadata.get("language") or ""),
-            title_text=(
-                f"{row['title']} {row['description']} "
-                f"{candidate_metadata.get('title') or ''} {candidate_metadata.get('description') or ''}"
-            ),
-            localization_profile=localization_profile,
-        )
-        if should_ocr_cleanup:
-            preprocessed = work / f"ocr_blurred_part{segment_index:02d}.mp4"
-            fallback_regions = (
-                config.get("edit", {}).get("ocr_fallback_regions")
-                if config.get("edit", {}).get("ocr_use_fallback_regions", False)
-                else None
-            )
-            if fallback_regions is None:
-                chinese_hard_subtitle_hint = (
-                    bool(localization_profile.get("title_has_chinese"))
-                    or str(localization_profile.get("detected_language") or "").lower().startswith("zh")
-                )
-                if (
-                    chinese_hard_subtitle_hint
-                    and bool(config.get("edit", {}).get("ocr_auto_lower_third_fallback", True))
-                ):
-                    fallback_regions = config.get("edit", {}).get(
-                        "ocr_lower_third_fallback_regions",
-                        [[0.0, 0.68, 1.0, 0.96]],
-                    )
-                else:
-                    fallback_regions = []
-            ocr_cleanup = prepare_ocr_blurred_segment(
-                media,
-                preprocessed,
-                start=render_start,
-                duration=float(segment["duration"]),
-                sigma=int(config.get("edit", {}).get("ocr_blur_sigma", 28)),
-                fallback_regions=fallback_regions,
-                backend=str(config.get("edit", {}).get("ocr_backend", "tesseract")),
-            )
-            render_media = preprocessed
-            render_start = 0.0
         title_suffix = f" - Parte {segment_index}" if segment_total > 1 else ""
         variant_outputs: list[dict[str, Any]] = []
         segment_script = script
-        segment_voice = voice
-        segment_subtitles = subtitles
+        segment_voice: Path | None = None
+        segment_subtitles: Path | None = None
         segment_publishing_text = publishing_text
         if audio_mode == "localized":
-            segment_source = source_text_for_interval(
-                work,
+            if subtitles is None:
+                raise RuntimeError("KrillinAI target subtitles are missing")
+            segment_subtitles = slice_srt_file(
+                subtitles,
+                work / f"subtitles_ptbr_part{segment_index:02d}.srt",
                 start=float(segment["start"]),
                 duration=float(segment["duration"]),
-                fallback=transcript if segment_total == 1 else "",
             )
-            if not segment_source:
-                raise RuntimeError(
-                    f"No source transcript found for localized segment {segment_index}; "
-                    "refusing to reuse a generic pt-BR narration"
-                )
-            segment_script = build_ptbr_script(
-                segment_source,
-                hook=hook_text,
-                max_body_words=int(config.get("localization", {}).get("segment_script_max_words", 64)),
-            )
+            segment_script = parse_srt(segment_subtitles).strip()
             assert_script_is_portuguese(segment_script)
-            localization_settings = config.get("localization", {}) or {}
-            if bool(localization_settings.get("voice_enabled", False)):
-                segment_voice = work / f"voice_ptbr_part{segment_index:02d}.aiff"
-                segment_subtitles = work / f"subtitles_ptbr_part{segment_index:02d}.srt"
-                write_srt(segment_script, float(segment["duration"]), segment_subtitles)
-                tts_ptbr(
-                    segment_script,
-                    segment_voice,
-                    provider=str(localization_settings.get("tts_provider", "auto")),
-                    edge_voice=str(localization_settings.get("edge_tts_voice", "pt-BR-AntonioNeural")),
-                    edge_rate=tts_rate_percent(config),
-                    config=config,
-                    subtitles=segment_subtitles,
-                )
-                progress(
-                    63 + int((segment_index - 1) * 24 / max(1, segment_total)),
-                    f"第 {segment_index}/{segment_total} 段 pt-BR 配音已生成",
-                )
+            tts_video = extract_krillinai_tts_video(
+                media,
+                work / f"krillinai_tts_input_part{segment_index:02d}.mp4",
+                start=float(segment["start"]),
+                duration=float(segment["duration"]),
+            )
+            segment_voice = krillinai_tts(
+                config,
+                segment_subtitles,
+                tts_video,
+                work,
+                task_id=f"part{segment_index:02d}",
+                voice=str(options.get("krillinai_voice") or ""),
+            )
+            progress(
+                63 + int((segment_index - 1) * 24 / max(1, segment_total)),
+                f"KrillinAI已完成第 {segment_index}/{segment_total} 段逐句配音",
+            )
             segment_publishing_text = segment_script
         if render_engine == "remotion" and (config.get("remotion", {}).get("dual_variant", {}) or {}).get("enabled", False):
             clean = work / f"{filename_stem}_clean_input.mp4"
@@ -4183,7 +3552,6 @@ def produce_candidate(
                     variant_output,
                     variant=variant,
                     subtitles=segment_subtitles,
-                    caption_regions=ocr_cleanup.get("timed_regions") if ocr_cleanup.get("used") else None,
                     job_id=package_id,
                     candidate_id=row["id"],
                 )
@@ -4347,19 +3715,19 @@ def produce_candidate(
                 "reason": audio_reason,
                 "source_audio_removed": audio_mode == "localized",
                 "source_audio_preserved": audio_mode == "preserve_source",
-                "voice": "pt-BR/Luciana" if segment_voice else "",
+                "voice": str(options.get("krillinai_voice") or krillinai_settings(config).get("voice") or "provider-default") if segment_voice else "",
                 "bgm": str(bgm) if bgm else "",
                 "bgm_source": bgm_source,
             },
-            "localization_profile": localization_profile,
+            "localization": {
+                "provider": "krillinai" if audio_mode == "localized" else "none",
+                "target_language": str(krillinai_settings(config).get("target_language") or "pt"),
+                "caption_source": str(krillinai_settings(config).get("caption_source") or "any"),
+            },
             "visual_cleanup": {
                 "layout_mode": str(config.get("edit", {}).get("layout_mode", "vertical")),
-                "source_subtitle_mode": cleanup_mode,
-                "source_subtitle_crop_bottom_ratio": crop_ratio,
-                "ocr": ocr_cleanup,
+                "source_subtitle_mode": "preserve",
             },
-            "source_outro_trim": source_outro_detection,
-            "source_outro_trim_summary": review_source_outro_summary(source_outro_detection),
             "qa": qa,
         }
         (review / "metadata.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -4418,7 +3786,7 @@ def produce_candidate(
         "assets": {
             "source": str(media),
             "original_source": str(original_media),
-            "voice": str(voice) if voice else "", "bgm": str(bgm) if bgm else "",
+            "voice": "per-segment:krillinai" if audio_mode == "localized" else "", "bgm": str(bgm) if bgm else "",
             "reviews": [str(path) for path in reviews],
         },
         "segments": segments,
@@ -4433,7 +3801,6 @@ def produce_candidate(
             "bgm_source": bgm_source,
         },
         "qa": qa_results,
-        "source_outro_trim": source_outro_detection,
     }
     (work / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     connection = connect_db(config)
@@ -4593,6 +3960,7 @@ def analyze_candidate(
         max_duration=strategy.max_duration,
         strategy=strategy.segment_strategy,
         transcript_path=transcript_file,
+        segment_overlap_sec=float(config.get("edit", {}).get("segment_overlap_sec", 0)),
     )
     if not segments or any(bool(segment.get("fallback")) for segment in segments):
         raise RuntimeError("smart analysis did not produce a qualified slice; manual slicing is required")

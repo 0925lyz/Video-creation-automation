@@ -95,7 +95,6 @@ from .server_store import (
     save_upload_chunk,
     storage_root,
 )
-from .source_outro import review_source_outro_summary
 from .source_imports import (
     SOURCE_TYPE,
     TARGET_APPROVED,
@@ -2510,7 +2509,6 @@ def candidate_rows(
                 item["highlight_score"] = float(
                     review_metadata.get("segment", {}).get("highlight_score") or item["highlight_score"]
                 )
-                item["source_outro_trim"] = review_source_outro_summary(review_metadata.get("source_outro_trim"))
             except (json.JSONDecodeError, OSError):
                 pass
         failure = failures.get(item["id"])
@@ -2756,7 +2754,6 @@ def server_review_rows(config: dict[str, Any], exclude: set[str] | None = None) 
             "failure_detail": "",
             "failure_at": "",
             "published_flag": False,
-            "source_outro_trim": review_source_outro_summary(metadata.get("source_outro_trim")),
         })
     return items
 

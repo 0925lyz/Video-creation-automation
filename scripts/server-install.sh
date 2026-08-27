@@ -52,7 +52,7 @@ echo "==> Installing system dependencies"
 sudo apt-get update
 sudo apt-get install -y \
   ca-certificates curl git gnupg lsb-release software-properties-common \
-  ffmpeg tesseract-ocr tesseract-ocr-chi-sim tesseract-ocr-chi-tra \
+  ffmpeg \
   build-essential pkg-config
 
 if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .audit import audit_review_inventory, repair_review_inventory, set_repair_run_status
 from .binaries import require_binary
-from .pyvideotrans_adapter import pyvideotrans_available
+from .krillinai_adapter import krillinai_available
 from .core import (
     analyze_candidate,
     connect_db,
@@ -63,60 +63,26 @@ def doctor(config_path: Path = Path("config/pipeline.yaml")) -> int:
         "ffprobe": binary_check("ffprobe"),
     }
     optional_checks = {
-        "tesseract": binary_check("tesseract", required=False),
         "deno": binary_check("deno", required=False),
         "node": binary_check("node", required=False),
     }
     checks = {name: item["path"] for name, item in required_checks.items()}
-    checks["tesseract"] = optional_checks["tesseract"]["path"]
     try:
-        from paddleocr import PaddleOCR  # noqa: F401
-        optional_checks["paddleocr"] = {
-            "name": "paddleocr", "path": "python-import", "required": False, "ok": True
+        krillinai_ok, krillinai_reason = krillinai_available(config)
+        required_checks["krillinai"] = {
+            "name": "krillinai",
+            "path": krillinai_reason if krillinai_ok else None,
+            "required": True,
+            "ok": krillinai_ok,
+            "reason": "" if krillinai_ok else krillinai_reason,
         }
-    except ImportError:
-        optional_checks["paddleocr"] = {
-            "name": "paddleocr", "path": None, "required": False, "ok": False,
-            "reason": "not installed",
-        }
-    checks["paddleocr"] = optional_checks["paddleocr"]["ok"]
-    try:
-        pyvideotrans_ok, pyvideotrans_reason = pyvideotrans_available(config)
-        optional_checks["pyvideotrans"] = {
-            "name": "pyvideotrans",
-            "path": pyvideotrans_reason if pyvideotrans_ok else None,
-            "required": False,
-            "ok": pyvideotrans_ok,
-            "reason": "" if pyvideotrans_ok else pyvideotrans_reason,
-        }
-        checks["pyvideotrans"] = pyvideotrans_reason
+        checks["krillinai"] = krillinai_reason
     except Exception as error:
-        optional_checks["pyvideotrans"] = {
-            "name": "pyvideotrans", "path": None, "required": False, "ok": False,
+        required_checks["krillinai"] = {
+            "name": "krillinai", "path": None, "required": True, "ok": False,
             "reason": str(error),
         }
-        checks["pyvideotrans"] = f"unavailable:{error}"
-    try:
-        import edge_tts  # noqa: F401
-        optional_checks["edge_tts"] = {
-            "name": "edge_tts", "path": "python-import", "required": False, "ok": True
-        }
-    except ImportError:
-        optional_checks["edge_tts"] = {
-            "name": "edge_tts", "path": None, "required": False, "ok": False,
-            "reason": "not installed",
-        }
-    checks["edge_tts"] = optional_checks["edge_tts"]["ok"]
-    tts = shutil.which("say") or shutil.which("espeak-ng") or shutil.which("espeak")
-    optional_checks["system_tts"] = {
-        "name": "system_tts",
-        "path": tts,
-        "required": False,
-        "ok": bool(tts),
-        "reason": "" if tts else "say/espeak-ng/espeak not found",
-    }
-    checks["tts"] = tts
-    checks["ptbr_voice"] = "Luciana (macOS)" if shutil.which("say") else ("espeak pt-br (fallback)" if tts else None)
+        checks["krillinai"] = f"unavailable:{error}"
     project_root = Path(config.get("_root") or Path.cwd())
     skill_names = (
         "jaguartv-content-factory", "jaguartv-copywriter", "content-strategy",
@@ -142,7 +108,6 @@ def doctor(config_path: Path = Path("config/pipeline.yaml")) -> int:
         "",
     )
     required_ok = all(bool(item["ok"]) for item in required_checks.values())
-    voice_ok = bool(optional_checks["edge_tts"]["ok"] or optional_checks["system_tts"]["ok"])
     checks["required"] = required_checks
     checks["optional"] = optional_checks
     checks["yt_dlp"] = yt_dlp_runtime_status()
@@ -151,23 +116,19 @@ def doctor(config_path: Path = Path("config/pipeline.yaml")) -> int:
     checks["f2"] = f2_runtime_status(f2_options)
     checks["degraded"] = [
         name for name, item in optional_checks.items()
-        if not item["ok"] and name not in {"edge_tts", "system_tts"}
+        if not item["ok"]
     ]
-    checks["ready"] = required_ok and voice_ok
+    checks["ready"] = required_ok
     if not checks["ready"]:
         checks["next_steps"] = (
             "Run scripts/bootstrap.sh, or scripts/server-install.sh on Ubuntu/Debian, then rerun doctor."
         )
     elif checks["degraded"]:
         checks["next_steps"] = (
-            "Core pipeline is ready. Install optional OCR/localization integrations only for workflows that require them."
+            "Core pipeline is ready. Optional source-platform helpers are degraded."
         )
     else:
         checks["next_steps"] = "Core pipeline is ready."
-    if not checks["edge_tts"] and tts:
-        checks["voice_warning"] = (
-            "edge-tts is unavailable; system TTS fallback will be used and may be lower quality."
-        )
     if str(environment_bin) not in str(checks["python3"]):
         checks["runtime_warning"] = (
             "doctor is not running from the project virtualenv; factory.sh will use .venv when available."
@@ -188,6 +149,7 @@ def add_strategy_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--reaction-volume", type=float, default=1.0)
     parser.add_argument("--reaction-position", default="bottom_right", choices=("top_left", "top_right", "bottom_left", "bottom_right"))
     parser.add_argument("--batch-label")
+    parser.add_argument("--krillinai-voice", help="Override the KrillinAI TTS voice for this production run.")
     parser.add_argument(
         "--rights-status",
         choices=("MANUAL_REVIEW", "OWNED", "LICENSED", "PUBLIC_DOMAIN", "CC_BY", "VERIFIED"),
@@ -198,7 +160,7 @@ def strategy_options(args: argparse.Namespace) -> dict[str, object]:
     fields = (
         "content_type", "segment_strategy", "audio_policy", "max_segments", "max_duration",
         "reaction_mode", "reaction_source", "source_volume", "reaction_volume", "reaction_position",
-        "batch_label", "rights_status", "trigger_source",
+        "batch_label", "krillinai_voice", "rights_status", "trigger_source",
     )
     return {field: getattr(args, field) for field in fields if getattr(args, field, None) is not None}
 

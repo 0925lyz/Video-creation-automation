@@ -70,52 +70,12 @@ discovery:
 
 selection:
   min_score: 45
-  max_source_duration_sec: 1800
+  max_source_duration_sec: 900
   min_height: 360
   duplicate_threshold: 0.90
   market_filter:
     enabled: true
     target: brazil_trends
-
-source_outro_trim:
-  enabled: true
-  scan_tail_sec: 15
-  min_trim_sec: 2
-  max_trim_sec: 12
-  min_confidence: 0.72
-  preserve_if_unsure: true
-  ocr_enabled: true
-  audio_guard_enabled: true
-  save_evidence_frames: true
-  promo_terms:
-    zh:
-      - 关注
-      - 私信
-      - 微信
-      - 公众号
-      - 下载
-      - 扫码
-      - 二维码
-      - 加群
-    pt:
-      - siga
-      - seguir
-      - inscreva-se
-      - baixe
-      - link na bio
-      - compartilhe
-      - whatsapp
-      - promoção
-    en:
-      - follow
-      - subscribe
-      - download
-      - link in bio
-      - scan
-      - whatsapp
-      - instagram
-      - tiktok
-      - facebook
 
 edit:
   render_engine: remotion           # dual-variant overlays/endcards require Remotion
@@ -125,60 +85,28 @@ edit:
   layout_mode: original            # original | vertical
   aspect_ratio: "source"
   resolution: [1080, 1920]         # used only when layout_mode=vertical
-  source_subtitle_cleanup: "ocr_blur"  # localized clips only; protected corners are excluded
-  ocr_backend: auto                    # auto | tesseract | paddleocr
-  source_subtitle_crop_bottom_ratio: 0.18
-  ocr_use_fallback_regions: false
-  ocr_auto_lower_third_fallback: false
-  ocr_lower_third_fallback_regions:
-    - [0.04, 0.04, 0.42, 0.20]
-    - [0.0, 0.68, 1.0, 0.96]
-  ocr_blur_sigma: 52
   default_segment_strategy: auto
 
 localization:
+  enabled: true
   target: pt-BR
-  asr_enabled: true
-  chinese_audio_detection_enabled: true
-  chinese_audio_detection_model: tiny
-  chinese_audio_threshold: 3
-  whisper_model: small
-  voice_enabled: true                  # only Bilibili/Douyin Chinese narration is replaced with pt-BR voice
-  tts_provider: auto                 # edge -> local system voice fallback
-  edge_tts_voice: pt-BR-AntonioNeural # energetic Brazilian Portuguese male voice
-  speech_style: excited_sports_male
-  preserve_backing_track: true      # Bilibili/Douyin localized clips must keep separated no-vocals backing
-  require_backing_track: true
-  tts_voice: energetic_male
-  tts_rate: 1.08
+  krillinai:
+    project_dir: workspace/external_tools/KrillinAI
+    binary: build/krillinai-cli
+    revision: 17c87b0ce59ee937b0658994718c07b9ca98c1d1
+    timeout_sec: 1800
+    origin_language: auto
+    target_language: pt
+    caption_source: any
+    max_words_per_line: 7
+    voice: ""                       # empty uses the provider default; each production run may override it
   # Hook variants for A/B testing; tracking.hook_version selects the active one
   # and is embedded in every UTM link as utm_content=<candidate-id>_<hook-version>.
   hooks:
     A: "Olha só o que aconteceu aqui."
     B: "Você precisa ver isso até o final."
-  pyvideotrans:
-    enabled: true
-    project_dir: workspace/external_tools/pyvideotrans
-    uv_bin: ~/.local/bin/uv
-    timeout_sec: 900
-    stt_enabled: false
-    sts_enabled: false
-    tts_enabled: false
-    vtv_enabled: false
-    recogn_type: 0
-    model_name: tiny
-    detect_language: auto
-    translate_type: 0
-    source_language_code: auto
-    target_language_code: pt
-    tts_type: 0
-    voice_role: pt-BR-AntonioNeural
-    voice_rate: "+8%"
-    voice_autorate: true
-
 audio:
-  # auto: only Bilibili/Douyin Chinese narration is localized; all other source audio is preserved.
-  source_mode: auto                 # auto | localize | preserve
+  source_mode: localize             # normal production delegates subtitle, translation and dubbing to KrillinAI
   source_music_volume: 1.0
   voice_volume: 1.0
   bgm_volume: 0.0                  # fixed BGM is disabled; pt-BR localization uses generated voice only
@@ -207,11 +135,12 @@ remotion:
   endcard_bgm_volume: 0.0
   captions:
     enabled: true
-    variants: [通用版]
+    variants: [通用版, FB版]
     position: bottom
-    max_width_ratio: 0.82
-    font_size_ratio: 0.052
-    background_opacity: 0.74
+    max_width_ratio: 0.68
+    font_size_ratio: 0.034
+    safe_inset_ratio: 0.12
+    background_opacity: 0.52
     max_lines: 2
     text_color: "#ffffff"
     background_color: "#050505"

@@ -20,7 +20,9 @@ Operate the shared project through `scripts/factory.sh`. Keep source discovery, 
 7. Treat `workspace/ready_for_review/<id>/` as the handoff boundary for human review.
 8. Run `scripts/factory.sh ui --host 127.0.0.1 --port 8787` for the standalone inventory, publishing, analytics, and worker dashboard. This UI does not depend on WorkBuddy.
 
-The default `audio.source_mode: auto` preserves original audio for non-localized clips and never adds fixed BGM. Only Bilibili/Douyin clips with Chinese narration evidence should remove the source track and receive Brazilian Portuguese narration/subtitles. Clips without that platform-specific Chinese speech evidence preserve their original music/audio and receive no generated narration or subtitles. Use `audio.source_mode: localize` or `preserve` only for an explicit operator override. The default foreground crop removes the lower burned-in source-caption band; inspect a frame and adjust the crop ratio when captions remain.
+Discovery accepts only sources with a known duration of 15 minutes or less. Download validates the metadata again and probes the resulting file; unknown or longer media is rejected before production. Production analyzes the original source without promotional-tail detection, OCR, caption-region detection, cropping, or subtitle blur. `edit.segment_overlap_sec` is the maximum permitted overlap between selected highlight windows and is applied by both analysis entry points.
+
+The default localization path delegates source transcription, pt-BR sentence translation, subtitle timing, and per-segment TTS to the pinned `krillinai/KrillinAI` CLI. KrillinAI provider selection lives in its ignored `config/config.toml`; a production request may override the provider-specific voice with `--krillinai-voice`. Translation or TTS failure stops production. Never invent generic narration, reuse untranslated text, or fall back to pyvideotrans, Edge TTS, system voices, or metadata-derived scripts.
 
 ## Coordination
 
@@ -46,7 +48,7 @@ This skill is the only factory entry point. The skills below provide agent guida
 
 Do not route to removed Hyperframes, WorkBuddy, SEO, sales, email, paywall, or unrelated marketing skills. Hyperframes was never a production renderer in this repository; Remotion is the single supported render engine.
 
-Check pinned external repositories with `scripts/factory.sh integrations`. MediaCrawler and Agent Reach feed normalized discovery records; `yt-dlp` performs YouTube/TikTok/Facebook/X/Instagram/Kwai downloads, while `f2` is the exclusive Douyin downloader. Synchronization is explicit and may access the network: `scripts/factory.sh integrations --sync --name mediacrawler`.
+Check pinned external repositories with `scripts/factory.sh integrations`. MediaCrawler and Agent Reach feed normalized discovery records; `yt-dlp` performs YouTube/TikTok/Facebook/X/Instagram/Kwai downloads, `f2` is the exclusive Douyin downloader, and KrillinAI is the required localization subprocess. Synchronization is explicit and may access the network: `scripts/factory.sh integrations --sync --name krillinai`.
 
 The complete pinned f2 CLI is installed editable in `workspace/tool_venvs/f2`, so its implemented profile, collection, playlist, live, and single-item modes remain available for an explicit operator task. Factory candidate downloads still go through `download`; never call f2 directly and then register its output manually. Managed Douyin login sessions are converted to a temporary mode-0600 f2 config and removed after the subprocess exits. TikTok remains on yt-dlp unless `f2-status` reports its TikTok module healthy and a future tested adapter explicitly enables it.
 

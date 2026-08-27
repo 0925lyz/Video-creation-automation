@@ -55,7 +55,7 @@ sources:
 
 selection:
   min_score: 75
-  max_source_duration_sec: 600
+  max_source_duration_sec: 900
   min_height: 720
   duplicate_threshold: 0.90
 
@@ -68,47 +68,20 @@ edit:
   aspect_ratio: "9:16"
   resolution: [1080, 1920]
   variants_per_source: 2
-  original_subtitle_strategy: [inpaint, blur, preserve_and_flag]
-  source_subtitle_cleanup: ocr_blur
-  ocr_backend: auto
-  ocr_use_fallback_regions: false
-  ocr_auto_lower_third_fallback: false
-  ocr_blur_sigma: 52
 
 localization:
+  enabled: true
   target: pt-BR
-  asr_enabled: true
-  chinese_audio_detection_enabled: true
-  chinese_audio_detection_model: tiny
-  chinese_audio_threshold: 3
-  whisper_model: small
-  voice_enabled: true
-  tts_provider: auto
-  edge_tts_voice: pt-BR-AntonioNeural
-  preserve_backing_track: true
-  require_backing_track: true
-  tts_voice: energetic_male
-  tts_rate: 1.05
-  max_subtitle_chars_per_line: 36
-  pyvideotrans:
-    enabled: false
-    project_dir: workspace/external_tools/pyvideotrans
-    uv_bin: ~/.local/bin/uv
-    timeout_sec: 900
-    stt_enabled: false
-    sts_enabled: false
-    tts_enabled: false
-    vtv_enabled: false
-    recogn_type: 0
-    model_name: tiny
-    detect_language: auto
-    translate_type: 0
-    source_language_code: auto
-    target_language_code: pt
-    tts_type: 0
-    voice_role: pt-BR-AntonioNeural
-    voice_rate: "+8%"
-    voice_autorate: true
+  krillinai:
+    project_dir: workspace/external_tools/KrillinAI
+    binary: build/krillinai-cli
+    revision: 17c87b0ce59ee937b0658994718c07b9ca98c1d1
+    timeout_sec: 1800
+    origin_language: auto
+    target_language: pt
+    caption_source: any
+    max_words_per_line: 7
+    voice: ""
 
 brand:
   logo: assets/brand/logo.png

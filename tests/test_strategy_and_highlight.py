@@ -77,6 +77,29 @@ def test_long_video_analysis_requires_manual_slice_instead_of_uniform_fallback(m
     assert segments == []
 
 
+def test_segment_overlap_setting_is_enforced_in_seconds():
+    segments = rank_highlight_windows(
+        source_duration=120,
+        audio_points=[
+            SignalPoint(20.0, 1.0),
+            SignalPoint(47.0, 0.95),
+            SignalPoint(70.0, 0.90),
+        ],
+        max_segments=3,
+        max_duration=30,
+        segment_overlap_sec=3,
+    )
+
+    for index, left in enumerate(segments):
+        for right in segments[index + 1:]:
+            overlap = max(
+                0.0,
+                min(left["source_end"], right["source_end"])
+                - max(left["source_start"], right["source_start"]),
+            )
+            assert overlap <= 3.0
+
+
 def test_parse_srt_accepts_youtube_vtt_timing_settings(tmp_path: Path):
     subtitle = tmp_path / "source.en.vtt"
     subtitle.write_text(

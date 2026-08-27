@@ -62,13 +62,13 @@ type CaptionCue = {
   startSeconds: number;
   endSeconds: number;
   text: string;
-  region?: [number, number, number, number];
 };
 
 type CaptionStyle = {
   position?: "top" | "bottom";
   maxWidthRatio?: number;
   fontSizeRatio?: number;
+  safeInsetRatio?: number;
   backgroundOpacity?: number;
   maxLines?: number;
   textColor?: string;
@@ -109,9 +109,10 @@ const fallbackProps: BrandProps = {
   captions: [],
   captionStyle: {
     position: "bottom",
-    maxWidthRatio: 0.82,
-    fontSizeRatio: 0.044,
-    backgroundOpacity: 0.74,
+    maxWidthRatio: 0.68,
+    fontSizeRatio: 0.034,
+    safeInsetRatio: 0.12,
+    backgroundOpacity: 0.52,
     maxLines: 2,
     textColor: "#ffffff",
     backgroundColor: "#050505",
@@ -291,53 +292,41 @@ function CaptionOverlays({
     return null;
   }
 
-  const maxWidth = Math.round(width * (style?.maxWidthRatio || 0.82));
-  const fontSize = Math.max(32, Math.round(height * (style?.fontSizeRatio || 0.052)));
-  const lineHeight = Math.round(fontSize * 1.22);
+  const maxWidth = Math.round(width * (style?.maxWidthRatio || 0.68));
+  const fontSize = Math.max(26, Math.round(height * (style?.fontSizeRatio || 0.034)));
+  const lineHeight = Math.round(fontSize * 1.16);
   const maxLines = Math.max(1, Math.min(2, Math.round(style?.maxLines || 2)));
-  const verticalOffset = Math.round(height * 0.07);
-  const placement: React.CSSProperties = style?.position === "top"
-    ? {top: verticalOffset}
-    : {bottom: verticalOffset};
   const background = hexToRgba(style?.backgroundColor || "#050505", style?.backgroundOpacity ?? 0.74);
   const rect = frameRect || sourceVideoRect(width, height, sourceAspectRatio || width / height, sourceFit || "cover");
+  const safeInset = Math.max(Math.round(height * 0.03), Math.round(rect.height * (style?.safeInsetRatio || 0.12)));
+  const placement: React.CSSProperties = style?.position === "top" ? {
+    top: rect.y + safeInset,
+  } : {
+    bottom: height - (rect.y + rect.height) + safeInset,
+  };
 
   return (
     <AbsoluteFill style={{pointerEvents: "none"}}>
       {captions.map((caption, index) => {
         const from = Math.max(0, Math.round(caption.startSeconds * fps));
         const durationInFrames = Math.max(1, Math.round((caption.endSeconds - caption.startSeconds) * fps));
-        const region = Array.isArray(caption.region) && caption.region.length === 4 ? caption.region : null;
-        const regionStyle: React.CSSProperties = region ? {
-          left: Math.round(Math.max(width * 0.06, Math.min(width * 0.94, rect.x + ((region[0] + region[2]) / 2) * rect.width))),
-          top: Math.round(Math.max(height * 0.08, Math.min(height * 0.92, rect.y + ((region[1] + region[3]) / 2) * rect.height))),
-          transform: "translate(-50%, -50%)",
-          maxWidth: Math.min(
-            maxWidth,
-            Math.max(Math.round(width * 0.36), Math.round((region[2] - region[0]) * rect.width + fontSize * 3))
-          ),
-        } : style?.position === "top" ? {
-          top: rect.y + Math.max(verticalOffset, rect.height * 0.06),
-          maxWidth: Math.min(maxWidth, rect.width * 0.9),
-        } : {
-          bottom: height - (rect.y + rect.height) + Math.max(verticalOffset, rect.height * 0.06),
-          maxWidth: Math.min(maxWidth, rect.width * 0.9),
-        };
         return (
           <Sequence key={`${caption.startSeconds}-${index}`} from={from} durationInFrames={durationInFrames}>
             <AbsoluteFill style={{alignItems: "center"}}>
               <div
                 style={{
                   position: "absolute",
-                  ...regionStyle,
-                  borderLeft: `${Math.max(6, Math.round(fontSize * 0.22))}px solid ${style?.accentColor || "#f2d14b"}`,
+                  ...placement,
+                  maxWidth: Math.min(maxWidth, rect.width * 0.78),
                   background,
                   color: style?.textColor || "#ffffff",
                   fontFamily: "Arial, Helvetica, sans-serif",
                   fontSize,
-                  fontWeight: 800,
+                  fontWeight: 700,
                   lineHeight: `${lineHeight}px`,
-                  padding: `${Math.round(fontSize * 0.42)}px ${Math.round(fontSize * 0.62)}px`,
+                  padding: `${Math.round(fontSize * 0.22)}px ${Math.round(fontSize * 0.40)}px`,
+                  borderRadius: Math.max(4, Math.round(fontSize * 0.12)),
+                  boxSizing: "border-box",
                   textAlign: "center",
                   textShadow: "0 2px 6px rgba(0,0,0,0.55)",
                   overflow: "hidden",

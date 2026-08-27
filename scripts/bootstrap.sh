@@ -21,14 +21,6 @@ if ! command -v ffprobe >/dev/null 2>&1 && [[ ! -x "$ROOT/node_modules/ffprobe-s
   echo "ffprobe is still missing after dependency installation." >&2
   exit 1
 fi
-if ! command -v tesseract >/dev/null 2>&1; then
-  if command -v brew >/dev/null 2>&1; then
-    brew install tesseract tesseract-lang
-  else
-    echo "Warning: tesseract is missing; OCR cleanup will be degraded until it is installed." >&2
-  fi
-fi
-
 if command -v uv >/dev/null 2>&1; then
   uv python install 3.12
   uv venv --clear --python 3.12 "$ROOT/.venv"

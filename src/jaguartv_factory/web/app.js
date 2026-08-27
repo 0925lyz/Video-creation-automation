@@ -82,7 +82,7 @@ const statusLabels = {
   APPROVED: "审核通过",
   REVISION_REQUIRED: "需返工",
   LANGUAGE_REJECTED: "语言排除",
-  TOO_LONG: "超30分钟",
+  TOO_LONG: "超过15分钟",
   DOWNLOAD_FAILED: "下载失败",
   PRODUCTION_FAILED: "制作失败",
   BLOCKED_RIGHTS: "权利待人工确认",
@@ -423,7 +423,6 @@ function renderInventory() {
     const status = task ? `${task.action === "download" ? "下载" : task.action === "produce" ? "制作" : "处理"}中` : (statusLabels[item.status] || item.status);
     const failureDetail = item.import_error_summary || item.failure_detail || "";
     const failure = failureDetail ? `<small class="failure-reason" title="${escapeHtml(failureDetail)}">${escapeHtml(failureReason(failureDetail))}</small>` : "";
-    const outro = sourceOutroText(item.source_outro_trim);
     const publicationNote = publicationStateText(item.publication_state);
     const isChild = !!item.is_child;
     const isParent = !!item.is_parent;
@@ -437,7 +436,7 @@ function renderInventory() {
       <td class="check-column"><input class="candidate-checkbox" type="checkbox" data-candidate-select="${item.id}" ${state.selectedCandidates.has(item.id) ? "checked" : ""} aria-label="选择 ${escapeHtml(item.display_title || item.title || item.id)}"></td>
       <td style="${isChild ? 'padding-left: 2rem;' : ''}"><div class="content-cell">${thumb ? `<img class="mini-cover" src="${thumb}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<div class="mini-cover"></div>`}<div><strong title="${escapeHtml(item.display_title || item.title)}">${escapeHtml(item.display_title || item.title || "未命名内容")}${item.published_flag ? `<span class="badge-published">Published</span>` : ""}<span class="category-pill">${escapeHtml(item.initial_category || "未分类")}</span></strong><small>${escapeHtml(item.platform)} · ${item.id}${item.initial_keyword ? ` · ${escapeHtml(item.initial_keyword)}` : item.keyword ? ` · ${escapeHtml(item.keyword)}` : ""}</small>${item.source_type === "source_import" ? `<small>导入时间：${dateText(item.imported_at)}</small>` : ""}</div></div></td>
       <td>${escapeHtml(item.platform)}</td>
-      <td><strong>${escapeHtml(item.content_type || "unknown")}</strong><small>${escapeHtml(item.segment_strategy || "未分析")} · ${escapeHtml(item.audio_policy || "自动")}</small>${outro}</td>
+      <td><strong>${escapeHtml(item.content_type || "unknown")}</strong><small>${escapeHtml(item.segment_strategy || "未分析")} · ${escapeHtml(item.audio_policy || "自动")}</small></td>
       <td class="import-info-cell">${importInfo}</td>
       <td>${Number(item.highlight_score || 0).toFixed(1)}</td>
       <td><span title="${escapeHtml(scoreTooltip(item.score_breakdown))}">${Number(item.score || 0).toFixed(1)}</span></td>
@@ -968,17 +967,6 @@ function renderCategoryFilters() {
     state.selectedCandidates.clear();
     loadInventory({ resetPage: true });
   }));
-}
-
-function sourceOutroText(payload) {
-  if (!payload) return `<small class="source-outro muted">原素材尾卡：未检测</small>`;
-  const stateLabel = payload.state || (payload.applied ? "已自动裁剪" : "跳过");
-  const trim = Number(payload.trim_end_sec || 0);
-  const confidence = Number(payload.confidence || 0);
-  const reason = payload.reason || "";
-  const frames = [payload.before_frame, payload.after_frame].filter(Boolean).join(" / ");
-  const detail = [reason, frames ? `证据：${frames}` : ""].filter(Boolean).join(" · ");
-  return `<small class="source-outro" title="${escapeHtml(detail)}">原素材尾卡：${escapeHtml(stateLabel)}${trim ? ` · ${trim.toFixed(1)}s` : ""}${confidence ? ` · ${(confidence * 100).toFixed(0)}%` : ""}</small>`;
 }
 
 function failureReason(detail) {
@@ -2718,6 +2706,7 @@ document.querySelector("#productionForm").addEventListener("submit", async (even
       content_type: document.querySelector("#productionContentType").value,
       segment_strategy: document.querySelector("#productionSegmentStrategy").value,
       audio_policy: document.querySelector("#productionAudioPolicy").value,
+      krillinai_voice: document.querySelector("#productionKrillinVoice").value.trim(),
       max_segments: Number(document.querySelector("#productionMaxSegments").value || 3),
       max_duration: Number(document.querySelector("#productionMaxDuration").value || 30),
       reaction_mode: mode,

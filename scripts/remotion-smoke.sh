@@ -58,7 +58,18 @@ const payload = {
     sourceFit: "cover",
     endcardFit: "contain",
     overlayPlacement: "none",
-    sourceAspectRatio: 16 / 9
+    sourceAspectRatio: 16 / 9,
+    captions: [{startSeconds: 0.05, endSeconds: 0.95, text: "Um golaço mudou o jogo."}],
+    captionStyle: {
+      position: "bottom",
+      maxWidthRatio: 0.68,
+      fontSizeRatio: 0.034,
+      safeInsetRatio: 0.12,
+      backgroundOpacity: 0.52,
+      maxLines: 2,
+      textColor: "#ffffff",
+      backgroundColor: "#050505"
+    }
   }
 };
 fs.writeFileSync(payloadPath, JSON.stringify(payload, null, 2));

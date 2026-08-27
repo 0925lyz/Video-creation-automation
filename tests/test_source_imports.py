@@ -26,7 +26,7 @@ def import_config(tmp_path: Path) -> dict:
         "_root": str(tmp_path),
         "run": {"workspace": "workspace"},
         "storage": {"root": "workspace/server_media", "max_upload_bytes": 20 * 1024 * 1024},
-        "selection": {"max_source_duration_sec": 1800},
+        "selection": {"max_source_duration_sec": 900},
     }
 
 

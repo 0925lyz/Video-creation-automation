@@ -8,7 +8,6 @@ version = "0.2.0"
 description = "Smart long-video slicing, Reaction rendering and server review pipeline for JaguarTV"
 requires-python = ">=3.12"
 dependencies = [
-  "edge-tts>=7.2.0",
   "Pillow>=11.0",
   "pandas>=2.2",
   "playwright>=1.45",
@@ -18,9 +17,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-asr = ["faster-whisper>=1.1.1"]
 design = ["opencv-python-headless>=4.10"]
-media = ["demucs>=4.0.1", "faster-whisper>=1.1.1"]
 test = ["pytest>=8.3"]
 
 [project.scripts]

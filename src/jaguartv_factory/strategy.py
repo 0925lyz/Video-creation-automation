@@ -122,7 +122,6 @@ def _candidate_text(candidate: Mapping[str, Any]) -> str:
         str(metadata.get("description") or ""),
         str(metadata.get("channel") or metadata.get("uploader") or ""),
         str(metadata.get("asr_text") or ""),
-        str(metadata.get("ocr_text") or ""),
     ]
     tags = candidate.get("tags") or metadata.get("tags") or []
     if isinstance(tags, (list, tuple, set)):
