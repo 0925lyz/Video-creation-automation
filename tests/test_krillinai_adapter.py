@@ -106,3 +106,44 @@ def test_command_failure_never_generates_fallback_content(tmp_path: Path, monkey
     with pytest.raises(KrillinAIError, match="translation_failed"):
         krillinai_subtitle(config, media, tmp_path / "job", task_id="candidate")
     assert not list(tmp_path.rglob("script_ptbr.json"))
+
+
+def test_run_uses_temporary_responses_bridge_runtime(tmp_path: Path, monkeypatch):
+    config = make_config(tmp_path)
+    config["localization"]["krillinai"]["responses_bridge"] = True
+    media = tmp_path / "source.mp4"
+    media.write_bytes(b"video")
+    seen = {}
+
+    class Runtime:
+        cwd = tmp_path / "runtime"
+
+    class Context:
+        def __enter__(self):
+            Runtime.cwd.mkdir()
+            return Runtime()
+
+        def __exit__(self, *_args):
+            return False
+
+    def fake_bridge(project, log_dir, **_kwargs):
+        seen["project"] = project
+        seen["log_dir"] = log_dir
+        return Context()
+
+    def fake_run(args, **kwargs):
+        seen["cwd"] = kwargs["cwd"]
+        output_dir = Path(args[args.index("--workdir") + 1])
+        output_dir.mkdir(parents=True, exist_ok=True)
+        origin = output_dir / "origin_language_srt.srt"
+        target = output_dir / "target_language_srt.srt"
+        origin.write_text("source", encoding="utf-8")
+        target.write_text("target", encoding="utf-8")
+        payload = {"ok": True, "outputs": {"origin_srt": str(origin), "target_srt": str(target)}}
+        return subprocess.CompletedProcess(args, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr("jaguartv_factory.krillinai_adapter.bridge_runtime", fake_bridge)
+    monkeypatch.setattr("jaguartv_factory.krillinai_adapter.subprocess.run", fake_run)
+    krillinai_subtitle(config, media, tmp_path / "job", task_id="candidate")
+    assert seen["cwd"] == Runtime.cwd
+    assert seen["project"].name == "KrillinAI"

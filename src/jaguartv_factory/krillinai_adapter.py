@@ -3,8 +3,11 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import tomllib
 from pathlib import Path
 from typing import Any, Callable, Sequence
+
+from .openai_responses_bridge import bridge_runtime
 
 
 KRILLINAI_REVISION = "17c87b0ce59ee937b0658994718c07b9ca98c1d1"
@@ -97,17 +100,32 @@ def run_krillinai(
     log_dir.mkdir(parents=True, exist_ok=True)
     timeout = max(30.0, float(krillinai_settings(config).get("timeout_sec") or 1800))
     runner = run_command or subprocess.run
+    use_bridge = bool(krillinai_settings(config).get("responses_bridge"))
     try:
-        result = runner(
-            [str(krillinai_binary(config)), *[str(value) for value in args]],
-            cwd=project,
-            check=False,
-            text=True,
-            capture_output=True,
-            timeout=timeout,
-        )
+        runtime = bridge_runtime(project, log_dir, timeout=min(timeout, 120.0)) if use_bridge else None
+        if runtime is None:
+            result = runner(
+                [str(krillinai_binary(config)), *[str(value) for value in args]],
+                cwd=project,
+                check=False,
+                text=True,
+                capture_output=True,
+                timeout=timeout,
+            )
+        else:
+            with runtime as bridge:
+                result = runner(
+                    [str(krillinai_binary(config)), *[str(value) for value in args]],
+                    cwd=bridge.cwd,
+                    check=False,
+                    text=True,
+                    capture_output=True,
+                    timeout=timeout,
+                )
     except subprocess.TimeoutExpired as error:
         raise KrillinAIError(f"KrillinAI timed out after {error.timeout}s") from error
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as error:
+        raise KrillinAIError(f"KrillinAI Responses bridge unavailable: {error}") from error
     (log_dir / "krillinai.stdout.log").write_text(result.stdout or "", encoding="utf-8")
     (log_dir / "krillinai.stderr.log").write_text(result.stderr or "", encoding="utf-8")
     payload = _last_json_line(result.stdout or "")

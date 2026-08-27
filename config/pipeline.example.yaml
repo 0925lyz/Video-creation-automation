@@ -82,6 +82,7 @@ localization:
     caption_source: any
     max_words_per_line: 7
     voice: ""
+    responses_bridge: false
 
 brand:
   logo: assets/brand/logo.png
