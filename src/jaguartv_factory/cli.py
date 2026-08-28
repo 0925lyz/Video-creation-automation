@@ -30,6 +30,7 @@ from .reaction import REACTION_MODES
 from .server_store import ALLOWED_IMAGE_EXTENSIONS, ALLOWED_MEDIA_EXTENSIONS, save_upload
 from .strategy import AUDIO_POLICIES, CONTENT_TYPES, SEGMENT_STRATEGIES
 from .sources import f2_runtime_status, yt_dlp_runtime_status
+from .trends import run_trends_job
 
 
 def print_json(value: object) -> None:
@@ -174,6 +175,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("doctor")
     subparsers.add_parser("ytdlp-status")
     subparsers.add_parser("f2-status")
+    subparsers.add_parser("trends-run")
 
     discover_parser = subparsers.add_parser("discover")
     discover_parser.add_argument("--platform", action="append", choices=["youtube", "bilibili", "douyin", "xiaohongshu", "tiktok", "facebook", "x", "instagram", "kwai"])
@@ -326,7 +328,9 @@ def main(argv: list[str] | None = None) -> int:
         print_json(status)
         return 0 if status.get("ok") else 1
     config = load_config(Path(args.config))
-    if args.command == "discover":
+    if args.command == "trends-run":
+        print_json(run_trends_job(config))
+    elif args.command == "discover":
         print_json(discover(config, platforms=args.platform, limit=args.limit, keyword_overrides=args.keyword))
     elif args.command == "ingest":
         print(inspect_url(config, args.url))

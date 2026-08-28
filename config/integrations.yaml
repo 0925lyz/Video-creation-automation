@@ -27,6 +27,12 @@ external_tools:
     checkout: workspace/external_tools/Agent-Reach
     license: MIT
     workflow: Discovery router and health evidence; normalized records are ingested with source attribution
+  last30days:
+    repository: https://github.com/mvanhorn/last30days-skill.git
+    revision: a218edadbc3361672f5e5e2cd72a8212b0b3fbb8
+    checkout: workspace/external_tools/last30days-skill
+    license: MIT
+    workflow: Daily Brazil trend research by category feeding hot_keywords
   krillinai:
     repository: https://github.com/krillinai/KrillinAI.git
     revision: 17c87b0ce59ee937b0658994718c07b9ca98c1d1

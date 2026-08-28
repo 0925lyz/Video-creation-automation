@@ -1213,7 +1213,7 @@ def test_discover_merges_runtime_hot_keywords_without_modifying_base_file(tmp_pa
         encoding="utf-8",
     )
     runtime_keywords.write_text(
-        "google_trends_br_daily:\n  enabled: true\n  terms:\n    pt:\n      - flamengo agora\n",
+        "'google_trends_br_daily:足球类':\n  enabled: true\n  category: 足球类\n  terms:\n    pt:\n      - flamengo agora\n",
         encoding="utf-8",
     )
     original = keywords.read_text(encoding="utf-8")

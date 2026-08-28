@@ -1239,6 +1239,11 @@ def discover(
         if not category_active_today(category_config or {}):
             stats["categories_skipped"] += 1
             continue
+        category_label = str(
+            (category_config or {}).get("category")
+            or (category_config or {}).get("category_label")
+            or category
+        )
         terms_by_language = category_config.get("terms", {})
         for platform in supported:
             try:
@@ -1303,7 +1308,7 @@ def discover(
                         score,
                         status,
                         json.dumps({
-                            **info, "category": category, "keyword": term,
+                            **info, "category": category_label, "keyword": term,
                             "duration_gate": {
                                 "max_source_duration_sec": source_duration_limit(config),
                                 "too_long": False,

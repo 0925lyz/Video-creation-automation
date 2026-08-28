@@ -75,7 +75,12 @@ def test_carry_forward_and_clear_use_backups_on_temporary_db(tmp_path: Path):
 def test_keyword_maintenance_installer_tracks_daily_and_two_day_timers():
     script = (ROOT / "scripts" / "install-keyword-maintenance.sh").read_text(encoding="utf-8")
 
+    assert "jaguartv-trends-run.timer" in script
+    assert "trends-run" in script
+    assert "00:10:00 America/Sao_Paulo" in script
     assert "jaguartv-import-daily-keywords.timer" in script
+    assert "00:20:00 America/Sao_Paulo" in script
     assert "OnActiveSec=2d" in script
     assert "OnUnitActiveSec=2d" in script
     assert "jaguartv-carry-forward-tag-keywords.timer" in script
+    assert "00:30:00 America/Sao_Paulo" in script

@@ -24,9 +24,10 @@
 
 ## 分类关键词维护
 
-- `scripts/import_daily_keywords.py`：每天读取 `workspace/runtime/daily_keywords.txt`，按“分类：关键词1、关键词2”格式导入。
+- `jaguartv trends-run`：每天圣保罗时间 00:10 按内容标签调用 Google Trends、`last30days-skill` 和 Agent Reach/Exa 搜索，写入自动热点关键词；教程、官方、合作、运营教学、答疑类不自动找热点。
+- `scripts/import_daily_keywords.py`：每天圣保罗时间 00:20 读取 `workspace/runtime/daily_keywords.txt`，按“分类：关键词1、关键词2”格式导入。
 - `scripts/carry_forward_tag_keywords.py`：当天没有分类关键词时，继承最近一天的数据。
-- `scripts/clear_tag_keywords.py`：每两天清空一次 `daily_keywords:*`，清空前先备份数据库；Google Trends 数据不受影响。
+- `scripts/clear_tag_keywords.py`：每两天清空一次 `daily_keywords:*`，清空前先备份数据库；自动热点数据不受影响。
 - `scripts/install-keyword-maintenance.sh`：由服务器安装和同步脚本自动安装并启用上述 systemd 定时任务。
 - `scripts/install-publish-worker.sh`：安装并启用 YouTube/X 发布 worker，服务器重启后自动恢复队列消费。
 

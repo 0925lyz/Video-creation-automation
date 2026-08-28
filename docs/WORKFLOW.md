@@ -4,8 +4,8 @@
 
 ## 视频闭环
 
-1. 北京时间每日 05:00 运行 pytrends；失败时由 Scrapling 读取 Google Trends RSS，再写入数据库和 `workspace/runtime/keywords.trends.yaml`。
-   每日分类关键词文件 `workspace/runtime/daily_keywords.txt` 在 05:10 导入；当天没有新文件或新记录时，05:20 继承最近一天的分类关键词。`daily_keywords:*` 每两天清空一次并先备份数据库，Google Trends 来源不受清理影响。
+1. 圣保罗时间每日 00:10 运行 `jaguartv trends-run`：按服务器内容标签分别调用 Google Trends、`last30days-skill` 和 Agent Reach/Exa 搜索，合并后写入 `hot_keywords` 与 `workspace/runtime/keywords.trends.yaml`。
+   自动热点跳过 `教程及优点展示类`、`官方性质类`、`合作类`、`运营教学类`、`教程及答疑类`。每日分类关键词文件 `workspace/runtime/daily_keywords.txt` 在 00:20 导入；当天没有新文件或新记录时，00:30 继承最近一天的分类关键词。`daily_keywords:*` 每两天清空一次并先备份数据库，多源自动热点来源不受清理影响。
 2. Agent Reach 与 MediaCrawler 的标准化结果、内置平台适配器、浏览器会话及手动导入统一进入候选库，并保留关键词、分类、源标题和源标签。
 3. 候选素材必须能确认时长且不超过 15 分钟；超过或时长未知的发现结果不入下载队列。`yt-dlp` 下载 YouTube、TikTok、Facebook、X、Instagram、Kwai，`f2` 只下载抖音；B站和小红书沿用独立适配器。下载前再次检查元数据，下载后再用 `ffprobe` 检查真实文件，超过 15 分钟的文件立即移除并标记 `TOO_LONG`。源媒体进入 `workspace/jobs/<candidate_id>/`，Cookie 和登录会话只保存在服务器私有目录。
 4. 制作服务直接分析原视频，不再检查或裁剪宣传尾卡，不判断 B站/抖音中文内容，也不执行 OCR、中文字幕区域识别、裁剪或模糊。智能切片使用 `segment_overlap_sec: 3` 控制片段之间最多重叠 3 秒；没有合格片段就进入失败/人工处理，不拿原片冒充切片。

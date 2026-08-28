@@ -9,7 +9,7 @@ cd "$APP_DIR"
 mkdir -p "$VENV_ROOT" "$APP_DIR/workspace/runtime/integration-status"
 
 "$PYTHON_BIN" -m jaguartv_factory.cli integrations \
-  --name mediacrawler --name scrapling --name f2 --name agent_reach --name krillinai --sync
+  --name mediacrawler --name scrapling --name f2 --name agent_reach --name last30days --name krillinai --sync
 
 install_tool() {
   local name="$1"
@@ -38,6 +38,8 @@ MEDIACRAWLER_ENV="$VENV_ROOT/mediacrawler"
 "$VENV_ROOT/agent-reach/bin/agent-reach" install --env=auto || true
 "$VENV_ROOT/agent-reach/bin/agent-reach" doctor --json \
   > "$APP_DIR/workspace/runtime/integration-status/agent-reach-doctor.json" || true
+"$PYTHON_BIN" "$APP_DIR/workspace/external_tools/last30days-skill/scripts/last30days.py" --diagnose \
+  > "$APP_DIR/workspace/runtime/integration-status/last30days-diagnose.json" || true
 "$VENV_ROOT/scrapling/bin/python" -c 'import scrapling; print(scrapling.__version__)' \
   > "$APP_DIR/workspace/runtime/integration-status/scrapling-version.txt"
 (

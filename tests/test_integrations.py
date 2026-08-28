@@ -19,6 +19,7 @@ def test_repository_integration_manifest_is_valid():
     assert "scrapling" in manifest["external_tools"]
     assert "f2" in manifest["external_tools"]
     assert "agent_reach" in manifest["external_tools"]
+    assert "last30days" in manifest["external_tools"]
     assert "google_trends" not in manifest["external_tools"]
     assert all(len(item["revision"]) == 40 for item in manifest["external_tools"].values())
 
