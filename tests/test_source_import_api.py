@@ -56,6 +56,7 @@ def test_import_capabilities_reflect_existing_admin_permission(dashboard_server:
 
     assert status == 200
     assert anonymous["default_target_area"] == "pending_production"
+    assert anonymous["source_category_labels"][-1] == "素材"
     assert anonymous["can_direct_approve"] is False
     assert administrator["can_direct_approve"] is True
 
@@ -68,6 +69,7 @@ def test_anonymous_direct_approval_is_rejected_before_business_logic(dashboard_s
                 "action": "ingest",
                 "platform": "youtube",
                 "url": "https://www.youtube.com/watch?v=abc123",
+                "source_category": "素材",
                 "target_area": "approved",
             },
         )
@@ -108,12 +110,30 @@ def test_target_area_is_a_backend_whitelist(dashboard_server: str):
                 "action": "ingest",
                 "platform": "youtube",
                 "url": "https://www.youtube.com/watch?v=abc123",
+                "source_category": "素材",
                 "target_area": "READY_FOR_REVIEW",
             },
         )
 
     assert error.value.code == 400
     assert "target_area" in json.loads(error.value.read())["error"]
+
+
+def test_ingest_api_requires_source_category_before_starting_task(dashboard_server: str):
+    with pytest.raises(urllib.error.HTTPError) as error:
+        request_json(
+            f"{dashboard_server}/api/actions",
+            headers={"X-Dashboard-Token": "test-admin-token"},
+            payload={
+                "action": "ingest",
+                "platform": "youtube",
+                "url": "https://www.youtube.com/watch?v=abc123",
+                "target_area": "pending_production",
+            },
+        )
+
+    assert error.value.code == 400
+    assert "source_category" in json.loads(error.value.read())["error"]
 
 
 def test_paginated_inventory_response_has_source_count_and_empty_state_data(

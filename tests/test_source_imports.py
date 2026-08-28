@@ -185,6 +185,7 @@ def test_create_import_defaults_to_pending_production_and_is_idempotent(tmp_path
         config,
         platform="youtube",
         url="https://www.youtube.com/watch?v=abc123",
+        source_category="素材",
         operator_id="operator-1",
         resolver=public_dns,
     )
@@ -192,14 +193,31 @@ def test_create_import_defaults_to_pending_production_and_is_idempotent(tmp_path
         config,
         platform="youtube",
         url="https://www.youtube.com/watch?v=abc123",
+        source_category="素材",
         operator_id="operator-1",
         resolver=public_dns,
     )
 
     assert first["target_area"] == "pending_production"
+    assert first["metadata"]["category"] == "素材"
     assert first["id"] == second["id"]
     assert second["reused"] is True
     assert connect_db(config).execute("SELECT COUNT(*) FROM source_imports").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("source_category", ["", "随便填写"])
+def test_source_import_requires_a_whitelisted_category(tmp_path: Path, source_category: str):
+    config = import_config(tmp_path)
+
+    with pytest.raises(ValueError, match="source_category"):
+        create_source_import(
+            config,
+            platform="youtube",
+            url="https://www.youtube.com/watch?v=category-required",
+            source_category=source_category,
+            operator_id="operator-1",
+            resolver=public_dns,
+        )
 
 
 def test_direct_approval_requires_backend_permission(tmp_path: Path):
@@ -210,6 +228,7 @@ def test_direct_approval_requires_backend_permission(tmp_path: Path):
             config,
             platform="youtube",
             url="https://www.youtube.com/watch?v=abc123",
+            source_category="素材",
             target_area="approved",
             operator_id="viewer",
             can_direct_approve=False,
@@ -225,6 +244,7 @@ def test_source_filter_combines_with_status_and_excludes_other_candidates(tmp_pa
         config,
         platform="youtube",
         url="https://www.youtube.com/watch?v=imported",
+        source_category="素材",
         operator_id="operator-1",
         resolver=public_dns,
     )
@@ -267,6 +287,7 @@ def test_factory_source_filter_excludes_imported_candidates_and_import_categorie
         config,
         platform="youtube",
         url="https://www.youtube.com/watch?v=imported",
+        source_category="素材",
         operator_id="operator-1",
         resolver=public_dns,
     )
@@ -283,7 +304,7 @@ def test_factory_source_filter_excludes_imported_candidates_and_import_categorie
     assert factory_page["items"][0]["initial_category"] == "未分类"
     assert factory_page["source_counts"] == {"all": 1, "source_import": 1}
     assert [item["id"] for item in import_page["items"]] == ["imported"]
-    assert import_page["items"][0]["initial_category"] == "教程及优点展示类"
+    assert import_page["items"][0]["initial_category"] == "素材"
 
 
 def test_pending_import_completion_enters_pending_production_only(tmp_path: Path, monkeypatch):
@@ -296,6 +317,7 @@ def test_pending_import_completion_enters_pending_production_only(tmp_path: Path
         config,
         platform="youtube",
         url="https://www.youtube.com/watch?v=pending-import",
+        source_category="素材",
         operator_id="operator-1",
         resolver=public_dns,
     )
@@ -313,7 +335,7 @@ def test_pending_import_completion_enters_pending_production_only(tmp_path: Path
     )
     connection = connect_db(config)
     candidate = connection.execute(
-        "SELECT status,title FROM candidates WHERE id='pending-import'"
+        "SELECT status,title,metadata_json FROM candidates WHERE id='pending-import'"
     ).fetchone()
     events = [
         row[0]
@@ -325,6 +347,7 @@ def test_pending_import_completion_enters_pending_production_only(tmp_path: Path
     assert completed["actual_workflow_status"] == "DOWNLOADED"
     assert candidate["status"] == "DOWNLOADED"
     assert candidate["title"] == "Imported title"
+    assert json.loads(candidate["metadata_json"])["category"] == "素材"
     assert "READY_FOR_REVIEW" not in events
     assert "APPROVED" not in events
 
@@ -341,6 +364,7 @@ def test_direct_approval_records_external_finished_asset_without_fake_production
         config,
         platform="youtube",
         url="https://www.youtube.com/watch?v=approved-import",
+        source_category="素材",
         target_area="approved",
         operator_id="admin-1",
         can_direct_approve=True,
@@ -378,6 +402,7 @@ def test_direct_approval_records_external_finished_asset_without_fake_production
     assert production_count == 0
     assert metadata["production_origin"] == "external_import"
     assert metadata["variant"] == "导入成片"
+    assert metadata["category"] == "素材"
     assert metadata["smart_slice_completed"] is False
     assert metadata["automatic_review"] is False
     assert review["review_source"] == "manual_import"
@@ -396,6 +421,7 @@ def test_uploaded_finished_asset_records_original_source_and_enqueues_publicatio
         config,
         upload_id="a" * 32,
         source_platform="original",
+        source_category="素材",
         target_area="approved",
         operator_id="admin-1",
         can_direct_approve=True,
@@ -443,6 +469,7 @@ def test_media_validation_failure_never_enters_success_state(tmp_path: Path, mon
         config,
         platform="youtube",
         url="https://www.youtube.com/watch?v=bad-import",
+        source_category="素材",
         target_area="approved",
         operator_id="admin-1",
         can_direct_approve=True,
@@ -484,6 +511,7 @@ def test_duplicate_file_hash_is_rejected_without_overwriting_existing_record(
             config,
             platform="youtube",
             url=f"https://www.youtube.com/watch?v={candidate_id}",
+            source_category="素材",
             operator_id="operator-1",
             resolver=public_dns,
         )
@@ -527,6 +555,7 @@ def test_concurrent_idempotent_creation_produces_one_import_task(tmp_path: Path)
                 config,
                 platform="youtube",
                 url="https://www.youtube.com/watch?v=concurrent",
+                source_category="素材",
                 operator_id="operator-1",
                 idempotency_key="browser-submit-1",
                 resolver=public_dns,
@@ -553,6 +582,7 @@ def test_concurrent_completion_validates_and_commits_same_import_once(tmp_path: 
         config,
         platform="youtube",
         url="https://www.youtube.com/watch?v=concurrent-complete",
+        source_category="素材",
         operator_id="operator-1",
         resolver=public_dns,
     )
@@ -610,6 +640,7 @@ def test_failure_records_target_separately_from_actual_status(tmp_path: Path):
         config,
         platform="youtube",
         url="https://www.youtube.com/watch?v=failed",
+        source_category="素材",
         target_area="approved",
         operator_id="admin-1",
         can_direct_approve=True,
@@ -635,6 +666,7 @@ def test_failure_before_candidate_creation_is_visible_in_import_inventory(tmp_pa
         config,
         platform="youtube",
         url="https://www.youtube.com/watch?v=failed-before-inspect",
+        source_category="素材",
         operator_id="operator-1",
         resolver=public_dns,
     )

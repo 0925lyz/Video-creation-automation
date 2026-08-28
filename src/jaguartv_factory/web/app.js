@@ -106,10 +106,10 @@ const scoreDimensionLabels = {
 const factoryCategoryLabels = [
   "ai短剧", "明星名人歌手", "足球球星", "足球类", "新闻类", "音乐类",
   "肥皂剧（电视剧、电影）", "少儿剧", "成人频道", "纪录片（美食、动物、地区发展）",
-  "综艺", "社交挑战", "舞蹈", "未分类",
+  "综艺", "社交挑战", "舞蹈", "素材", "未分类",
 ];
 const importCategoryLabels = [
-  "教程及优点展示类", "官方性质类", "合作类", "运营教学类", "教程及答疑类",
+  "教程及优点展示类", "官方性质类", "合作类", "运营教学类", "教程及答疑类", "素材",
 ];
 
 const posterCategoryLabels = [
@@ -245,6 +245,7 @@ async function loadInventory({ resetPage = false } = {}) {
 }
 
 function renderAll() {
+  renderDiscoverCategories();
   renderKpis();
   renderFunnel();
   renderPlatforms();
@@ -270,6 +271,18 @@ function renderAll() {
   document.querySelector("#navPosters").textContent = state.posterCounts.ALL || 0;
   document.querySelector("#navQueue").textContent = state.overview.kpis.scheduled;
   document.querySelector("#navNodes").textContent = state.workers.length;
+}
+
+function renderDiscoverCategories() {
+  const select = document.querySelector("#discoverCategory");
+  if (!select) return;
+  const selected = select.value;
+  const labels = state.importCapabilities.source_category_labels || importCategoryLabels;
+  select.innerHTML = [
+    '<option value="">请选择标签</option>',
+    ...labels.map((label) => `<option value="${escapeHtml(label)}">${escapeHtml(label)}</option>`),
+  ].join("");
+  select.value = labels.includes(selected) ? selected : "";
 }
 
 function renderKpis() {
@@ -2375,6 +2388,7 @@ document.querySelector("#logoutButton").addEventListener("click", async () => {
 document.querySelector("#discoverButton").addEventListener("click", () => {
   document.querySelector("#discoverUploadProgress").hidden = true;
   document.querySelector('input[name="discoverTarget"][value="pending_production"]').checked = true;
+  document.querySelector("#discoverCategory").value = "";
   state.discoverIdempotencyKey = globalThis.crypto?.randomUUID?.() || `source-import-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   updateDiscoverMode();
   updateDiscoverTarget();
@@ -2916,6 +2930,8 @@ document.querySelector("#discoverForm").addEventListener("submit", async (event)
   try {
     const mode = document.querySelector("#discoverMode").value;
     const platform = document.querySelector("#discoverPlatform").value;
+    const sourceCategory = document.querySelector("#discoverCategory").value.trim();
+    if (!sourceCategory) throw new Error("请选择标签");
     const targetArea = selectedDiscoverTarget();
     const targetLabel = targetArea === "approved" ? "审核通过" : "待制作";
     if (targetArea === "approved" && !state.importCapabilities.can_direct_approve) {
@@ -2930,6 +2946,7 @@ document.querySelector("#discoverForm").addEventListener("submit", async (event)
       const uploaded = await uploadServerFile(file, "source", "", setDiscoverUploadProgress, {
         source_import: true,
         source_platform: platform,
+        source_category: sourceCategory,
         target_area: targetArea,
         idempotency_key: state.discoverIdempotencyKey,
         operator_id: localStorage.getItem("jaguartvOperatorName") || "dashboard",
@@ -2955,6 +2972,7 @@ document.querySelector("#discoverForm").addEventListener("submit", async (event)
       action: "ingest",
       platform,
       url,
+      source_category: sourceCategory,
       target_area: targetArea,
       idempotency_key: state.discoverIdempotencyKey,
       operator_id: localStorage.getItem("jaguartvOperatorName") || "dashboard",

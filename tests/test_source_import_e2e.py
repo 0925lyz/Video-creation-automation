@@ -48,6 +48,9 @@ def test_finished_upload_exposes_original_source_and_submits_it():
     assert '<option value="original">原创</option>' in html
     assert "source_platform: platform" in javascript
     assert 'platformSelect.value = "original"' in javascript
+    assert '<select id="discoverCategory" required>' in html
+    assert '<option value="素材">素材</option>' in html
+    assert "source_category: sourceCategory" in javascript
 
 
 @pytest.mark.parametrize("viewport", [{"width": 1440, "height": 900}, {"width": 390, "height": 844}])
@@ -61,6 +64,8 @@ def test_source_import_dialog_defaults_and_layout(browser_dashboard: str, viewpo
             page.locator("#discoverButton").click()
 
             assert page.locator('input[name="discoverTarget"][value="pending_production"]').is_checked()
+            assert page.locator("#discoverCategory").input_value() == ""
+            assert page.locator("#discoverCategory").get_attribute("required") is not None
             assert page.locator('input[name="discoverTarget"][value="approved"]').is_disabled()
             assert page.locator("#discoverApprovalWarning").is_hidden()
             assert_box_inside_viewport(
@@ -87,6 +92,7 @@ def test_inventory_category_filters_are_isolated_by_source_area(browser_dashboar
 
             factory_labels = page.locator("#categoryFilters [data-category-filter]").all_inner_texts()
             assert any("足球类" in label for label in factory_labels)
+            assert any("素材" in label for label in factory_labels)
             assert not any("教程及优点展示类" in label for label in factory_labels)
 
             page.locator('#sourceFilters [data-source-type="source_import"]').click()
@@ -99,6 +105,7 @@ def test_inventory_category_filters_are_isolated_by_source_area(browser_dashboar
                 "合作类",
                 "运营教学类",
                 "教程及答疑类",
+                "素材",
             ]
             browser.close()
     except Exception as error:
@@ -137,10 +144,12 @@ def test_authorized_direct_approval_is_mutually_exclusive_and_confirms(browser_d
             )
             page.on("dialog", lambda dialog: dialog.accept())
             page.locator("#discoverUrl").fill("https://www.youtube.com/watch?v=abc123")
+            page.locator("#discoverCategory").select_option("素材")
             page.locator("#submitDiscovery").click()
             page.wait_for_timeout(100)
 
             assert submitted[0]["target_area"] == "approved"
+            assert submitted[0]["source_category"] == "素材"
             assert not page.locator("#discoverDialog").is_visible()
             browser.close()
     except Exception as error:

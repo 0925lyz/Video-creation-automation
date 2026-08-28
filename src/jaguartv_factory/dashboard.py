@@ -100,6 +100,7 @@ from .cta import delete_cta_asset, import_cta_stream, list_cta_assets
 from .review_edit import manual_cut_review_output, replace_review_output_design
 from .source_imports import (
     SOURCE_TYPE,
+    SOURCE_IMPORT_CATEGORY_LABELS,
     TARGET_APPROVED,
     TARGET_LABELS,
     attach_source_import_candidate,
@@ -108,6 +109,7 @@ from .source_imports import (
     create_uploaded_source_import,
     fail_source_import,
     normalize_import_url,
+    normalize_source_category,
     normalize_target_area,
     source_import_row,
     sync_source_import_workflow_status,
@@ -128,6 +130,7 @@ COPYWRITER_TONES = {"viral", "trust", "urgent", "friendly"}
 PUBLIC_UPLOAD_KINDS = {"design_image"}
 ADMIN_COOKIE_NAME = "jaguartv_admin"
 ADMIN_SESSION_SECONDS = 7 * 24 * 3600
+MATERIAL_CATEGORY_LABEL = "素材"
 INITIAL_CATEGORY_RULES = (
     ("ai短剧", (
         "ai短剧", "ai 短剧", "短剧", "微短剧", "竖屏剧", "ai drama", "ai short drama",
@@ -237,12 +240,16 @@ INITIAL_CATEGORY_RULES = (
     )),
 )
 INITIAL_CATEGORY_LABELS = [label for label, _ in INITIAL_CATEGORY_RULES]
+SHARED_CATEGORY_LABELS = ("素材",)
 IMPORT_ONLY_CATEGORY_LABELS = (
     "教程及优点展示类", "官方性质类", "合作类", "运营教学类", "教程及答疑类",
+    *SHARED_CATEGORY_LABELS,
 )
 FACTORY_CATEGORY_LABELS = tuple(
-    label for label in INITIAL_CATEGORY_LABELS if label not in IMPORT_ONLY_CATEGORY_LABELS
-)
+    label
+    for label in INITIAL_CATEGORY_LABELS
+    if label not in IMPORT_ONLY_CATEGORY_LABELS or label in SHARED_CATEGORY_LABELS
+) + SHARED_CATEGORY_LABELS
 FACTORY_SOURCE_TYPE = "factory"
 DEFAULT_YOUTUBE_CATEGORY_ACCOUNTS = {
     "新闻类": "consumer_main",
@@ -2475,6 +2482,14 @@ def candidate_rows(
         item["published_flag"] = bool(item.get("published_flag"))
         item["source_candidate_id"] = str(item.get("id") or "")
         source_import = imports_by_candidate.get(candidate_id) or {}
+        source_import_metadata: dict[str, Any] = {}
+        try:
+            source_import_metadata = json.loads(source_import.get("metadata_json") or "{}")
+        except json.JSONDecodeError:
+            pass
+        selected_import_category = str(source_import_metadata.get("category") or "")
+        if selected_import_category:
+            source_category = selected_import_category
         item["source_type"] = str(source_import.get("source_type") or "")
         item["source_import_id"] = str(source_import.get("id") or "")
         item["import_method"] = str(source_import.get("import_method") or "")
@@ -2488,14 +2503,25 @@ def candidate_rows(
         item["import_error_category"] = str(source_import.get("error_category") or "")
         item["import_error_summary"] = str(source_import.get("error_summary") or "")
         item["keyword"] = source_keyword
-        item["initial_category"] = category_for_inventory_source(
-            initial_category_for_text(
+        inferred_category = (
+            source_category
+            if source_category == MATERIAL_CATEGORY_LABEL
+            else initial_category_for_text(
+                source_category,
+                source_keyword,
+                item.get("title"),
+                item.get("description"),
+            )
+            if source_import
+            else initial_category_for_text(
                 source_keyword,
                 source_category,
                 item.get("title"),
                 item.get("description"),
-            ),
-            item["source_type"],
+            )
+        )
+        item["initial_category"] = category_for_inventory_source(
+            inferred_category, item["source_type"]
         )
         item["initial_keyword"] = source_keyword or source_category
         item["score_breakdown"] = metadata.get("score_breakdown") or {}
@@ -2757,11 +2783,15 @@ def server_review_rows(config: dict[str, Any], exclude: set[str] | None = None) 
             "created_at": updated_at,
             "updated_at": updated_at,
             "keyword": source_keyword,
-            "initial_category": initial_category_for_text(
-                source_keyword,
-                source_category,
-                source.get("title"),
-                source.get("platform"),
+            "initial_category": (
+                source_category
+                if source_category == MATERIAL_CATEGORY_LABEL
+                else initial_category_for_text(
+                    source_keyword,
+                    source_category,
+                    source.get("title"),
+                    source.get("platform"),
+                )
             ),
             "initial_keyword": source_keyword or source_category,
             "score_breakdown": {},
@@ -3558,6 +3588,7 @@ class DashboardApplication(ThreadingHTTPServer):
                 self.config,
                 platform=str(payload.get("platform") or ""),
                 url=str(payload.get("url") or ""),
+                source_category=payload.get("source_category"),
                 target_area=payload.get("target_area"),
                 operator_id=actor,
                 can_direct_approve=can_direct_approve,
@@ -3709,6 +3740,7 @@ class DashboardApplication(ThreadingHTTPServer):
                         self.config,
                         platform=str(payload.get("platform") or ""),
                         url=str(payload.get("url") or ""),
+                        source_category=payload.get("source_category"),
                         target_area=payload.get("target_area"),
                         operator_id="dashboard",
                         can_direct_approve=False,
@@ -3922,6 +3954,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return self.send_json({
                     "default_target_area": "pending_production",
                     "allowed_target_areas": ["pending_production", "approved"],
+                    "source_category_labels": list(SOURCE_IMPORT_CATEGORY_LABELS),
                     "can_direct_approve": self.authorized_for_admin(parsed),
                 })
             if parsed.path == "/api/posters":
@@ -4239,11 +4272,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if result["kind"] == "source":
                     if bool(payload.get("source_import")):
                         target_area = normalize_target_area(payload.get("target_area"))
+                        source_category = normalize_source_category(payload.get("source_category"))
                         can_direct_approve = self.authorized_for_admin(parsed)
                         source_import = create_uploaded_source_import(
                             self.server.config,
                             upload_id=upload_id,
                             source_platform=str(payload.get("source_platform") or "original"),
+                            source_category=source_category,
                             target_area=target_area,
                             operator_id=str(
                                 "dashboard_admin"

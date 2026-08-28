@@ -72,6 +72,14 @@ ALLOWED_MEDIA_MIME_TYPES = {
     "video/x-m4v",
 }
 APPROVAL_REASON = "用户确认该外部视频已是可直接使用的完整成片"
+SOURCE_IMPORT_CATEGORY_LABELS = (
+    "教程及优点展示类",
+    "官方性质类",
+    "合作类",
+    "运营教学类",
+    "教程及答疑类",
+    "素材",
+)
 
 
 class SourceImportError(RuntimeError):
@@ -91,6 +99,24 @@ def normalize_target_area(value: Any) -> str:
     if target not in ALLOWED_TARGET_AREAS:
         raise ValueError("target_area must be pending_production or approved")
     return target
+
+
+def normalize_source_category(value: Any) -> str:
+    category = str(value or "").strip()
+    if not category:
+        raise ValueError("source_category is required")
+    if category not in SOURCE_IMPORT_CATEGORY_LABELS:
+        raise ValueError("source_category is not an allowed import category")
+    return category
+
+
+def _metadata_value(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    raw = row.get("metadata_json") if isinstance(row, dict) else row["metadata_json"]
+    try:
+        parsed = json.loads(raw or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _host_matches(host: str, suffix: str) -> bool:
@@ -260,6 +286,7 @@ def create_source_import(
     *,
     platform: str,
     url: str,
+    source_category: Any = "",
     target_area: Any = TARGET_PENDING_PRODUCTION,
     operator_id: str = "",
     can_direct_approve: bool = False,
@@ -268,6 +295,7 @@ def create_source_import(
     resolver: Callable[..., list[tuple[Any, ...]]] = socket.getaddrinfo,
 ) -> dict[str, Any]:
     target = normalize_target_area(target_area)
+    category = normalize_source_category(source_category)
     if target == TARGET_APPROVED and not can_direct_approve:
         raise SourceImportPermissionError("direct approval requires dashboard administrator permission")
     method = str(import_method or "url").strip().lower()
@@ -277,7 +305,7 @@ def create_source_import(
     actor = str(operator_id or "dashboard").strip()[:200] or "dashboard"
     supplied_key = str(idempotency_key or "").strip()[:200]
     key = supplied_key or hashlib.sha256(
-        f"{SOURCE_TYPE}\x1f{normalized_url}\x1f{target}".encode("utf-8")
+        f"{SOURCE_TYPE}\x1f{normalized_url}\x1f{target}\x1f{category}".encode("utf-8")
     ).hexdigest()
     connection = connect_db(config)
     timestamp = now_iso()
@@ -292,6 +320,9 @@ def create_source_import(
             if str(existing["target_area"]) != target:
                 connection.rollback()
                 raise DuplicateSourceImportError("this URL already has an import with a different target area")
+            if str(_metadata_value(existing).get("category") or "") != category:
+                connection.rollback()
+                raise DuplicateSourceImportError("this URL already has an import with a different source category")
             connection.commit()
             return {**_row_dict(existing), "reused": True}
         connection.execute(
@@ -314,7 +345,15 @@ def create_source_import(
                 "IMPORT_PENDING",
                 "PENDING",
                 actor,
-                json.dumps({"requested_target": target, "source_type": SOURCE_TYPE}, ensure_ascii=False),
+                json.dumps(
+                    {
+                        "requested_target": target,
+                        "source_type": SOURCE_TYPE,
+                        "category": category,
+                        "initial_category": category,
+                    },
+                    ensure_ascii=False,
+                ),
                 timestamp,
                 timestamp,
             ),
@@ -325,7 +364,7 @@ def create_source_import(
             "IMPORT_REQUESTED",
             to_status="IMPORT_PENDING",
             actor=actor,
-            payload={"target_area": target, "platform": platform},
+            payload={"target_area": target, "platform": platform, "source_category": category},
         )
         connection.commit()
     except sqlite3.IntegrityError:
@@ -334,7 +373,11 @@ def create_source_import(
             "SELECT * FROM source_imports WHERE idempotency_key=? OR normalized_url=? ORDER BY created_at LIMIT 1",
             (key, normalized_url),
         ).fetchone()
-        if existing and str(existing["target_area"]) == target:
+        if (
+            existing
+            and str(existing["target_area"]) == target
+            and str(_metadata_value(existing).get("category") or "") == category
+        ):
             return {**_row_dict(existing), "reused": True}
         raise DuplicateSourceImportError("this URL already has an import task")
     return {**source_import_row(config, import_id), "reused": False}
@@ -345,12 +388,14 @@ def create_uploaded_source_import(
     *,
     upload_id: str,
     source_platform: str = "original",
+    source_category: Any = "",
     target_area: Any = TARGET_PENDING_PRODUCTION,
     operator_id: str = "",
     can_direct_approve: bool = False,
     idempotency_key: str = "",
 ) -> dict[str, Any]:
     target = normalize_target_area(target_area)
+    category = normalize_source_category(source_category)
     if target == TARGET_APPROVED and not can_direct_approve:
         raise SourceImportPermissionError("direct approval requires dashboard administrator permission")
     upload_id = str(upload_id or "").strip()
@@ -361,7 +406,7 @@ def create_uploaded_source_import(
         raise ValueError("source_platform is not allowed for uploaded media")
     actor = str(operator_id or "dashboard").strip()[:200] or "dashboard"
     key = str(idempotency_key or "").strip()[:200] or hashlib.sha256(
-        f"{SOURCE_TYPE}\x1fupload\x1f{upload_id}\x1f{target}".encode("utf-8")
+        f"{SOURCE_TYPE}\x1fupload\x1f{upload_id}\x1f{target}\x1f{category}".encode("utf-8")
     ).hexdigest()
     connection = connect_db(config)
     timestamp = now_iso()
@@ -372,6 +417,9 @@ def create_uploaded_source_import(
             "SELECT * FROM source_imports WHERE idempotency_key=? ORDER BY created_at LIMIT 1", (key,)
         ).fetchone()
         if existing:
+            if str(_metadata_value(existing).get("category") or "") != category:
+                connection.rollback()
+                raise DuplicateSourceImportError("this upload already has an import with a different source category")
             connection.commit()
             return {**_row_dict(existing), "reused": True}
         connection.execute(
@@ -398,6 +446,8 @@ def create_uploaded_source_import(
                         "upload_id": upload_id,
                         "source_type": SOURCE_TYPE,
                         "source_platform": platform,
+                        "category": category,
+                        "initial_category": category,
                     },
                     ensure_ascii=False,
                 ),
@@ -428,6 +478,25 @@ def attach_source_import_candidate(
     timestamp = now_iso()
     try:
         connection.execute("BEGIN IMMEDIATE")
+        candidate = connection.execute(
+            "SELECT metadata_json FROM candidates WHERE id=?", (candidate_id,)
+        ).fetchone()
+        if not candidate:
+            raise ValueError("candidate does not exist")
+        candidate_metadata = _metadata_value(candidate)
+        source_category = str(_metadata_value(row).get("category") or "")
+        candidate_metadata.update(
+            {
+                "source_type": SOURCE_TYPE,
+                "source_import_id": import_id,
+                "category": source_category,
+                "initial_category": source_category,
+            }
+        )
+        connection.execute(
+            "UPDATE candidates SET metadata_json=?,updated_at=? WHERE id=?",
+            (json.dumps(candidate_metadata, ensure_ascii=False), timestamp, candidate_id),
+        )
         connection.execute(
             """
             UPDATE source_imports
@@ -634,6 +703,8 @@ def _write_external_review_package(
         temporary.replace(video)
         create_import_cover(config, video, staging / "cover.jpg")
         timestamp = now_iso()
+        source_import_metadata = _metadata_value(import_row)
+        source_category = str(source_import_metadata.get("category") or "")
         metadata = {
             "job_id": candidate_id,
             "source_job_id": candidate_id,
@@ -644,6 +715,8 @@ def _write_external_review_package(
             "variant": "导入成片",
             "production_origin": "external_import",
             "source_type": SOURCE_TYPE,
+            "category": source_category,
+            "initial_category": source_category,
             "target_area": TARGET_APPROVED,
             "smart_slice_completed": False,
             "standard_render_completed": False,
@@ -652,6 +725,7 @@ def _write_external_review_package(
                 "platform": str(import_row["source_platform"]),
                 "url": str(import_row["normalized_url"]),
                 "title": title,
+                "category": source_category,
             },
             "media_validation": {
                 key: value for key, value in validation.items() if key != "path"
@@ -858,12 +932,15 @@ def _complete_source_import_locked(
             "target_area": target,
             "review_source": "manual_import" if target == TARGET_APPROVED else "",
             "external_finished_asset": target == TARGET_APPROVED,
+            "category": str(_metadata_value(import_row).get("category") or ""),
+            "initial_category": str(_metadata_value(import_row).get("category") or ""),
         }
     )
     event_type = "MANUAL_IMPORT_APPROVED" if target == TARGET_APPROVED else "IMPORT_READY_FOR_PRODUCTION"
     event_payload = {
         "import_id": import_id,
         "source_type": SOURCE_TYPE,
+        "source_category": str(_metadata_value(import_row).get("category") or ""),
         "target_area": target,
         "review_source": "manual_import" if target == TARGET_APPROVED else "",
         "file_sha256": validation["sha256"],

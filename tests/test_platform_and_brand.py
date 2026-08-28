@@ -81,6 +81,7 @@ def create_test_source_import(config: dict, url: str = "https://youtu.be/demo") 
         config,
         platform="youtube",
         url=url,
+        source_category="素材",
         operator_id="test-operator",
         resolver=lambda host, port, *args: [(2, 1, 6, "", ("142.250.72.206", port))],
     )

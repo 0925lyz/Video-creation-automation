@@ -34,6 +34,7 @@ Failure states include `LANGUAGE_REJECTED`, `DOWNLOAD_FAILED`, `PRODUCTION_FAILE
 ## Adapter Behavior
 
 Platform adapters fail independently. Continue healthy platforms when one adapter is degraded. Use `ingest <url>` when search is unavailable but a direct URL is known.
+Dashboard URL and completed-video imports require a selected category. `素材` is shared by the factory and imported-video inventories, and a manual selection takes precedence over title-based category inference.
 
 ## Local UI
 
