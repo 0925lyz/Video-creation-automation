@@ -38,8 +38,17 @@ MEDIACRAWLER_ENV="$VENV_ROOT/mediacrawler"
 "$VENV_ROOT/agent-reach/bin/agent-reach" install --env=auto || true
 "$VENV_ROOT/agent-reach/bin/agent-reach" doctor --json \
   > "$APP_DIR/workspace/runtime/integration-status/agent-reach-doctor.json" || true
-"$PYTHON_BIN" "$APP_DIR/workspace/external_tools/last30days-skill/scripts/last30days.py" --diagnose \
-  > "$APP_DIR/workspace/runtime/integration-status/last30days-diagnose.json" || true
+LAST30DAYS_SCRIPT="$APP_DIR/workspace/external_tools/last30days-skill/scripts/last30days.py"
+if [[ ! -f "$LAST30DAYS_SCRIPT" ]]; then
+  LAST30DAYS_SCRIPT="$APP_DIR/workspace/external_tools/last30days-skill/skills/last30days/scripts/last30days.py"
+fi
+if [[ -f "$LAST30DAYS_SCRIPT" ]]; then
+  "$PYTHON_BIN" "$LAST30DAYS_SCRIPT" --diagnose \
+    > "$APP_DIR/workspace/runtime/integration-status/last30days-diagnose.json" || true
+else
+  printf '{"status":"missing","tool":"last30days","error":"last30days.py not found"}\n' \
+    > "$APP_DIR/workspace/runtime/integration-status/last30days-diagnose.json"
+fi
 "$VENV_ROOT/scrapling/bin/python" -c 'import scrapling; print(scrapling.__version__)' \
   > "$APP_DIR/workspace/runtime/integration-status/scrapling-version.txt"
 (
