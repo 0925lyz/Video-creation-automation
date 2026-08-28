@@ -4,6 +4,7 @@ from PIL import Image
 
 from jaguartv_factory.core import connect_db
 from jaguartv_factory.cta import delete_cta_asset, import_cta_path, list_cta_assets, select_random_cta
+from jaguartv_factory import cli
 
 
 def make_config(tmp_path: Path) -> dict:
@@ -47,3 +48,19 @@ def test_cta_inventory_is_separate_from_candidates_and_delete_is_recoverable(tmp
     row = connect_db(config).execute("SELECT status,file_path FROM cta_assets WHERE id=?", (item["id"],)).fetchone()
     assert row["status"] == "DELETED"
     assert Path(row["file_path"]).is_file()
+
+
+def test_cta_cli_directory_ignores_macos_sidecars_and_unsupported_files(tmp_path: Path, capsys):
+    config_path = tmp_path / "config" / "pipeline.yaml"
+    config_path.parent.mkdir()
+    config_path.write_text("run:\n  workspace: workspace\nstorage:\n  root: workspace/server_media\n", encoding="utf-8")
+    source_dir = tmp_path / "cta-import"
+    source_dir.mkdir()
+    Image.new("RGB", (720, 1280), "red").save(source_dir / "real.jpg")
+    (source_dir / "._broken.mp4").write_bytes(b"macos-sidecar")
+    (source_dir / "notes.txt").write_text("ignore", encoding="utf-8")
+
+    assert cli.main(["--config", str(config_path), "cta-import", str(source_dir)]) == 0
+
+    assert len(list_cta_assets({"_root": str(tmp_path), "run": {"workspace": "workspace"}, "storage": {"root": "workspace/server_media"}})) == 1
+    assert '"original_name": "real.jpg"' in capsys.readouterr().out

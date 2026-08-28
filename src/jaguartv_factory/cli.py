@@ -27,7 +27,7 @@ from .publisher import dry_run_approved_queue, enqueue_approved_publication
 from .publish_worker import publish_due_once, run_publish_worker
 from .youtube_analytics import backfill_report, run_analytics_worker, set_backfill_status
 from .reaction import REACTION_MODES
-from .server_store import save_upload
+from .server_store import ALLOWED_IMAGE_EXTENSIONS, ALLOWED_MEDIA_EXTENSIONS, save_upload
 from .strategy import AUDIO_POLICIES, CONTENT_TYPES, SEGMENT_STRATEGIES
 from .sources import f2_runtime_status, yt_dlp_runtime_status
 
@@ -363,8 +363,16 @@ def main(argv: list[str] | None = None) -> int:
             print_json(save_upload(config, handle, filename=path.name, kind=args.kind, content_length=path.stat().st_size))
     elif args.command == "cta-import":
         path = args.path.expanduser().resolve()
-        sources = sorted(item for item in path.iterdir() if item.is_file()) if path.is_dir() else [path]
-        print_json([import_cta_path(config, item, actor="cli") for item in sources if item.name != ".DS_Store"])
+        supported = ALLOWED_IMAGE_EXTENSIONS | ALLOWED_MEDIA_EXTENSIONS
+        sources = (
+            sorted(
+                item for item in path.iterdir()
+                if item.is_file() and not item.name.startswith(".") and item.suffix.lower() in supported
+            )
+            if path.is_dir()
+            else [path]
+        )
+        print_json([import_cta_path(config, item, actor="cli") for item in sources])
     elif args.command == "cta-list":
         print_json(list_cta_assets(config))
     elif args.command == "cta-delete":
