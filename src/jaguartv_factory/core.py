@@ -30,7 +30,12 @@ from PIL import Image, ImageDraw, ImageFont
 from .binaries import common_binary_candidates, require_binary as resolve_binary
 from .compliance import assert_render_allowed
 from .highlight import analyze_video
-from .krillinai_adapter import krillinai_settings, krillinai_subtitle, krillinai_tts
+from .krillinai_adapter import (
+    krillinai_settings,
+    krillinai_subtitle,
+    krillinai_tts,
+    select_krillinai_voice,
+)
 from .reaction import compose_reaction, reaction_spec
 from .scoring import score_candidate_v2
 from .server_store import archive_review_package, storage_root
@@ -3506,6 +3511,7 @@ def produce_candidate(
         variant_outputs: list[dict[str, Any]] = []
         segment_script = script
         segment_voice: Path | None = None
+        segment_voice_name = ""
         segment_subtitles: Path | None = None
         segment_publishing_text = publishing_text
         if audio_mode == "localized":
@@ -3525,13 +3531,19 @@ def produce_candidate(
                 start=float(segment["start"]),
                 duration=float(segment["duration"]),
             )
+            segment_voice_name = select_krillinai_voice(
+                config,
+                segment_subtitles,
+                task_id=f"part{segment_index:02d}",
+                voice=str(options.get("krillinai_voice") or ""),
+            )
             segment_voice = krillinai_tts(
                 config,
                 segment_subtitles,
                 tts_video,
                 work,
                 task_id=f"part{segment_index:02d}",
-                voice=str(options.get("krillinai_voice") or ""),
+                voice=segment_voice_name,
             )
             progress(
                 63 + int((segment_index - 1) * 24 / max(1, segment_total)),
@@ -3715,7 +3727,7 @@ def produce_candidate(
                 "reason": audio_reason,
                 "source_audio_removed": audio_mode == "localized",
                 "source_audio_preserved": audio_mode == "preserve_source",
-                "voice": str(options.get("krillinai_voice") or krillinai_settings(config).get("voice") or "provider-default") if segment_voice else "",
+                "voice": segment_voice_name if segment_voice else "",
                 "bgm": str(bgm) if bgm else "",
                 "bgm_source": bgm_source,
             },

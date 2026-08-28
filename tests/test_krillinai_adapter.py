@@ -12,6 +12,7 @@ from jaguartv_factory.krillinai_adapter import (
     krillinai_available,
     krillinai_subtitle,
     krillinai_tts,
+    select_krillinai_voice,
 )
 
 
@@ -106,6 +107,32 @@ def test_command_failure_never_generates_fallback_content(tmp_path: Path, monkey
     with pytest.raises(KrillinAIError, match="translation_failed"):
         krillinai_subtitle(config, media, tmp_path / "job", task_id="candidate")
     assert not list(tmp_path.rglob("script_ptbr.json"))
+
+
+def test_automatic_voice_selection_rotates_pool_and_is_stable(tmp_path: Path):
+    config = make_config(tmp_path)
+    pool = ["pt-BR-AntonioNeural", "pt-BR-FranciscaNeural"]
+    config["localization"]["krillinai"]["voice_pool"] = pool
+    selected = {
+        select_krillinai_voice(
+            config,
+            tmp_path / f"candidate-{index}" / "subtitles.srt",
+            task_id="part01",
+        )
+        for index in range(32)
+    }
+    stable = select_krillinai_voice(
+        config,
+        tmp_path / "candidate-1" / "subtitles.srt",
+        task_id="part01",
+    )
+
+    assert selected == set(pool)
+    assert stable == select_krillinai_voice(
+        config,
+        tmp_path / "candidate-1" / "subtitles.srt",
+        task_id="part01",
+    )
 
 
 def test_run_uses_temporary_responses_bridge_runtime(tmp_path: Path, monkeypatch):

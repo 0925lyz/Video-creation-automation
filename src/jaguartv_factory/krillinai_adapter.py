@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -185,7 +186,7 @@ def krillinai_tts(
         "--line-mode", "target-only",
         "--video", str(video.resolve()),
     ]
-    selected_voice = voice.strip() or str(krillinai_settings(config).get("voice") or "").strip()
+    selected_voice = select_krillinai_voice(config, subtitles, task_id=task_id, voice=voice)
     if selected_voice:
         args.extend(["--voice", selected_voice])
     payload = run_krillinai(config, args, log_dir=output_dir)
@@ -194,3 +195,21 @@ def krillinai_tts(
     if not audio.is_file() or audio.stat().st_size <= 0:
         raise KrillinAIError("KrillinAI TTS produced no audio")
     return audio.resolve()
+
+
+def select_krillinai_voice(
+    config: dict[str, Any], subtitles: Path, *, task_id: str, voice: str = ""
+) -> str:
+    settings = krillinai_settings(config)
+    explicit = voice.strip() or str(settings.get("voice") or "").strip()
+    if explicit:
+        return explicit
+    configured_pool = settings.get("voice_pool") or []
+    if isinstance(configured_pool, str):
+        configured_pool = [part.strip() for part in configured_pool.split(",")]
+    pool = list(dict.fromkeys(str(item).strip() for item in configured_pool if str(item).strip()))
+    if not pool:
+        return ""
+    seed = f"{subtitles.expanduser().resolve()}\x1f{task_id}".encode("utf-8")
+    index = int.from_bytes(hashlib.sha256(seed).digest()[:8], "big") % len(pool)
+    return pool[index]

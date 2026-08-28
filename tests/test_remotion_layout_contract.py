@@ -24,3 +24,18 @@ def test_endcard_remains_a_single_sequence_after_content():
     source = TEMPLATE.read_text(encoding="utf-8")
     assert source.count("from={contentFrames}") == 1
     assert source.count("imgEndcard") >= 2
+
+
+def test_captions_have_no_background_box_by_default():
+    source = TEMPLATE.read_text(encoding="utf-8")
+    assert "backgroundOpacity: 0" in source
+    assert "style?.backgroundOpacity ?? 0" in source
+
+
+def test_captions_prefer_a_compact_low_single_line_rail():
+    source = TEMPLATE.read_text(encoding="utf-8")
+    assert "maxWidthRatio: 0.90" in source
+    assert "fontSizeRatio: 0.028" in source
+    assert "safeInsetRatio: 0.05" in source
+    assert "Math.max(20" in source
+    assert "rect.width * 0.90" in source

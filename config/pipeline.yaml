@@ -99,7 +99,10 @@ localization:
     target_language: pt
     caption_source: any
     max_words_per_line: 7
-    voice: ""                       # empty uses the provider default; each production run may override it
+    voice: ""                       # optional fixed override; empty selects automatically from voice_pool
+    voice_pool:
+      - pt-BR-AntonioNeural         # male
+      - pt-BR-FranciscaNeural       # female
     responses_bridge: true          # adapt the existing Responses API locally for KrillinAI translation
   # Hook variants for A/B testing; tracking.hook_version selects the active one
   # and is embedded in every UTM link as utm_content=<candidate-id>_<hook-version>.
@@ -138,10 +141,10 @@ remotion:
     enabled: true
     variants: [通用版, FB版]
     position: bottom
-    max_width_ratio: 0.68
-    font_size_ratio: 0.034
-    safe_inset_ratio: 0.12
-    background_opacity: 0.52
+    max_width_ratio: 0.90
+    font_size_ratio: 0.028
+    safe_inset_ratio: 0.05
+    background_opacity: 0.0
     max_lines: 2
     text_color: "#ffffff"
     background_color: "#050505"

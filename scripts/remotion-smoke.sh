@@ -62,10 +62,10 @@ const payload = {
     captions: [{startSeconds: 0.05, endSeconds: 0.95, text: "Um golaço mudou o jogo."}],
     captionStyle: {
       position: "bottom",
-      maxWidthRatio: 0.68,
-      fontSizeRatio: 0.034,
-      safeInsetRatio: 0.12,
-      backgroundOpacity: 0.52,
+      maxWidthRatio: 0.90,
+      fontSizeRatio: 0.028,
+      safeInsetRatio: 0.05,
+      backgroundOpacity: 0,
       maxLines: 2,
       textColor: "#ffffff",
       backgroundColor: "#050505"

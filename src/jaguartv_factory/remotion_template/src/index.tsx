@@ -109,10 +109,10 @@ const fallbackProps: BrandProps = {
   captions: [],
   captionStyle: {
     position: "bottom",
-    maxWidthRatio: 0.68,
-    fontSizeRatio: 0.034,
-    safeInsetRatio: 0.12,
-    backgroundOpacity: 0.52,
+    maxWidthRatio: 0.90,
+    fontSizeRatio: 0.028,
+    safeInsetRatio: 0.05,
+    backgroundOpacity: 0,
     maxLines: 2,
     textColor: "#ffffff",
     backgroundColor: "#050505",
@@ -292,13 +292,13 @@ function CaptionOverlays({
     return null;
   }
 
-  const maxWidth = Math.round(width * (style?.maxWidthRatio || 0.68));
-  const fontSize = Math.max(26, Math.round(height * (style?.fontSizeRatio || 0.034)));
+  const maxWidth = Math.round(width * (style?.maxWidthRatio || 0.90));
+  const fontSize = Math.max(20, Math.round(height * (style?.fontSizeRatio || 0.028)));
   const lineHeight = Math.round(fontSize * 1.16);
   const maxLines = Math.max(1, Math.min(2, Math.round(style?.maxLines || 2)));
-  const background = hexToRgba(style?.backgroundColor || "#050505", style?.backgroundOpacity ?? 0.74);
+  const background = hexToRgba(style?.backgroundColor || "#050505", style?.backgroundOpacity ?? 0);
   const rect = frameRect || sourceVideoRect(width, height, sourceAspectRatio || width / height, sourceFit || "cover");
-  const safeInset = Math.max(Math.round(height * 0.03), Math.round(rect.height * (style?.safeInsetRatio || 0.12)));
+  const safeInset = Math.max(Math.round(height * 0.01), Math.round(rect.height * (style?.safeInsetRatio || 0.05)));
   const placement: React.CSSProperties = style?.position === "top" ? {
     top: rect.y + safeInset,
   } : {
@@ -317,14 +317,14 @@ function CaptionOverlays({
                 style={{
                   position: "absolute",
                   ...placement,
-                  maxWidth: Math.min(maxWidth, rect.width * 0.78),
+                  maxWidth: Math.min(maxWidth, rect.width * 0.90),
                   background,
                   color: style?.textColor || "#ffffff",
                   fontFamily: "Arial, Helvetica, sans-serif",
                   fontSize,
                   fontWeight: 700,
                   lineHeight: `${lineHeight}px`,
-                  padding: `${Math.round(fontSize * 0.22)}px ${Math.round(fontSize * 0.40)}px`,
+                  padding: 0,
                   borderRadius: Math.max(4, Math.round(fontSize * 0.12)),
                   boxSizing: "border-box",
                   textAlign: "center",
