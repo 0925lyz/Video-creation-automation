@@ -237,6 +237,13 @@ INITIAL_CATEGORY_RULES = (
     )),
 )
 INITIAL_CATEGORY_LABELS = [label for label, _ in INITIAL_CATEGORY_RULES]
+IMPORT_ONLY_CATEGORY_LABELS = (
+    "教程及优点展示类", "官方性质类", "合作类", "运营教学类", "教程及答疑类",
+)
+FACTORY_CATEGORY_LABELS = tuple(
+    label for label in INITIAL_CATEGORY_LABELS if label not in IMPORT_ONLY_CATEGORY_LABELS
+)
+FACTORY_SOURCE_TYPE = "factory"
 DEFAULT_YOUTUBE_CATEGORY_ACCOUNTS = {
     "新闻类": "consumer_main",
     "足球球星": "consumer_football",
@@ -349,6 +356,13 @@ def explicit_category_label(value: Any) -> str:
     if not text:
         return ""
     return next((label for label in INITIAL_CATEGORY_LABELS if label == text or label in text), "")
+
+
+def category_for_inventory_source(category: str, source_type: str) -> str:
+    label = str(category or "未分类")
+    if source_type == SOURCE_TYPE:
+        return label if label in IMPORT_ONLY_CATEGORY_LABELS else "未分类"
+    return label if label in FACTORY_CATEGORY_LABELS else "未分类"
 
 
 def utc_now() -> datetime:
@@ -2474,11 +2488,14 @@ def candidate_rows(
         item["import_error_category"] = str(source_import.get("error_category") or "")
         item["import_error_summary"] = str(source_import.get("error_summary") or "")
         item["keyword"] = source_keyword
-        item["initial_category"] = initial_category_for_text(
-            source_keyword,
-            source_category,
-            item.get("title"),
-            item.get("description"),
+        item["initial_category"] = category_for_inventory_source(
+            initial_category_for_text(
+                source_keyword,
+                source_category,
+                item.get("title"),
+                item.get("description"),
+            ),
+            item["source_type"],
         )
         item["initial_keyword"] = source_keyword or source_category
         item["score_breakdown"] = metadata.get("score_breakdown") or {}
@@ -2620,7 +2637,7 @@ def candidate_page(
     page = max(1, int(page or 1))
     page_size = max(1, min(int(page_size or 50), 100))
     source_type = str(source_type or "").strip()
-    if source_type not in {"", SOURCE_TYPE}:
+    if source_type not in {"", FACTORY_SOURCE_TYPE, SOURCE_TYPE}:
         raise ValueError("unsupported source_type filter")
     platform = str(platform or "").strip().lower()
     category = str(category or "").strip()
@@ -2628,8 +2645,12 @@ def candidate_page(
     rows = candidate_rows(config, status, None)
 
     def matches(item: dict[str, Any], *, include_source: bool = True) -> bool:
-        if include_source and source_type and str(item.get("source_type") or "") != source_type:
-            return False
+        if include_source:
+            item_source_type = str(item.get("source_type") or "")
+            if source_type == SOURCE_TYPE and item_source_type != SOURCE_TYPE:
+                return False
+            if source_type == FACTORY_SOURCE_TYPE and item_source_type == SOURCE_TYPE:
+                return False
         if platform and str(item.get("platform") or "").lower() != platform:
             return False
         if category and str(item.get("initial_category") or "未分类") != category:
@@ -2654,13 +2675,14 @@ def candidate_page(
     source_import_count = sum(
         1 for item in base_rows if str(item.get("source_type") or "") == SOURCE_TYPE
     )
+    factory_count = len(base_rows) - source_import_count
     return {
         "items": filtered[start:start + page_size],
         "page": page,
         "page_size": page_size,
         "total": total,
         "pages": pages,
-        "source_counts": {"all": len(base_rows), SOURCE_TYPE: source_import_count},
+        "source_counts": {"all": factory_count, SOURCE_TYPE: source_import_count},
         "filters": {
             "status": status or "",
             "source_type": source_type,

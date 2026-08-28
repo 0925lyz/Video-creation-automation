@@ -249,6 +249,43 @@ def test_source_filter_combines_with_status_and_excludes_other_candidates(tmp_pa
     assert page["source_counts"]["source_import"] == 1
 
 
+def test_factory_source_filter_excludes_imported_candidates_and_import_categories_do_not_leak(tmp_path: Path):
+    config = import_config(tmp_path)
+    insert_candidate(config, "ordinary", status="DOWNLOADED")
+    insert_candidate(config, "imported", status="DOWNLOADED")
+    connection = connect_db(config)
+    connection.execute(
+        "UPDATE candidates SET metadata_json=? WHERE id='ordinary'",
+        (json.dumps({"keyword": "comunicado oficial"}),),
+    )
+    connection.execute(
+        "UPDATE candidates SET metadata_json=? WHERE id='imported'",
+        (json.dumps({"keyword": "tutorial completo como usar"}),),
+    )
+    connection.commit()
+    record = create_source_import(
+        config,
+        platform="youtube",
+        url="https://www.youtube.com/watch?v=imported",
+        operator_id="operator-1",
+        resolver=public_dns,
+    )
+    connection.execute(
+        "UPDATE source_imports SET candidate_id=?,actual_workflow_status='DOWNLOADED' WHERE id=?",
+        ("imported", record["id"]),
+    )
+    connection.commit()
+
+    factory_page = candidate_page(config, status="DOWNLOADED", source_type="factory", page_size=20)
+    import_page = candidate_page(config, status="DOWNLOADED", source_type="source_import", page_size=20)
+
+    assert [item["id"] for item in factory_page["items"]] == ["ordinary"]
+    assert factory_page["items"][0]["initial_category"] == "未分类"
+    assert factory_page["source_counts"] == {"all": 1, "source_import": 1}
+    assert [item["id"] for item in import_page["items"]] == ["imported"]
+    assert import_page["items"][0]["initial_category"] == "教程及优点展示类"
+
+
 def test_pending_import_completion_enters_pending_production_only(tmp_path: Path, monkeypatch):
     config = import_config(tmp_path)
     insert_candidate(config, "pending-import")

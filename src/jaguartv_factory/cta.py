@@ -20,6 +20,7 @@ from .server_store import ALLOWED_IMAGE_EXTENSIONS, ALLOWED_MEDIA_EXTENSIONS, pu
 
 CTA_MEDIA_TYPES = {"image", "video"}
 CTA_ORIENTATIONS = {"landscape", "portrait"}
+CTA_ORIENTATION_NAMES = {"landscape": "横版", "portrait": "竖版"}
 
 
 def _now() -> str:
@@ -89,14 +90,27 @@ def _probe(path: Path) -> tuple[str, int, int, float, str]:
     return media_type, int(width), int(height), float(duration), mime_type
 
 
-def _destination(config: dict[str, Any], original_name: str, digest: str) -> Path:
+def _managed_destination(
+    config: dict[str, Any], connection: Any, orientation: str, suffix: str
+) -> tuple[str, Path]:
     directory = storage_root(config) / "cta"
     directory.mkdir(parents=True, exist_ok=True)
-    safe_name = _safe_name(original_name)
-    destination = directory / safe_name
-    if destination.exists() and _sha256(destination) != digest:
-        destination = directory / f"{Path(safe_name).stem}-{digest[:8]}{Path(safe_name).suffix}"
-    return destination
+    prefix = CTA_ORIENTATION_NAMES[orientation]
+    pattern = re.compile(rf"^{re.escape(prefix)}(\d+)(?:\.[^.]+)?$")
+    used = {
+        int(match.group(1))
+        for row in connection.execute(
+            "SELECT name FROM cta_assets WHERE status='ACTIVE' AND orientation=?", (orientation,)
+        )
+        if (match := pattern.fullmatch(Path(str(row["name"])).name))
+    }
+    index = max(used, default=0) + 1
+    while True:
+        name = f"{prefix}{index}{suffix.lower()}"
+        destination = directory / name
+        if index not in used and not destination.exists():
+            return name, destination
+        index += 1
 
 
 def import_cta_path(
@@ -110,21 +124,24 @@ def import_cta_path(
     media_type, width, height, duration, mime_type = _probe(source)
     digest = _sha256(source)
     connection = connect_db(config)
-    existing = connection.execute(
-        "SELECT * FROM cta_assets WHERE sha256=? AND status='ACTIVE' ORDER BY created_at DESC LIMIT 1",
-        (digest,),
-    ).fetchone()
-    if existing:
-        return cta_row(config, dict(existing))
-    name = _safe_name(original_name or source.name)
-    destination = _destination(config, name, digest)
-    temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.importing")
+    temporary: Path | None = None
+    destination: Path | None = None
     try:
+        connection.execute("BEGIN IMMEDIATE")
+        existing = connection.execute(
+            "SELECT * FROM cta_assets WHERE sha256=? AND status='ACTIVE' ORDER BY created_at DESC LIMIT 1",
+            (digest,),
+        ).fetchone()
+        if existing:
+            connection.commit()
+            return cta_row(config, dict(existing))
+        orientation = "landscape" if width >= height else "portrait"
+        name, destination = _managed_destination(config, connection, orientation, source.suffix)
+        temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.importing")
         shutil.copy2(source, temporary)
         temporary.replace(destination)
         identifier = uuid.uuid4().hex
         timestamp = _now()
-        orientation = "landscape" if width >= height else "portrait"
         connection.execute(
             """
             INSERT INTO cta_assets(
@@ -140,8 +157,10 @@ def import_cta_path(
         )
         connection.commit()
     except Exception:
-        temporary.unlink(missing_ok=True)
-        if destination.exists() and not connection.execute(
+        connection.rollback()
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+        if destination is not None and destination.exists() and not connection.execute(
             "SELECT 1 FROM cta_assets WHERE file_path=?", (str(destination),)
         ).fetchone():
             destination.unlink(missing_ok=True)
@@ -197,9 +216,83 @@ def list_cta_assets(config: dict[str, Any]) -> list[dict[str, Any]]:
     from .core import connect_db
 
     rows = connect_db(config).execute(
-        "SELECT * FROM cta_assets WHERE status='ACTIVE' ORDER BY created_at DESC, name"
+        """
+        SELECT * FROM cta_assets WHERE status='ACTIVE'
+        ORDER BY CASE orientation WHEN 'landscape' THEN 0 ELSE 1 END,created_at,id
+        """
     ).fetchall()
     return [cta_row(config, dict(row)) for row in rows if Path(str(row["file_path"])).is_file()]
+
+
+def rename_active_cta_assets(config: dict[str, Any], *, actor: str = "system") -> list[dict[str, Any]]:
+    """Rename active CTA files by orientation while preserving upload provenance."""
+    from .core import connect_db
+
+    del actor  # Reserved for a future CTA audit-event table.
+    connection = connect_db(config)
+    directory = (storage_root(config) / "cta").resolve()
+    directory.mkdir(parents=True, exist_ok=True)
+    staged: list[tuple[dict[str, Any], Path, Path, Path]] = []
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        rows = [
+            dict(row)
+            for row in connection.execute(
+                """
+                SELECT * FROM cta_assets WHERE status='ACTIVE'
+                ORDER BY CASE orientation WHEN 'landscape' THEN 0 ELSE 1 END,created_at,id
+                """
+            )
+        ]
+        counters = {orientation: 0 for orientation in CTA_ORIENTATIONS}
+        sources = {Path(str(row["file_path"])).resolve() for row in rows}
+        for row in rows:
+            orientation = str(row.get("orientation") or "")
+            if orientation not in CTA_ORIENTATIONS:
+                raise ValueError(f"CTA {row['id']} has an invalid orientation")
+            source = Path(str(row["file_path"])).resolve()
+            if source.parent != directory or source.is_symlink() or not source.is_file():
+                raise ValueError(f"CTA {row['id']} is outside managed storage or missing")
+            counters[orientation] += 1
+            name = f"{CTA_ORIENTATION_NAMES[orientation]}{counters[orientation]}{source.suffix.lower()}"
+            destination = directory / name
+            if destination.exists() and destination.resolve() not in sources:
+                raise FileExistsError(f"CTA rename target already exists: {destination.name}")
+            temporary = directory / f".{row['id']}.{uuid.uuid4().hex}.renaming{source.suffix.lower()}"
+            row["managed_name"] = name
+            staged.append((row, source, temporary, destination))
+
+        for _, source, temporary, destination in staged:
+            if source != destination:
+                source.replace(temporary)
+        for _, source, temporary, destination in staged:
+            if source != destination:
+                temporary.replace(destination)
+
+        timestamp = _now()
+        for row, _, _, destination in staged:
+            connection.execute(
+                "UPDATE cta_assets SET name=?,file_path=?,updated_at=? WHERE id=?",
+                (row["managed_name"], str(destination), timestamp, row["id"]),
+            )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        for _, source, temporary, destination in reversed(staged):
+            current = destination if destination.exists() else temporary
+            if source != destination and current.exists() and not source.exists():
+                current.replace(source)
+        raise
+
+    return [
+        cta_row(config, dict(row))
+        for row in connection.execute(
+            """
+            SELECT * FROM cta_assets WHERE status='ACTIVE'
+            ORDER BY CASE orientation WHEN 'landscape' THEN 0 ELSE 1 END,created_at,id
+            """
+        )
+    ]
 
 
 def get_cta_asset(config: dict[str, Any], asset_id: str, *, include_path: bool = False) -> dict[str, Any]:

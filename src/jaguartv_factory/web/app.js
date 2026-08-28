@@ -18,7 +18,7 @@ const state = {
   tasks: [],
   selectedCandidates: new Set(),
   status: "",
-  sourceFilter: "",
+  sourceFilter: "factory",
   platformFilter: "",
   categoryFilter: "",
   search: "",
@@ -103,11 +103,13 @@ const scoreDimensionLabels = {
   editability: "可剪辑性", brazil_fit: "巴西适配", freshness: "新鲜度",
 };
 
-const initialCategoryLabels = [
+const factoryCategoryLabels = [
   "ai短剧", "明星名人歌手", "足球球星", "足球类", "新闻类", "音乐类",
   "肥皂剧（电视剧、电影）", "少儿剧", "成人频道", "纪录片（美食、动物、地区发展）",
-  "综艺", "社交挑战", "舞蹈", "教程及优点展示类", "官方性质类",
-  "合作类", "运营教学类", "教程及答疑类", "未分类",
+  "综艺", "社交挑战", "舞蹈", "未分类",
+];
+const importCategoryLabels = [
+  "教程及优点展示类", "官方性质类", "合作类", "运营教学类", "教程及答疑类",
 ];
 
 const posterCategoryLabels = [
@@ -959,9 +961,10 @@ function renderCategoryFilters() {
     const label = item.initial_category || "未分类";
     counts[label] = (counts[label] || 0) + 1;
   });
+  const labels = state.sourceFilter === "source_import" ? importCategoryLabels : factoryCategoryLabels;
   container.innerHTML = [
     `<button class="${state.categoryFilter ? "" : "active"}" data-category-filter="" type="button">全部分类<span>${Object.values(counts).reduce((sum, value) => sum + value, 0)}</span></button>`,
-    ...initialCategoryLabels.map((label) => `<button class="${state.categoryFilter === label ? "active" : ""}" data-category-filter="${escapeHtml(label)}" type="button">${escapeHtml(label)}<span>${counts[label] || 0}</span></button>`),
+    ...labels.map((label) => `<button class="${state.categoryFilter === label ? "active" : ""}" data-category-filter="${escapeHtml(label)}" type="button">${escapeHtml(label)}<span>${counts[label] || 0}</span></button>`),
   ].join("");
   container.querySelectorAll("[data-category-filter]").forEach((button) => button.addEventListener("click", () => {
     state.categoryFilter = button.dataset.categoryFilter || "";
@@ -1829,7 +1832,7 @@ function renderCtaAssets() {
         ? `<video class="cta-preview" src="${escapeHtml(item.preview_url)}" controls preload="metadata"></video>`
         : `<img class="cta-preview" src="${escapeHtml(item.preview_url)}" alt="${escapeHtml(item.name)}" loading="lazy">`}
       <div class="cta-meta">
-        <strong title="${escapeHtml(item.original_name || item.name)}">${escapeHtml(item.original_name || item.name)}</strong>
+        <strong title="原文件：${escapeHtml(item.original_name || item.name)}">${escapeHtml(item.name)}</strong>
         <small>${item.orientation === "landscape" ? "横版" : "竖版"} · ${item.media_type === "video" ? `视频 ${Number(item.duration_sec).toFixed(1)} 秒` : "图片 2 秒"}</small>
         <small>${item.width} × ${item.height} · ${formatBytes(item.size_bytes)}</small>
         <div class="cta-actions"><a class="table-action" href="${escapeHtml(item.preview_url)}" target="_blank" rel="noopener">预览</a><button class="table-action danger-action" data-cta-delete="${escapeHtml(item.id)}" type="button">删除</button></div>
@@ -1854,7 +1857,7 @@ async function uploadCtaFiles(files) {
 
 async function deleteCtaAsset(assetId) {
   const item = state.ctaAssets.find((asset) => asset.id === assetId);
-  if (!item || !confirm(`删除 CTA「${item.original_name || item.name}」？`)) return;
+  if (!item || !confirm(`删除 CTA「${item.name}」？`)) return;
   await api(`/api/cta/${encodeURIComponent(assetId)}/delete`, { method: "POST", body: "{}" });
   state.ctaAssets = state.ctaAssets.filter((asset) => asset.id !== assetId);
   renderCtaAssets();
@@ -2423,6 +2426,7 @@ document.querySelectorAll("#statusFilters button").forEach((button) => button.ad
 }));
 document.querySelectorAll("#sourceFilters [data-source-type]").forEach((button) => button.addEventListener("click", () => {
   state.sourceFilter = button.dataset.sourceType || "";
+  state.categoryFilter = "";
   state.selectedCandidates.clear();
   loadInventory({ resetPage: true });
 }));

@@ -76,6 +76,37 @@ def test_source_import_dialog_defaults_and_layout(browser_dashboard: str, viewpo
         raise
 
 
+def test_inventory_category_filters_are_isolated_by_source_area(browser_dashboard: str):
+    playwright = pytest.importorskip("playwright.sync_api")
+    try:
+        with playwright.sync_playwright() as runtime:
+            browser = runtime.chromium.launch(headless=True)
+            page = browser.new_page(viewport={"width": 1440, "height": 900})
+            page.goto(browser_dashboard, wait_until="networkidle")
+            page.locator('[data-view="inventory"]').click()
+
+            factory_labels = page.locator("#categoryFilters [data-category-filter]").all_inner_texts()
+            assert any("足球类" in label for label in factory_labels)
+            assert not any("教程及优点展示类" in label for label in factory_labels)
+
+            page.locator('#sourceFilters [data-source-type="source_import"]').click()
+            page.wait_for_timeout(100)
+            import_labels = page.locator("#categoryFilters [data-category-filter]").all_inner_texts()
+            assert [label.rstrip("0") for label in import_labels] == [
+                "全部分类",
+                "教程及优点展示类",
+                "官方性质类",
+                "合作类",
+                "运营教学类",
+                "教程及答疑类",
+            ]
+            browser.close()
+    except Exception as error:
+        if "Executable doesn't exist" in str(error):
+            pytest.skip("Playwright Chromium is not installed")
+        raise
+
+
 def test_authorized_direct_approval_is_mutually_exclusive_and_confirms(browser_dashboard: str):
     playwright = pytest.importorskip("playwright.sync_api")
     submitted: list[dict] = []
