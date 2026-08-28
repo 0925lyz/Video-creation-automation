@@ -2100,16 +2100,9 @@ def remotion_caption_style(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def remotion_captions_enabled_for_variant(config: dict[str, Any], variant: str) -> bool:
+def remotion_captions_enabled(config: dict[str, Any]) -> bool:
     captions = ((config.get("remotion", {}) or {}).get("captions", {}) or {})
-    if not bool(captions.get("enabled", False)):
-        return False
-    variants = captions.get("variants", ["通用版", "FB版"])
-    if isinstance(variants, str):
-        variants = [part.strip() for part in variants.split(",")]
-    if not isinstance(variants, list):
-        return False
-    return variant in {str(item).strip() for item in variants}
+    return bool(captions.get("enabled", False))
 
 
 def load_font(size: int) -> ImageFont.FreeTypeFont:
@@ -2584,14 +2577,9 @@ def production_design_config(config: dict[str, Any], options: dict[str, Any]) ->
     patched = copy.deepcopy(config)
     patched.setdefault("edit", {})["render_engine"] = "remotion"
     remotion = patched.setdefault("remotion", {})
-    remotion.setdefault("dual_variant", {})
-    remotion["dual_variant"]["enabled"] = True
     if "layers" in design:
         patched.setdefault("edit", {})["layout_mode"] = "original"
         raw_layers = design.get("layers") if isinstance(design.get("layers"), list) else []
-        raw_variants = design.get("variants") if isinstance(design.get("variants"), list) else ["通用版", "FB版"]
-        variants = [str(item).strip() for item in raw_variants if str(item).strip() in {"通用版", "FB版"}]
-        variants = ["通用版", "FB版"]
         layers: list[dict[str, Any]] = []
         for index, raw in enumerate(raw_layers):
             if not isinstance(raw, dict):
@@ -2631,7 +2619,6 @@ def production_design_config(config: dict[str, Any], options: dict[str, Any]) ->
         custom_design_payload = {
             "enabled": True,
             "layers": layers,
-            "variants": variants,
             "preserve_source_canvas": True,
             "whole_source": True,
         }
@@ -2644,20 +2631,16 @@ def production_design_config(config: dict[str, Any], options: dict[str, Any]) ->
         filtered_asset_ids = {
             str(key): str(value).strip()
             for key, value in base_asset_ids.items()
-            if str(key) in {"通用版", "FB版"} and str(value).strip()
+            if str(key) == "通用版" and str(value).strip()
         }
         if filtered_asset_ids:
             custom_design_payload["base_asset_ids"] = filtered_asset_ids
         remotion["custom_design"] = custom_design_payload
         return patched
-    if str(design.get("overlay_left") or "").strip():
-        remotion["dual_variant"]["tu_yi"] = str(design.get("overlay_left")).strip()
-    if str(design.get("overlay_right") or "").strip():
-        remotion["dual_variant"]["tu_er"] = str(design.get("overlay_right")).strip()
     if str(design.get("endcard_portrait") or "").strip():
-        remotion["dual_variant"]["lv_tu"] = str(design.get("endcard_portrait")).strip()
+        remotion["portrait_endcard"] = str(design.get("endcard_portrait")).strip()
     if str(design.get("endcard_landscape") or "").strip():
-        remotion["dual_variant"]["lan_tu"] = str(design.get("endcard_landscape")).strip()
+        remotion["landscape_endcard"] = str(design.get("endcard_landscape")).strip()
     for source, target in (
         ("top_badge", "top_badge"),
         ("headline", "bottom_headline"),
@@ -2719,17 +2702,6 @@ def review_output_video_path_by_id(config: dict[str, Any], asset_id: str) -> Pat
     return None
 
 
-def remotion_output_variants(config: dict[str, Any]) -> list[str]:
-    custom_design = ((config.get("remotion", {}) or {}).get("custom_design", {}) or {})
-    raw_variants = custom_design.get("variants") if custom_design.get("enabled") else None
-    if isinstance(raw_variants, str):
-        raw_variants = [part.strip() for part in raw_variants.split(",")]
-    if not isinstance(raw_variants, list):
-        return ["通用版", "FB版"]
-    variants = [str(item).strip() for item in raw_variants if str(item).strip() in {"通用版", "FB版"}]
-    return variants or ["通用版", "FB版"]
-
-
 def custom_design_preserves_source(config: dict[str, Any]) -> bool:
     custom_design = ((config.get("remotion", {}) or {}).get("custom_design", {}) or {})
     return bool(custom_design.get("enabled")) and bool(custom_design.get("preserve_source_canvas", False))
@@ -2757,7 +2729,7 @@ def remotion_design_base_video(config: dict[str, Any], variant: str | None = Non
 
 
 def configured_remotion_asset(config: dict[str, Any], key: str) -> Path:
-    settings = config.get("remotion", {}).get("dual_variant", {}) or {}
+    settings = config.get("remotion", {}) or {}
     path = resolve_config_path(config, str(settings.get(key) or ""))
     if not path.is_file() or path.stat().st_size <= 0:
         raise FileNotFoundError(f"missing Remotion asset {key}: {path}")
@@ -2772,30 +2744,23 @@ def selected_endcard_asset(config: dict[str, Any], width: int, height: int) -> t
     horizontal_min = float(settings.get("horizontal_min", 1.6))
     horizontal_max = float(settings.get("horizontal_max", 1.9))
     if vertical_min <= aspect <= vertical_max:
-        return configured_remotion_asset(config, "lv_tu"), "9:16"
+        return configured_remotion_asset(config, "portrait_endcard"), "9:16"
     if horizontal_min <= aspect <= horizontal_max:
-        return configured_remotion_asset(config, "lan_tu"), "16:9"
+        return configured_remotion_asset(config, "landscape_endcard"), "16:9"
     if aspect < 1.0:
-        return configured_remotion_asset(config, "lv_tu"), "9:16_fallback"
-    return configured_remotion_asset(config, "lan_tu"), "16:9_fallback"
+        return configured_remotion_asset(config, "portrait_endcard"), "9:16_fallback"
+    return configured_remotion_asset(config, "landscape_endcard"), "16:9_fallback"
 
 
-def enforce_dual_variant_remotion(config: dict[str, Any]) -> None:
-    """The production contract requires Remotion-rendered 通用版 + FB版 outputs.
-
-    通用版 carries an external bottom banner and one 1.5s full-frame endcard.
-    FB版 keeps its established clean layout. Falling back to an FFmpeg copy path
-    would silently ship the wrong package, so fail loudly instead.
-    """
+def enforce_generic_remotion(config: dict[str, Any]) -> None:
+    """Require the single generic Remotion output and its promotion assets."""
     if str(config.get("edit", {}).get("render_engine", "ffmpeg")).strip().lower() != "remotion":
         raise RuntimeError("standard production requires edit.render_engine=remotion")
     remotion_settings = config.get("remotion", {}) or {}
-    if not (remotion_settings.get("dual_variant", {}) or {}).get("enabled", False):
-        raise RuntimeError("standard production requires remotion.dual_variant.enabled=true")
     promo = float(remotion_settings.get("promo_duration_sec", 1.5))
     if abs(promo - 1.5) > 0.01:
         raise RuntimeError("standard production requires remotion.promo_duration_sec=1.5")
-    for key in ("bottom_banner", "lv_tu", "lan_tu"):
+    for key in ("bottom_banner", "portrait_endcard", "landscape_endcard"):
         configured_remotion_asset(config, key)
 
 
@@ -2885,7 +2850,7 @@ def run_remotion_cli_render(
     remotion_bin = runtime / "node_modules" / ".bin" / "remotion"
     try:
         result = run_command([
-            str(remotion_bin), "render", "src/index.tsx", "JaguarTVVariant",
+            str(remotion_bin), "render", "src/index.tsx", "JaguarTVGeneric",
             str(render_target), "--props", json.dumps(props, ensure_ascii=False), "--log", "error",
         ], cwd=runtime, check=False, timeout=float((config.get("run", {}) or {}).get("timeout_sec", 360)))
     except subprocess.TimeoutExpired as error:
@@ -2917,7 +2882,7 @@ def run_remotion_renderer_api(
     cancel_file.unlink(missing_ok=True)
     payload = {
         "entryPoint": "src/index.tsx",
-        "compositionId": "JaguarTVVariant",
+        "compositionId": "JaguarTVGeneric",
         "props": props,
         "outputLocation": str(render_target),
         "cancelFile": str(cancel_file),
@@ -3033,12 +2998,11 @@ def handle_remotion_renderer_event(config: dict[str, Any], job_id: str, line: st
         update_render_job(config, job_id, status="FAILED", error=str(event.get("message") or line)[-4000:])
 
 
-def render_video_remotion_variant(
+def render_video_remotion_generic(
     config: dict[str, Any],
     clean_media: Path,
     output: Path,
     *,
-    variant: str,
     subtitles: Path | None = None,
     job_id: str | None = None,
     candidate_id: str | None = None,
@@ -3067,9 +3031,7 @@ def render_video_remotion_variant(
     remotion_settings = config.get("remotion", {}) or {}
     custom_design = remotion_settings.get("custom_design", {}) or {}
     custom_design_enabled = bool(custom_design.get("enabled"))
-    promo_seconds = 0.0 if custom_design_enabled else max(
-        1.0, min(6.0, float(remotion_settings.get("promo_duration_sec", 1.5)))
-    )
+    promo_seconds = max(1.0, min(6.0, float(remotion_settings.get("promo_duration_sec", 1.5))))
     public_dir = runtime / "public" / "renders" / output.stem
     if public_dir.exists():
         shutil.rmtree(public_dir)
@@ -3077,14 +3039,14 @@ def render_video_remotion_variant(
     source_asset = copy_remotion_public_asset(clean_media, public_dir, "source.mp4")
 
     props: dict[str, Any] = {
-        "variant": variant,
+        "variant": "通用版",
         "sourceVideo": source_asset,
         "width": width,
         "height": height,
         "fps": 30,
         "contentSeconds": content_duration,
-        "promoSeconds": promo_seconds if variant == "通用版" else 0,
-        "durationSeconds": content_duration + (promo_seconds if variant == "通用版" else 0),
+        "promoSeconds": promo_seconds,
+        "durationSeconds": content_duration + promo_seconds,
         "overlayMaxWidthRatio": float(remotion_settings.get("overlay_max_width_ratio", 0.18)),
         "overlayLeftMaxWidthRatio": float(remotion_settings.get("mobile_overlay_left_width_ratio", 0.22)),
         "overlayRightMaxWidthRatio": float(remotion_settings.get("mobile_overlay_right_width_ratio", 0.36)),
@@ -3096,7 +3058,7 @@ def render_video_remotion_variant(
         "sourceAspectRatio": source_width / max(1, source_height),
         "customDesign": custom_design_enabled,
     }
-    if remotion_captions_enabled_for_variant(config, variant):
+    if remotion_captions_enabled(config):
         caption_cues = remotion_caption_cues(subtitles, max_end=content_duration)
         if caption_cues:
             props["captions"] = caption_cues
@@ -3115,16 +3077,15 @@ def render_video_remotion_variant(
             design_layers.append(rendered_layer)
         props["designLayers"] = design_layers
     endcard_class = ""
-    if variant == "通用版":
-        bottom_banner = configured_remotion_asset(config, "bottom_banner")
-        props["imgBottomBanner"] = copy_remotion_public_asset(
-            bottom_banner, public_dir, f"bottom_banner{bottom_banner.suffix or '.jpg'}"
-        )
-        with Image.open(bottom_banner) as banner_image:
-            banner_width, banner_height = banner_image.size
-        props["bottomBannerAspectRatio"] = banner_width / max(1, banner_height)
-        endcard_path, endcard_class = selected_endcard_asset(config, source_width, source_height)
-        props["imgEndcard"] = copy_remotion_public_asset(endcard_path, public_dir, f"endcard{endcard_path.suffix or '.png'}")
+    bottom_banner = configured_remotion_asset(config, "bottom_banner")
+    props["imgBottomBanner"] = copy_remotion_public_asset(
+        bottom_banner, public_dir, f"bottom_banner{bottom_banner.suffix or '.jpg'}"
+    )
+    with Image.open(bottom_banner) as banner_image:
+        banner_width, banner_height = banner_image.size
+    props["bottomBannerAspectRatio"] = banner_width / max(1, banner_height)
+    endcard_path, endcard_class = selected_endcard_asset(config, source_width, source_height)
+    props["imgEndcard"] = copy_remotion_public_asset(endcard_path, public_dir, f"endcard{endcard_path.suffix or '.png'}")
 
     props_path = output.with_name(f"{output.stem}_remotion_props.json")
     props_path.write_text(json.dumps(props, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -3133,13 +3094,13 @@ def render_video_remotion_variant(
     )
     render_runner = str(remotion_settings.get("render_runner", "renderer_api")).strip().lower()
     stable_job_id = job_id or output.stem
-    full_render_job_id = f"{stable_job_id}:{variant}"
+    full_render_job_id = f"{stable_job_id}:通用版"
     if render_runner == "cli":
         upsert_render_job(
             config,
             full_render_job_id,
             candidate_id=candidate_id or stable_job_id,
-            variant=variant,
+            variant="通用版",
             engine="remotion_cli",
             status="STARTED",
             output_path=str(output),
@@ -3167,27 +3128,23 @@ def render_video_remotion_variant(
             render_target,
             job_id=full_render_job_id,
             candidate_id=candidate_id or stable_job_id,
-            variant=variant,
+            variant="通用版",
         )
     else:
         raise RuntimeError("remotion.render_runner must be renderer_api or cli")
     layout = {
-        "mode": "external_bottom_banner"
-        if variant == "通用版"
-        else "existing_fb_layout",
-        "banner_asset": str(
-            (config.get("remotion", {}).get("dual_variant", {}) or {}).get("bottom_banner") or ""
-        ) if variant == "通用版" else "",
-        "banner_fit": "contain" if variant == "通用版" else "",
-        "overlays_removed": variant == "通用版",
+        "mode": "external_bottom_banner",
+        "banner_asset": str((config.get("remotion", {}) or {}).get("bottom_banner") or ""),
+        "banner_fit": "contain",
+        "overlays_removed": True,
     }
     return {
-        "variant": variant,
+        "variant": "通用版",
         "path": str(output),
         "filename": output.name,
         **runner_info,
         "endcard_class": endcard_class,
-        "endcard_count": 1 if variant == "通用版" else 0,
+        "endcard_count": 1,
         "layout": layout,
         "duration": media_duration(output),
         "size": output.stat().st_size,
@@ -3202,7 +3159,7 @@ def render_video_remotion(
 ) -> None:
     clean = output.with_name(f"{output.stem}_clean_input.mp4")
     render_clean_segment(config, media, voice, bgm, clean, duration, audio_mode, start_time)
-    render_video_remotion_variant(config, clean, output, variant="通用版", subtitles=subtitles, job_id=output.stem, candidate_id=output.stem)
+    render_video_remotion_generic(config, clean, output, subtitles=subtitles, job_id=output.stem, candidate_id=output.stem)
 
 
 def render_video(
@@ -3246,7 +3203,7 @@ def qa_video(path: Path, config: dict[str, Any] | None = None) -> dict[str, Any]
     layout = str((config or {}).get("edit", {}).get("layout_mode", "vertical")).strip().lower()
     minimum, maximum = short_duration_bounds(config or {})
     extra_duration = 0.0
-    if (config or {}).get("remotion", {}).get("dual_variant", {}).get("enabled", False):
+    if str((config or {}).get("edit", {}).get("render_engine", "")).strip().lower() == "remotion":
         extra_duration = max(0.0, float((config or {}).get("remotion", {}).get("promo_duration_sec", 1.5)))
     if layout == "original":
         checks["passed"] = (
@@ -3359,6 +3316,7 @@ def produce_candidate(
     require_binary("ffprobe")
     options = options or {}
     config = production_design_config(config, options)
+    production_contract = str(options.get("_production_contract") or "candidate-production-v2")
     production_run_id = str(options.get("_production_run_id") or "").strip()
     owns_production_run = not production_run_id
     if owns_production_run:
@@ -3376,7 +3334,7 @@ def produce_candidate(
             """,
             (
                 production_run_id, row["id"], "test", f"direct:{production_run_id}",
-                "candidate-production-v1", "direct", "RUNNING", "INPUT_VALIDATION",
+                production_contract, "direct", "RUNNING", "INPUT_VALIDATION",
                 json.dumps({}, ensure_ascii=False), timestamp, timestamp,
             ),
         )
@@ -3391,7 +3349,7 @@ def produce_candidate(
     media = next((path for path in work.glob("source.*") if path.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov"}), None)
     custom_design = ((config.get("remotion", {}) or {}).get("custom_design", {}) or {})
     if not media and custom_design.get("enabled"):
-        design_base = remotion_design_base_video(config, "通用版") or remotion_design_base_video(config, "FB版")
+        design_base = remotion_design_base_video(config, "通用版")
         if design_base and design_base.is_file():
             media = work / f"source{design_base.suffix.lower() or '.mp4'}"
             shutil.copy2(design_base, media)
@@ -3464,7 +3422,7 @@ def produce_candidate(
     }
     (work / "script_ptbr.json").write_text(json.dumps(script_payload, ensure_ascii=False, indent=2), encoding="utf-8")
     render_engine = str(config.get("edit", {}).get("render_engine", "ffmpeg")).strip().lower()
-    enforce_dual_variant_remotion(config)
+    enforce_generic_remotion(config)
     custom_design = ((config.get("remotion", {}) or {}).get("custom_design", {}) or {})
     segments = analyze_video(
         media,
@@ -3550,55 +3508,53 @@ def produce_candidate(
                 f"KrillinAI已完成第 {segment_index}/{segment_total} 段逐句配音",
             )
             segment_publishing_text = segment_script
-        if render_engine == "remotion" and (config.get("remotion", {}).get("dual_variant", {}) or {}).get("enabled", False):
+        if render_engine == "remotion":
             clean = work / f"{filename_stem}_clean_input.mp4"
             render_clean_segment(
                 config, render_media, segment_voice, bgm, clean, float(segment["duration"]),
                 audio_mode=audio_mode, start_time=render_start,
             )
-            for variant in remotion_output_variants(config):
-                variant_output = work / f"{filename_stem}-{variant}.mp4"
-                info = render_video_remotion_variant(
-                    config,
-                    clean,
+            variant_output = work / f"{filename_stem}-通用版.mp4"
+            info = render_video_remotion_generic(
+                config,
+                clean,
+                variant_output,
+                subtitles=segment_subtitles,
+                job_id=package_id,
+                candidate_id=row["id"],
+            )
+            if reaction.mode != "none":
+                compose_reaction(
                     variant_output,
-                    variant=variant,
-                    subtitles=segment_subtitles,
-                    job_id=package_id,
-                    candidate_id=row["id"],
+                    variant_output,
+                    reaction,
+                    content_duration=float(segment["duration"]),
                 )
-                if reaction.mode != "none":
-                    compose_reaction(
-                        variant_output,
-                        variant_output,
-                        reaction,
-                        content_duration=float(segment["duration"]),
-                    )
-                mobile_format = (
-                    dict(info["mobile_format"])
-                    if custom_design_preserves_source(config)
-                    else normalize_mobile_review_video(variant_output, config)
-                )
-                if not mobile_format.get("applied") and info.get("mobile_format", {}).get("applied"):
-                    mobile_format = dict(info["mobile_format"])
-                info["mobile_format"] = mobile_format
-                info["duration"] = media_duration(variant_output)
-                info["size"] = variant_output.stat().st_size
-                inventory_dir = inventory_root(config) / batch_label / variant / source_label if batch_label else inventory_root(config) / variant / source_label
-                inventory_path = inventory_dir / variant_output.name
-                qa_variant = qa_video(variant_output, config)
-                qa_variant["variant"] = variant
-                info.update({
-                    "path": str(variant_output),
-                    "inventory_path": str(inventory_path),
-                    "qa": qa_variant,
-                    "source_label": source_label,
-                    "batch_label": batch_label,
-                })
-                if not qa_variant["passed"]:
-                    raise RuntimeError(f"QA failed for {package_id} {variant}: {qa_variant}")
-                variant_outputs.append(info)
-            output = Path(str(variant_outputs[0]["path"]))
+            mobile_format = (
+                dict(info["mobile_format"])
+                if custom_design_preserves_source(config)
+                else normalize_mobile_review_video(variant_output, config)
+            )
+            if not mobile_format.get("applied") and info.get("mobile_format", {}).get("applied"):
+                mobile_format = dict(info["mobile_format"])
+            info["mobile_format"] = mobile_format
+            info["duration"] = media_duration(variant_output)
+            info["size"] = variant_output.stat().st_size
+            inventory_dir = inventory_root(config) / batch_label / "通用版" / source_label if batch_label else inventory_root(config) / "通用版" / source_label
+            inventory_path = inventory_dir / variant_output.name
+            qa_variant = qa_video(variant_output, config)
+            qa_variant["variant"] = "通用版"
+            info.update({
+                "path": str(variant_output),
+                "inventory_path": str(inventory_path),
+                "qa": qa_variant,
+                "source_label": source_label,
+                "batch_label": batch_label,
+            })
+            if not qa_variant["passed"]:
+                raise RuntimeError(f"QA failed for {package_id} 通用版: {qa_variant}")
+            variant_outputs.append(info)
+            output = variant_output
         else:
             render_video(
                 config, render_media, segment_voice, bgm, segment_subtitles, output, float(segment["duration"]),
@@ -3660,10 +3616,10 @@ def produce_candidate(
                 persisted = {**info, "path": str(final_variant), "filename": variant_path.name}
                 persisted_outputs.append(persisted)
                 gate_outputs.append({**persisted, "path": str(staged_variant)})
-        from .production import validate_output_pair
+        from .production import validate_generic_output
 
         slice_id = f"{production_run_id}:slice:{segment_index:02d}"
-        validate_output_pair(config, original_media, slice_id, gate_outputs)
+        validate_generic_output(config, original_media, slice_id, gate_outputs)
         cover = review / "cover.jpg"
         active_kit = brand_kit(config)
         cover_source = render_cover_image(config, active_kit, output, cover)
@@ -3715,7 +3671,7 @@ def produce_candidate(
                 "watermark": str(brand_kit(config).get("watermark", {}).get("image") or ""),
                 "endcard": str(brand_kit(config).get("endcard", {}).get("image") or ""),
             },
-            "production_contract": "candidate-production-v1",
+            "production_contract": production_contract,
             "production_run_id": production_run_id,
             "output_variants": persisted_outputs,
             "render_engine": render_engine,
@@ -3793,7 +3749,7 @@ def produce_candidate(
 
     manifest = {
         "job_id": row["id"], "status": "OUTPUTS_COMPLETE", "created_at": now_iso(),
-        "production_contract": "candidate-production-v1",
+        "production_contract": production_contract,
         "production_run_id": production_run_id,
         "assets": {
             "source": str(media),
@@ -3848,7 +3804,7 @@ def produce_candidate(
                 output_path = Path(str(output_info["path"])).resolve()
                 qa_payload = output_info.get("qa") if isinstance(output_info.get("qa"), dict) else {}
                 variant = str(output_info["variant"])
-                output_id = f"{slice_id}:{'generic' if variant == '通用版' else 'facebook'}"
+                output_id = f"{slice_id}:generic"
                 connection.execute(
                     """
                     INSERT INTO production_outputs(
@@ -3890,7 +3846,7 @@ def produce_candidate(
                 )
         parent_metadata = dict(candidate_metadata)
         parent_metadata["production"] = {
-            "contract": "candidate-production-v1",
+            "contract": production_contract,
             "run_id": production_run_id,
             "slice_ids": [str(record["slice_id"]) for record in package_records],
             "packages": [str(record["package_id"]) for record in package_records],
@@ -4002,7 +3958,7 @@ def candidate_has_review_outputs(config: dict[str, Any], candidate_id: str) -> b
             continue
         if (package / "video.mp4").is_file():
             return True
-        if any(package.glob("*-通用版.mp4")) or any(package.glob("*-FB版.mp4")):
+        if any(package.glob("*-通用版.mp4")):
             return True
     return False
 

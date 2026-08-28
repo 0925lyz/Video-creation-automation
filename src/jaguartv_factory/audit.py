@@ -138,8 +138,9 @@ def audit_review_inventory(
             segment.get("start_sec") is not None and segment.get("end_sec") is not None
         ):
             reasons.append(_reason("MISSING_SLICE_RECORD", "slice id or source time range is absent"))
-        if variant_names != {"通用版", "FB版"}:
-            reasons.append(_reason("MISSING_VARIANT_PAIR", f"variants={sorted(variant_names)}"))
+        expected_variants = {"通用版", "FB版"} if production_contract == "candidate-production-v1" else {"通用版"}
+        if variant_names != expected_variants:
+            reasons.append(_reason("MISSING_REQUIRED_OUTPUT", f"variants={sorted(variant_names)}"))
         source = next(
             (
                 path.resolve()
@@ -186,7 +187,7 @@ def audit_review_inventory(
                 reasons.append(_reason("MISSING_RENDER_RECORD", render_job_id or "not recorded", confirmed=False))
             if item.get("variant") == "通用版" and int(item.get("endcard_count") or 0) != 1:
                 reasons.append(_reason("ENDCARD_NOT_VERIFIED", "generic endcard count is not exactly one", confirmed=False))
-        if production_contract == "candidate-production-v1":
+        if production_contract in {"candidate-production-v1", "candidate-production-v2"}:
             run = connection.execute(
                 "SELECT status FROM production_runs WHERE id=? AND candidate_id=?",
                 (production_run_id, str(row["parent_id"] or row["id"])),
@@ -206,8 +207,8 @@ def audit_review_inventory(
                     (str(segment.get("slice_id") or ""),),
                 )
             }
-            if persisted_variants != {"通用版", "FB版"}:
-                reasons.append(_reason("MISSING_PERSISTED_OUTPUT_PAIR", f"variants={sorted(persisted_variants)}"))
+            if persisted_variants != expected_variants:
+                reasons.append(_reason("MISSING_PERSISTED_OUTPUT", f"variants={sorted(persisted_variants)}"))
         failure_after_ready = connection.execute(
             """
             SELECT 1 FROM events failed

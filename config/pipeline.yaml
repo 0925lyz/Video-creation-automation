@@ -78,7 +78,7 @@ selection:
     target: brazil_trends
 
 edit:
-  render_engine: remotion           # dual-variant overlays/endcards require Remotion
+  render_engine: remotion           # the generic banner/endcard composition requires Remotion
   output_duration_sec: [12, 60]
   max_segments_per_source: 3
   segment_overlap_sec: 3
@@ -125,21 +125,14 @@ remotion:
   mobile_overlay_right_width_ratio: 0.36
   overlay_margin_h_ratio: 0.03
   overlay_margin_v_ratio: 0.05
-  dual_variant:
-    enabled: true
-    generic_label: 通用版
-    facebook_label: FB版
-    tu_yi: assets/brand/overlay_tu_yi.jpg
-    tu_er: assets/brand/overlay_tu_er.png
-    bottom_banner: assets/brand/generic_bottom_banner.jpg
-    lv_tu: assets/brand/endcard_portrait_green_v2.png
-    lan_tu: assets/brand/endcard_landscape_blue_v2.png
+  bottom_banner: assets/brand/generic_bottom_banner.jpg
+  portrait_endcard: assets/brand/endcard_portrait_green_v2.png
+  landscape_endcard: assets/brand/endcard_landscape_blue_v2.png
   add_bgm_under_source: false
   content_bgm_volume: 0.0
   endcard_bgm_volume: 0.0
   captions:
     enabled: true
-    variants: [通用版, FB版]
     position: bottom
     max_width_ratio: 0.90
     font_size_ratio: 0.028

@@ -1245,7 +1245,10 @@ def review_output_index(config: dict[str, Any]) -> dict[str, list[dict[str, Any]
 
         part_match = PART_PACKAGE_PATTERN.match(package_id)
         part_number = int(part_match.group("number")) if part_match else None
-        variant_files = sorted(path for path in media_dir.glob("*.mp4") if path.name != "video.mp4")
+        variant_files = sorted(
+            path for path in media_dir.glob("*.mp4")
+            if path.name != "video.mp4" and "FB版" not in path.name
+        )
         mp4_files = variant_files or [media_dir / "video.mp4"]
         for video in [path for path in mp4_files if path.is_file()]:
             version = int(video.stat().st_mtime)
@@ -1259,7 +1262,6 @@ def review_output_index(config: dict[str, Any]) -> dict[str, list[dict[str, Any]
                 metadata_variant
                 if video.name == "video.mp4" and metadata_variant
                 else "通用版" if "通用版" in video.name or video.name == "video.mp4"
-                else "FB版" if "FB版" in video.name
                 else ""
             )
             file_batch_label = batch_label or ("文案设计版" if "文案设计版" in video.name else "")
@@ -1297,7 +1299,7 @@ def review_output_index(config: dict[str, Any]) -> dict[str, list[dict[str, Any]
             key=lambda asset: (
                 asset["part_number"] is not None,
                 asset["part_number"] if asset["part_number"] is not None else 0,
-                0 if asset.get("variant") == "通用版" else 1 if asset.get("variant") == "FB版" else 2,
+                0 if asset.get("variant") == "通用版" else 1,
                 asset["id"],
             ),
         )

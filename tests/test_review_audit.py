@@ -36,7 +36,7 @@ def insert_candidate(config: dict, candidate_id: str, metadata: dict) -> None:
     connection.commit()
 
 
-def test_audit_flags_passthrough_and_missing_pair_without_mutation(tmp_path: Path):
+def test_audit_flags_passthrough_and_missing_output_without_mutation(tmp_path: Path):
     config = make_config(tmp_path)
     source = tmp_path / "workspace" / "jobs" / "bad" / "source.mp4"
     source.parent.mkdir(parents=True)
@@ -57,7 +57,7 @@ def test_audit_flags_passthrough_and_missing_pair_without_mutation(tmp_path: Pat
     assert report["suspect_count"] == 1
     assert report["records"][0]["candidate_id"] == "bad"
     assert {reason["code"] for reason in report["records"][0]["reasons"]} >= {
-        "PASSTHROUGH_ORIGINAL", "MISSING_VARIANT_PAIR", "OUTPUT_MATCHES_SOURCE_HASH"
+        "PASSTHROUGH_ORIGINAL", "MISSING_REQUIRED_OUTPUT", "OUTPUT_MATCHES_SOURCE_HASH"
     }
     assert (tmp_path / "workspace" / "factory.db").read_bytes() == before_db
     assert output.read_bytes() == before_media

@@ -10,7 +10,7 @@ from jaguartv_factory.production import (
     ProductionBusyError,
     ProductionGateError,
     file_sha256,
-    validate_output_pair,
+    validate_generic_output,
 )
 
 
@@ -224,7 +224,7 @@ def test_imported_pending_video_uses_standard_production_and_syncs_workflow_stat
     saved = connect_db(config).execute(
         "SELECT actual_workflow_status FROM source_imports WHERE id='import-task-1'"
     ).fetchone()
-    assert calls == [("source-import-1", "candidate-production-v1")]
+    assert calls == [("source-import-1", "candidate-production-v2")]
     assert saved["actual_workflow_status"] == "READY_FOR_REVIEW"
 
 
@@ -304,36 +304,44 @@ def test_same_candidate_concurrent_production_is_locked(tmp_path: Path, monkeypa
     thread.join(3)
 
 
-@pytest.mark.parametrize("variants", [["通用版"], ["FB版"]])
-def test_single_variant_cannot_pass_review_gate(tmp_path: Path, variants: list[str]):
+def test_generic_output_passes_single_version_gate(tmp_path: Path):
     source = tmp_path / "source.mp4"
     source.write_bytes(b"source")
-    outputs = []
-    for variant in variants:
-        path = tmp_path / f"{variant}.mp4"
-        path.write_bytes(variant.encode())
-        outputs.append({
-            "variant": variant,
-            "path": str(path),
-            "render_job_id": f"slice:{variant}",
-            "qa": {"passed": True, "playable": True, "has_video": True, "has_audio": True},
-            "endcard_count": 1 if variant == "通用版" else 0,
-        })
-    with pytest.raises(RuntimeError, match="paired 通用版 and FB版"):
-        validate_output_pair({}, source, "slice-1", outputs)
+    path = tmp_path / "通用版.mp4"
+    path.write_bytes(b"generic")
+    result = validate_generic_output({}, source, "slice-1", [{
+        "variant": "通用版",
+        "path": str(path),
+        "render_job_id": "slice:generic",
+        "qa": {"passed": True, "playable": True, "has_video": True, "has_audio": True},
+        "endcard_count": 1,
+        "layout": {"mode": "external_bottom_banner"},
+    }])
+    assert result["variants"] == ["通用版"]
+
+
+def test_fb_output_cannot_pass_single_version_gate(tmp_path: Path):
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source")
+    output = tmp_path / "FB版.mp4"
+    output.write_bytes(b"fb")
+    with pytest.raises(RuntimeError, match="exactly one 通用版"):
+        validate_generic_output({}, source, "slice-1", [{
+            "variant": "FB版", "path": str(output), "render_job_id": "f",
+            "qa": {"passed": True, "has_video": True, "has_audio": True},
+        }])
 
 
 def test_passthrough_original_cannot_pass_review_gate(tmp_path: Path):
     source = tmp_path / "source.mp4"
     source.write_bytes(b"same bytes")
     with pytest.raises(RuntimeError, match="original source"):
-        validate_output_pair(
+        validate_generic_output(
             {},
             source,
             "slice-1",
             [
                 {"variant": "通用版", "path": str(source), "render_job_id": "g", "qa": {"passed": True}},
-                {"variant": "FB版", "path": str(source), "render_job_id": "f", "qa": {"passed": True}},
             ],
         )
 
@@ -389,8 +397,7 @@ def install_fake_persisted_outputs(
     return package
 
 
-@pytest.mark.parametrize("variants", [["通用版"], ["FB版"]])
-def test_service_does_not_finalize_incomplete_variant_pair(tmp_path: Path, monkeypatch, variants: list[str]):
+def test_service_does_not_finalize_missing_generic_output(tmp_path: Path, monkeypatch):
     config = config_for(tmp_path)
     insert_candidate(config, status="DOWNLOADED")
     source = tmp_path / "workspace" / "jobs" / "candidate-1" / "source.mp4"
@@ -398,17 +405,17 @@ def test_service_does_not_finalize_incomplete_variant_pair(tmp_path: Path, monke
     source.write_bytes(b"source-media")
 
     def fake_produce(config_arg, row, progress_callback=None, options=None):
-        return install_fake_persisted_outputs(config_arg, row["id"], options["_production_run_id"], variants)
+        return install_fake_persisted_outputs(config_arg, row["id"], options["_production_run_id"], [])
 
     monkeypatch.setattr("jaguartv_factory.production.produce_candidate", fake_produce)
-    with pytest.raises(RuntimeError, match="complete variant pair"):
+    with pytest.raises(RuntimeError, match="complete generic output"):
         CandidateProductionService(config).run("candidate-1", trigger_source="test")
 
     row = connect_db(config).execute("SELECT status FROM candidates WHERE id='candidate-1'").fetchone()
     assert row["status"] == "PRODUCTION_FAILED"
 
 
-def test_service_finalizes_only_after_complete_variant_pair(tmp_path: Path, monkeypatch):
+def test_service_finalizes_after_complete_generic_output(tmp_path: Path, monkeypatch):
     config = config_for(tmp_path)
     insert_candidate(config, status="DOWNLOADED")
     source = tmp_path / "workspace" / "jobs" / "candidate-1" / "source.mp4"
@@ -417,7 +424,7 @@ def test_service_finalizes_only_after_complete_variant_pair(tmp_path: Path, monk
 
     def fake_produce(config_arg, row, progress_callback=None, options=None):
         return install_fake_persisted_outputs(
-            config_arg, row["id"], options["_production_run_id"], ["通用版", "FB版"]
+            config_arg, row["id"], options["_production_run_id"], ["通用版"]
         )
 
     monkeypatch.setattr("jaguartv_factory.production.produce_candidate", fake_produce)

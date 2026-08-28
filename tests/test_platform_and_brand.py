@@ -909,7 +909,7 @@ def test_produce_never_keeps_ready_status_when_partial_outputs_exist(tmp_path: P
     assert "later segment failed" in event["payload_json"]
 
 
-def test_inventory_exposes_dual_variant_outputs(tmp_path: Path):
+def test_inventory_exposes_only_generic_and_hides_historical_fb_output(tmp_path: Path):
     config = {
         "_root": str(tmp_path),
         "run": {"workspace": "workspace"},
@@ -942,8 +942,8 @@ def test_inventory_exposes_dual_variant_outputs(tmp_path: Path):
     )
 
     row = next(item for item in candidate_rows(config) if item["id"] == "source2")
-    assert row["output_count"] == 2
-    assert [asset["variant"] for asset in row["output_assets"]] == ["通用版", "FB版"]
+    assert row["output_count"] == 1
+    assert [asset["variant"] for asset in row["output_assets"]] == ["通用版"]
     assert row["output_assets"][0]["download_url"].endswith("&download=1")
     assert "%E9%80%9A%E7%94%A8%E7%89%88" in row["output_assets"][0]["video_url"]
 

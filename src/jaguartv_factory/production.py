@@ -19,8 +19,9 @@ from .core import (
 from .source_imports import sync_source_import_workflow_status
 
 
-PRODUCTION_CONTRACT = "candidate-production-v1"
-REQUIRED_VARIANTS = ("通用版", "FB版")
+PRODUCTION_CONTRACT = "candidate-production-v2"
+REQUIRED_VARIANTS = ("通用版",)
+LEGACY_REQUIRED_VARIANTS = ("通用版", "FB版")
 ALLOWED_TRIGGER_SOURCES = {
     "dashboard",
     "ai_agent",
@@ -143,17 +144,15 @@ def production_contract_hash(options: dict[str, Any] | None = None) -> str:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
-def validate_output_pair(
+def validate_generic_output(
     config: dict[str, Any],
     source: Path,
     slice_id: str,
     outputs: list[dict[str, Any]],
 ) -> dict[str, Any]:
     variants = {str(item.get("variant") or ""): item for item in outputs}
-    if set(variants) != set(REQUIRED_VARIANTS) or len(outputs) != 2:
-        raise ProductionGateError(
-            f"slice {slice_id} requires paired 通用版 and FB版 outputs"
-        )
+    if set(variants) != set(REQUIRED_VARIANTS) or len(outputs) != 1:
+        raise ProductionGateError(f"slice {slice_id} requires exactly one 通用版 output")
 
     source = source.resolve()
     source_hash = file_sha256(source)
@@ -177,8 +176,6 @@ def validate_output_pair(
         output_hash = file_sha256(path)
         if output_hash == source_hash:
             raise ProductionGateError(f"slice {slice_id} {variant} output matches original source hash")
-        if output_hash in output_hashes:
-            raise ProductionGateError(f"slice {slice_id} variants are not independent files")
         output_hashes.add(output_hash)
         qa = item.get("qa") if isinstance(item.get("qa"), dict) else {}
         if not qa.get("passed"):
@@ -199,17 +196,11 @@ def validate_output_pair(
             raise ProductionGateError(f"slice {slice_id} {variant} is missing a render job")
 
     generic = variants["通用版"]
-    facebook = variants["FB版"]
     if int(generic.get("endcard_count") or 0) != 1:
         raise ProductionGateError(f"slice {slice_id} 通用版 must contain exactly one endcard")
-    if int(facebook.get("endcard_count") or 0) != 0:
-        raise ProductionGateError(f"slice {slice_id} FB版 must not contain the generic endcard")
     generic_layout = generic.get("layout") if isinstance(generic.get("layout"), dict) else {}
     if generic_layout.get("mode") != "external_bottom_banner":
         raise ProductionGateError(f"slice {slice_id} 通用版 layout gate failed")
-    facebook_layout = facebook.get("layout") if isinstance(facebook.get("layout"), dict) else {}
-    if facebook_layout.get("mode") == "external_bottom_banner":
-        raise ProductionGateError(f"slice {slice_id} FB版 must keep its existing clean layout")
     return {
         "passed": True,
         "slice_id": slice_id,
@@ -248,6 +239,11 @@ def assert_candidate_ready_for_review(
     ).fetchall()
     if not slices:
         raise ProductionGateError("candidate has no persisted smart-slice records")
+    required_variants = (
+        LEGACY_REQUIRED_VARIANTS
+        if str(run["contract_version"] or "") == "candidate-production-v1"
+        else REQUIRED_VARIANTS
+    )
     source = source_media_for(config, candidate_id)
     if source is None:
         raise ProductionGateError("candidate source file is missing")
@@ -260,8 +256,10 @@ def assert_candidate_ready_for_review(
             "SELECT * FROM production_outputs WHERE slice_id=? AND status='COMPLETED'",
             (slice_row["id"],),
         ).fetchall()
-        if {row["variant"] for row in outputs} != set(REQUIRED_VARIANTS):
-            raise ProductionGateError(f"slice {slice_row['id']} does not have a complete variant pair")
+        if {row["variant"] for row in outputs} != set(required_variants):
+            if required_variants == REQUIRED_VARIANTS:
+                raise ProductionGateError(f"slice {slice_row['id']} does not have a complete generic output")
+            raise ProductionGateError(f"slice {slice_row['id']} does not have a complete legacy variant pair")
         for output in outputs:
             path = Path(output["path"])
             if not path.is_file() or path.stat().st_size <= 0:
@@ -280,7 +278,9 @@ def assert_candidate_ready_for_review(
             if output["variant"] == "通用版":
                 if output["endcard_count"] != 1 or layout.get("mode") != "external_bottom_banner":
                     raise ProductionGateError(f"generic layout gate failed: {path}")
-            elif output["endcard_count"] != 0 or layout.get("mode") == "external_bottom_banner":
+            elif output["variant"] == "FB版" and (
+                output["endcard_count"] != 0 or layout.get("mode") == "external_bottom_banner"
+            ):
                 raise ProductionGateError(f"FB layout gate failed: {path}")
             render = connection.execute(
                 "SELECT status FROM render_jobs WHERE id=?",

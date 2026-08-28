@@ -67,7 +67,6 @@ edit:
   layout_mode: original
   aspect_ratio: "9:16"
   resolution: [1080, 1920]
-  variants_per_source: 2
 
 localization:
   enabled: true

@@ -8,7 +8,7 @@
 - KrillinAI performs transcription, pt-BR translation, line timing, and TTS. Its configured providers may be changed without modifying factory code.
 - A task can override the TTS voice with `--krillinai-voice`; an empty Edge voice uses `KRILLIN_EDGE_TTS_DEFAULT_VOICE`, while other providers use their configured default.
 - Any transcription, translation, Portuguese language-gate, or TTS failure stops production. There is no generic script or system-voice fallback.
-- Remotion places at most two compact subtitle lines inside the source-frame safe area. Subtitle positions do not follow OCR detections.
+- Remotion places at most two compact subtitle lines inside the source-frame safe area and produces one generic review video with the configured bottom banner and one endcard. Subtitle positions do not follow OCR detections.
 
 ## States
 

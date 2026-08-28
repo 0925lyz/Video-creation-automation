@@ -12,7 +12,7 @@ from jaguartv_factory.core import (
     candidate_market_rejection,
     connect_db,
     design_image_path,
-    enforce_dual_variant_remotion,
+    enforce_generic_remotion,
     format_srt_time,
     generate_funk_bgm,
     likely_language,
@@ -25,13 +25,13 @@ from jaguartv_factory.core import (
     register_url_stub_candidate,
     require_binary,
     ensure_remotion_runtime,
-    render_video_remotion_variant,
+    render_video_remotion_generic,
     run_remotion_renderer_api,
     run_command,
     remotion_canvas_for_source,
     remotion_caption_cues,
     remotion_caption_style,
-    remotion_captions_enabled_for_variant,
+    remotion_captions_enabled,
     render_endcard,
     render_clean_segment,
     update_render_job,
@@ -48,7 +48,7 @@ def test_language_detection():
 
 
 def test_freeform_design_preserves_newlines_and_ignores_blank_text(tmp_path: Path):
-    config = {"_root": str(tmp_path), "edit": {}, "remotion": {"dual_variant": {}}}
+    config = {"_root": str(tmp_path), "edit": {}, "remotion": {}}
     patched = production_design_config(config, {"design": {"layers": [
         {"id": "text", "type": "text", "text": "Linha um\nLinha dois", "x": 0.2, "y": 0.3,
          "font_size_ratio": 0.06, "max_width": 0.7, "color": "#12ab34"},
@@ -62,7 +62,7 @@ def test_freeform_design_preserves_newlines_and_ignores_blank_text(tmp_path: Pat
     assert [layer["id"] for layer in layers] == ["text", "logo"]
     assert layers[0]["text"] == "Linha um\nLinha dois"
     assert layers[1]["path"] == "/srv/logo.png"
-    assert patched["remotion"]["custom_design"]["variants"] == ["通用版", "FB版"]
+    assert "variants" not in patched["remotion"]["custom_design"]
     assert patched["edit"]["layout_mode"] == "original"
     assert patched["remotion"]["custom_design"]["preserve_source_canvas"] is True
     assert patched["remotion"]["custom_design"]["whole_source"] is True
@@ -110,13 +110,13 @@ def test_remotion_runtime_reinstalls_when_deep_dependency_is_missing(tmp_path: P
     assert any(call[:2] == ["/usr/bin/npm", "install"] for call in calls)
 
 
-def test_freeform_design_keeps_required_variant_pair(tmp_path: Path):
-    config = {"_root": str(tmp_path), "edit": {}, "remotion": {"dual_variant": {}}}
+def test_freeform_design_keeps_only_generic_variant(tmp_path: Path):
+    config = {"_root": str(tmp_path), "edit": {}, "remotion": {}}
     patched = production_design_config(config, {"design": {"variants": ["FB版"], "layers": [
         {"id": "text", "type": "text", "text": "FB only", "x": 0.2, "y": 0.3},
     ]}})
 
-    assert patched["remotion"]["custom_design"]["variants"] == ["通用版", "FB版"]
+    assert "variants" not in patched["remotion"]["custom_design"]
 
 
 def test_design_overlay_cannot_use_single_variant_archive_bypass(tmp_path: Path, monkeypatch):
@@ -125,7 +125,7 @@ def test_design_overlay_cannot_use_single_variant_archive_bypass(tmp_path: Path,
         "run": {"workspace": "workspace"},
         "storage": {"root": "workspace/server_media"},
         "edit": {},
-        "remotion": {"dual_variant": {}},
+        "remotion": {},
         "brand": {"default_kit": "jaguartv", "kits": {"jaguartv": {}}},
     }
     base_video = tmp_path / "workspace" / "server_media" / "review" / "base-package" / "base.mp4"
@@ -147,7 +147,7 @@ def test_design_overlay_cannot_use_single_variant_archive_bypass(tmp_path: Path,
         "layers": [{"type": "text", "text": "Texto", "x": 0.1, "y": 0.1}],
     }})
 
-    assert patched["remotion"]["custom_design"]["variants"] == ["通用版", "FB版"]
+    assert "variants" not in patched["remotion"]["custom_design"]
     assert archive_calls == []
 
 
@@ -186,19 +186,17 @@ def test_remotion_caption_cues_are_safe_and_clamped(tmp_path: Path):
     ]
 
 
-def test_remotion_caption_variant_config():
+def test_remotion_caption_config():
     config = {
         "remotion": {
             "captions": {
                 "enabled": True,
-                "variants": ["通用版", "FB版"],
                 "font_size_ratio": 0.5,
                 "position": "middle",
             }
         }
     }
-    assert remotion_captions_enabled_for_variant(config, "通用版") is True
-    assert remotion_captions_enabled_for_variant(config, "FB版") is True
+    assert remotion_captions_enabled(config) is True
     style = remotion_caption_style(config)
     assert style["position"] == "bottom"
     assert style["fontSizeRatio"] == 0.07
@@ -216,7 +214,7 @@ def test_pipeline_does_not_auto_add_remotion_promo_copy():
     assert remotion.get("endcard_cta", "") == ""
 
 
-def test_remotion_generic_keeps_our_endcard_and_fb_has_none(tmp_path: Path, monkeypatch):
+def test_remotion_generic_keeps_bottom_banner_and_endcard(tmp_path: Path, monkeypatch):
     clean = tmp_path / "clean.mp4"
     clean.write_bytes(b"video")
     assets = tmp_path / "assets" / "brand"
@@ -249,26 +247,17 @@ def test_remotion_generic_keeps_our_endcard_and_fb_has_none(tmp_path: Path, monk
         "remotion": {
             "render_runner": "renderer_api",
             "promo_duration_sec": 1.5,
-            "dual_variant": {
-                "enabled": True,
-                "tu_yi": "assets/brand/overlay_tu_yi.jpg",
-                "tu_er": "assets/brand/overlay_tu_er.png",
-                "bottom_banner": "assets/brand/generic_bottom_banner.jpg",
-                "lv_tu": "assets/brand/endcard_portrait_green_v2.png",
-                "lan_tu": "assets/brand/endcard_landscape_blue_v2.png",
-            },
+            "bottom_banner": "assets/brand/generic_bottom_banner.jpg",
+            "portrait_endcard": "assets/brand/endcard_portrait_green_v2.png",
+            "landscape_endcard": "assets/brand/endcard_landscape_blue_v2.png",
         },
     }
 
-    render_video_remotion_variant(config, clean, tmp_path / "generic.mp4", variant="通用版")
-    render_video_remotion_variant(config, clean, tmp_path / "fb.mp4", variant="FB版")
+    render_video_remotion_generic(config, clean, tmp_path / "generic.mp4")
 
     assert "imgEndcard" in captured["通用版"]
     assert captured["通用版"]["promoSeconds"] == 1.5
     assert captured["通用版"]["durationSeconds"] == 21.5
-    assert "imgEndcard" not in captured["FB版"]
-    assert captured["FB版"]["promoSeconds"] == 0
-    assert captured["FB版"]["durationSeconds"] == 20.0
 
 
 def test_remotion_renderer_cleans_isolated_tmpdir_after_failure(tmp_path: Path, monkeypatch):
@@ -392,21 +381,21 @@ def test_cli_discover_accepts_keyword_overrides(monkeypatch, tmp_path: Path, cap
     assert '"inserted": 0' in capsys.readouterr().out
 
 
-def test_standard_production_requires_remotion_dual_variant_assets():
+def test_standard_production_requires_remotion_generic_assets():
     config = load_config(Path("config/pipeline.yaml"))
-    enforce_dual_variant_remotion(config)
+    enforce_generic_remotion(config)
     broken = {
         **config,
         "edit": {**config["edit"], "render_engine": "ffmpeg"},
     }
     with pytest.raises(RuntimeError, match="render_engine=remotion"):
-        enforce_dual_variant_remotion(broken)
+        enforce_generic_remotion(broken)
     broken = {
         **config,
         "remotion": {**config["remotion"], "promo_duration_sec": 2},
     }
     with pytest.raises(RuntimeError, match="promo_duration_sec=1.5"):
-        enforce_dual_variant_remotion(broken)
+        enforce_generic_remotion(broken)
 
 
 def test_tiktok_source_filename_label_is_clean():

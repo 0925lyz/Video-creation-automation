@@ -646,7 +646,7 @@ def _write_external_review_package(
             "source_type": SOURCE_TYPE,
             "target_area": TARGET_APPROVED,
             "smart_slice_completed": False,
-            "dual_variant_completed": False,
+            "standard_render_completed": False,
             "automatic_review": False,
             "source": {
                 "platform": str(import_row["source_platform"]),

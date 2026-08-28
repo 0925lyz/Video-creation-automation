@@ -333,11 +333,6 @@ function filteredCandidates() {
         const partDelta = aPart - bPart;
         if (partDelta) return partDelta;
       }
-      const aVariant = a.variant_group || (a.output_assets || [])[0]?.variant || "";
-      const bVariant = b.variant_group || (b.output_assets || [])[0]?.variant || "";
-      const variantOrder = (value) => value === "FB版" ? 0 : value === "通用版" ? 1 : 2;
-      const variantDelta = variantOrder(aVariant) - variantOrder(bVariant);
-      if (variantDelta) return variantDelta;
       const sourceDelta = String(a.platform || "").localeCompare(String(b.platform || ""), "zh-CN");
       if (sourceDelta) return sourceDelta;
       return new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime();
@@ -1927,12 +1922,10 @@ function parseDesignAssets(raw) {
 
 function designAssetMap(assets) {
   const generic = assets.find((asset) => asset.variant === "通用版") || assets[0] || null;
-  const fb = assets.find((asset) => asset.variant === "FB版") || generic;
-  const selected = assets[0] || null;
-  const selectedVariant = selected?.variant || generic?.variant || "通用版";
+  const selected = generic;
+  const selectedVariant = "通用版";
   return {
     generic,
-    fb,
     selected,
     selectedVariant,
     ids: { [selectedVariant]: selected?.id || generic?.id || "" },
@@ -1944,7 +1937,7 @@ async function openDesignDialog(candidateId, encodedAssets = "") {
   if (!item) return toast("找不到这条内容", "error");
   const productionCandidateId = item.source_candidate_id || candidateId;
   const assetMap = designAssetMap(parseDesignAssets(encodedAssets));
-  const baseAssetId = assetMap.selected?.id || assetMap.generic?.id || assetMap.fb?.id || "";
+  const baseAssetId = assetMap.selected?.id || assetMap.generic?.id || "";
   if (!baseAssetId) return toast("请先生成服务器成片，再打开文案设计", "error");
   let designInfo = {};
   try {
@@ -1954,7 +1947,6 @@ async function openDesignDialog(candidateId, encodedAssets = "") {
   }
   Object.assign(item, designInfo);
   item.design_base_asset_ids = assetMap.ids;
-  item.design_variants = [assetMap.selectedVariant];
   item.design_base_label = `${assetMap.selected?.label || item.display_title || item.title || candidateId}`;
   state.pendingProductionIds = [item.source_candidate_id || productionCandidateId];
   state.designCandidate = item;
@@ -2754,9 +2746,6 @@ document.querySelector("#designForm").addEventListener("submit", async (event) =
       x: layer.x,
       y: layer.y,
     });
-    const variants = Array.isArray(state.designCandidate?.design_variants) && state.designCandidate.design_variants.length
-      ? state.designCandidate.design_variants
-      : ["通用版"];
     const baseAssetIds = state.designCandidate?.design_base_asset_ids || {};
     const options = {
       content_type: "auto",
@@ -2764,7 +2753,7 @@ document.querySelector("#designForm").addEventListener("submit", async (event) =
       audio_policy: "auto",
       rights_status: "MANUAL_REVIEW",
       batch_label: "文案设计版",
-      design: { layers, variants, base_asset_ids: baseAssetIds, base_asset_id: baseAssetIds["通用版"] || baseAssetIds["FB版"] || "" },
+      design: { layers, base_asset_ids: baseAssetIds, base_asset_id: baseAssetIds["通用版"] || "" },
     };
     document.querySelector("#designDialog").close();
     await runBatchAction("produce", [], options, state.pendingProductionIds);
@@ -2787,7 +2776,7 @@ document.querySelector("#discoverForm").addEventListener("submit", async (event)
     if (targetArea === "approved" && !state.importCapabilities.can_direct_approve) {
       throw new Error("当前账号没有直接导入审核通过成片的后台权限");
     }
-    if (targetArea === "approved" && !confirm("该视频将作为外部完整成片直接进入审核通过，并跳过智能切片与双版本制作。确认继续？")) {
+    if (targetArea === "approved" && !confirm("该视频将作为外部完整成片直接进入审核通过，并跳过智能切片与自动制作。确认继续？")) {
       return;
     }
     if (mode === "upload") {

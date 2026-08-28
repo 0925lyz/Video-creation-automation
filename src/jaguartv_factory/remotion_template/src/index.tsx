@@ -11,7 +11,6 @@ import {
 } from "remotion";
 
 type BrandProps = {
-  variant: "FB版" | "通用版";
   sourceVideo: string;
   imgLogo?: string;
   imgTuYi?: string;
@@ -77,7 +76,6 @@ type CaptionStyle = {
 };
 
 const fallbackProps: BrandProps = {
-  variant: "通用版",
   sourceVideo: "",
   imgLogo: "",
   imgTuYi: "",
@@ -130,31 +128,26 @@ const assetSrc = (value?: string) => {
   return staticFile(value);
 };
 
-function JaguarTVVariant(props: BrandProps) {
+function JaguarTVGeneric(props: BrandProps) {
   const p = {...fallbackProps, ...props};
   const {width, height, fps} = useVideoConfig();
   const contentFrames = Math.round(p.contentSeconds * fps);
   const endcardFrames = Math.max(1, Math.round(p.promoSeconds * fps));
-  const isGeneric = p.variant === "通用版";
 
   return (
     <AbsoluteFill style={{backgroundColor: "#000"}}>
       <Sequence durationInFrames={contentFrames}>
-        {isGeneric ? (
-          <GenericContentLayout {...p} />
-        ) : p.sourceVideo ? (
-          <OffthreadVideo src={assetSrc(p.sourceVideo)} style={{width, height, objectFit: p.sourceFit || "cover"}} muted={false} />
-        ) : <AbsoluteFill style={{width, height, backgroundColor: "#050505"}} />}
+        <GenericContentLayout {...p} />
         {p.customDesign ? <FreeformDesignOverlay layers={p.designLayers || []} /> : null}
         <CaptionOverlays
           captions={p.captions || []}
           style={p.captionStyle || fallbackProps.captionStyle}
           sourceFit={p.sourceFit || "cover"}
           sourceAspectRatio={p.sourceAspectRatio || width / height}
-          frameRect={isGeneric ? genericContentRects(p, width, height).video : undefined}
+          frameRect={genericContentRects(p, width, height).video}
         />
       </Sequence>
-      {isGeneric && p.imgEndcard ? (
+      {p.imgEndcard ? (
         <Sequence from={contentFrames} durationInFrames={endcardFrames}>
           <AbsoluteFill style={{backgroundColor: "#000", alignItems: "center", justifyContent: "center"}}>
             <Img src={assetSrc(p.imgEndcard)} style={{width, height, objectFit: p.endcardFit || "cover"}} />
@@ -363,8 +356,8 @@ function Root() {
   const duration = Math.round(fallbackProps.durationSeconds * fallbackProps.fps);
   return (
     <Composition
-      id="JaguarTVVariant"
-      component={JaguarTVVariant}
+      id="JaguarTVGeneric"
+      component={JaguarTVGeneric}
       durationInFrames={duration}
       fps={fallbackProps.fps}
       width={fallbackProps.width}

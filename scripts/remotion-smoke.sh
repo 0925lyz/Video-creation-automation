@@ -23,35 +23,31 @@ ffmpeg -y -v error \
 cp "$ROOT/assets/brand/generic_bottom_banner.jpg" "$PUBLIC_SMOKE/banner.jpg"
 cp "$ROOT/assets/brand/endcard_landscape_blue_v2.png" "$PUBLIC_SMOKE/endcard.png"
 
-render_variant() {
-  local variant="$1"
-  local payload="$OUT_DIR/${variant}.json"
-  local output="$OUT_DIR/${variant}.mp4"
-  node - "$payload" "$output" "$variant" <<'NODE'
+render_generic() {
+  local payload="$OUT_DIR/通用版.json"
+  local output="$OUT_DIR/通用版.mp4"
+  node - "$payload" "$output" <<'NODE'
 const fs = require("node:fs");
 const path = require("node:path");
 
 const payloadPath = process.argv[2];
 const outputPath = process.argv[3];
-const variant = process.argv[4];
-const generic = variant === "通用版";
 const payload = {
   entryPoint: "src/index.tsx",
-  compositionId: "JaguarTVVariant",
+  compositionId: "JaguarTVGeneric",
   outputLocation: path.resolve(outputPath),
   timeoutMs: 120000,
   props: {
-    variant,
     sourceVideo: "smoke/source.mp4",
-    imgBottomBanner: generic ? "smoke/banner.jpg" : "",
-    imgEndcard: generic ? "smoke/endcard.png" : "",
+    imgBottomBanner: "smoke/banner.jpg",
+    imgEndcard: "smoke/endcard.png",
     bottomBannerAspectRatio: 992 / 136,
     width: 360,
     height: 640,
     fps: 30,
     contentSeconds: 1,
-    promoSeconds: generic ? 1.5 : 0,
-    durationSeconds: generic ? 2.5 : 1,
+    promoSeconds: 1.5,
+    durationSeconds: 2.5,
     overlayMaxWidthRatio: 0.18,
     overlayMarginHRatio: 0.03,
     overlayMarginVRatio: 0.05,
@@ -79,10 +75,9 @@ NODE
   test -s "$output"
 }
 
-render_variant "通用版"
-render_variant "FB版"
+render_generic
 
-for output in "$OUT_DIR/通用版.mp4" "$OUT_DIR/FB版.mp4"; do
+for output in "$OUT_DIR/通用版.mp4"; do
   video_probe="$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_type,width,height,r_frame_rate -of json "$output")"
   audio_probe="$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_type -of csv=p=0 "$output")"
   grep -q '"width": 360' <<<"$video_probe"
@@ -92,7 +87,6 @@ done
 ffmpeg -y -v error -ss 0.2 -i "$OUT_DIR/通用版.mp4" -frames:v 1 "$OUT_DIR/generic-start.png"
 ffmpeg -y -v error -ss 0.8 -i "$OUT_DIR/通用版.mp4" -frames:v 1 "$OUT_DIR/generic-content-end.png"
 ffmpeg -y -v error -ss 1.3 -i "$OUT_DIR/通用版.mp4" -frames:v 1 "$OUT_DIR/generic-endcard.png"
-ffmpeg -y -v error -ss 0.5 -i "$OUT_DIR/FB版.mp4" -frames:v 1 "$OUT_DIR/fb-middle.png"
 
 "$PYTHON_BIN" - "$OUT_DIR" <<'PY'
 from pathlib import Path
@@ -115,7 +109,6 @@ assert nonblack_ratio(generic, (0, 397, 360, 447)) > 0.20, "bottom banner is mis
 assert nonblack_ratio(generic, (0, 0, 360, 170)) < 0.08, "unexpected generic top-corner overlay"
 assert nonblack_ratio(root / "generic-content-end.png", (0, 397, 360, 447)) > 0.20, "banner did not persist"
 assert nonblack_ratio(root / "generic-endcard.png") > 0.10, "generic endcard is blank"
-assert nonblack_ratio(root / "fb-middle.png") > 0.45, "FB layout is blank"
 PY
 
-echo "Remotion dual-variant smoke outputs: $OUT_DIR"
+echo "Remotion generic smoke output: $OUT_DIR/通用版.mp4"
