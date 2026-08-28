@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <link rel="icon" type="image/png" href="/assets/brand/overlay_tu_er.png">
+  <link rel="icon" type="image/png" href="/assets/brand/dashboard_favicon.png">
   <title>JaguarTV Content OS</title>
-  <link rel="stylesheet" href="/styles.css?v=20260826-compact-outputs-v2">
+  <link rel="stylesheet" href="/styles.css?v=20260828-cta-review-edit-v1">
 </head>
 <body>
   <aside class="sidebar">
@@ -16,6 +16,7 @@
     <nav aria-label="主导航">
       <button class="nav-item active" data-view="overview"><span>总览</span><small>01</small></button>
       <button class="nav-item" data-view="inventory"><span>内容库存</span><small id="navInventory">0</small></button>
+      <button class="nav-item" data-view="cta"><span>CTA</span><small id="navCta">0</small></button>
       <button class="nav-item" data-view="posters"><span>海报库存</span><small id="navPosters">0</small></button>
       <button class="nav-item" data-view="publishing"><span>发布队列</span><small id="navQueue">0</small></button>
       <button class="nav-item" data-view="analytics"><span>增长分析</span><small>04</small></button>
@@ -64,6 +65,15 @@
 
       <div class="section-heading"><div><p class="eyebrow">RECENT INVENTORY</p><h2>最近内容</h2></div><button class="text-button" data-open-view="inventory">查看全部 →</button></div>
       <div class="content-strip" id="recentContent"></div>
+    </section>
+
+    <section class="view" id="view-cta">
+      <div class="toolbar">
+        <div><p class="eyebrow">IMPORTED CTA ONLY</p><h2>CTA 库</h2></div>
+        <label class="primary-button cta-import-button">＋ 导入 CTA<input id="ctaImportFiles" type="file" accept="image/png,image/jpeg,image/webp,video/mp4,video/quicktime,video/webm,.mkv,.m4v" multiple hidden></label>
+      </div>
+      <p class="dialog-note">这里只接收人工导入的图片和视频；爬取素材不会进入 CTA。制作时按源视频横竖方向随机选择。</p>
+      <div class="cta-grid" id="ctaGrid"><div class="empty-state">正在加载 CTA</div></div>
     </section>
 
     <section class="view" id="view-inventory">
@@ -351,7 +361,7 @@
         <section class="settings-panel">
           <div><p class="eyebrow">BRAND ASSETS</p><h2>角标、封面、尾图</h2></div>
           <div class="settings-grid">
-            <label>角标图片路径<input id="settingWatermarkImage" placeholder="assets/brand/logo.png"></label>
+            <label>角标图片路径<input id="settingWatermarkImage" placeholder="留空则不使用图片角标"></label>
             <label>角标位置<select id="settingWatermarkPosition"><option value="top_left">左上</option><option value="top_right">右上</option><option value="bottom_left">左下</option><option value="bottom_right">右下</option></select></label>
             <label>角标宽度<input id="settingWatermarkWidth" type="number" min="50" max="600"></label>
             <label>角标透明度<input id="settingWatermarkOpacity" type="number" min="0" max="1" step="0.05"></label>
@@ -394,7 +404,7 @@
 
   <dialog id="designDialog">
     <form method="dialog" id="designForm" class="design-form">
-      <div class="dialog-heading design-heading"><div><p class="eyebrow">DESIGN RENDER</p><h2>文案设计版视频</h2><p id="designCandidateLabel">未选择</p></div><button class="icon-button" id="closeDesignDialog" type="button" title="关闭" aria-label="关闭">×</button></div>
+      <div class="dialog-heading design-heading"><div><p class="eyebrow">DESIGN REPLACE</p><h2>编辑通用版文案与图片</h2><p id="designCandidateLabel">未选择</p></div><button class="icon-button" id="closeDesignDialog" type="button" title="关闭" aria-label="关闭">×</button></div>
       <div class="design-workspace">
         <section class="design-stage-column" aria-label="视频设计画布">
           <div class="design-canvas-shell">
@@ -432,7 +442,23 @@
           <div class="upload-progress compact-progress" id="designUploadProgress" hidden><div><span id="designUploadMessage">准备上传</span><strong id="designUploadPercent">0%</strong></div><div class="progress-track"><span id="designUploadBar" style="width:0%"></span></div></div>
         </section>
       </div>
-      <div class="dialog-actions design-dialog-actions"><button class="secondary-button" id="cancelDesignDialog" type="button">取消</button><button class="primary-button" id="submitDesign" type="submit">上传图片并生成</button></div>
+      <div class="dialog-actions design-dialog-actions"><button class="secondary-button" id="cancelDesignDialog" type="button">取消</button><button class="primary-button" id="submitDesign" type="submit">替换通用版</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="trimDialog">
+    <form id="trimForm" class="trim-form">
+      <div class="dialog-heading"><div><p class="eyebrow">REVIEW CUT</p><h2>删除中间片段</h2><p id="trimAssetLabel">未选择</p></div><button class="icon-button" id="closeTrimDialog" type="button" title="关闭" aria-label="关闭">×</button></div>
+      <video id="trimVideo" controls playsinline></video>
+      <div class="trim-timeline" id="trimTimeline"><span id="trimSelection"></span><i id="trimPlayhead"></i></div>
+      <div class="trim-controls">
+        <label>删除起点<input id="trimStart" type="number" min="0" step="0.05" required></label>
+        <button class="icon-button" id="setTrimStart" type="button" title="用当前播放位置作为起点" aria-label="设置删除起点">[</button>
+        <label>删除终点<input id="trimEnd" type="number" min="0" step="0.05" required></label>
+        <button class="icon-button" id="setTrimEnd" type="button" title="用当前播放位置作为终点" aria-label="设置删除终点">]</button>
+      </div>
+      <p class="dialog-note" id="trimSummary">请选择要从正文中删除的一段，CTA 区域不可剪。</p>
+      <div class="dialog-actions"><button class="secondary-button" id="cancelTrimDialog" type="button">取消</button><button class="primary-button" id="submitTrim" type="submit">删除并合并前后内容</button></div>
     </form>
   </dialog>
 
@@ -566,6 +592,6 @@
   </dialog>
 
   <div class="toast" id="toast" role="status"></div>
-  <script src="/app.js?v=20260826-youtube-four-stage-v1"></script>
+  <script src="/app.js?v=20260828-cta-review-edit-v1"></script>
 </body>
 </html>

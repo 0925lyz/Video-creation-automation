@@ -121,7 +121,7 @@ echo "==> Installing Node helper packages"
 npm --prefix "$APP_DIR" ci --no-audit --no-fund
 npm --prefix "$APP_DIR/src/jaguartv_factory/remotion_template" ci --no-audit --no-fund
 
-mkdir -p workspace/server_media/review workspace/server_media/uploads/source \
+mkdir -p workspace/server_media/review workspace/server_media/cta workspace/server_media/uploads/source \
   workspace/server_media/uploads/reaction assets/bgm
 
 if [[ ! -f .env ]]; then

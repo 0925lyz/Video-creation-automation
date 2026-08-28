@@ -37,6 +37,7 @@ from .core import (
     ingest_uploaded_media,
     inventory_root,
     list_candidates,
+    media_duration,
     media_dimensions,
     now_iso,
     platform_from_url,
@@ -95,6 +96,8 @@ from .server_store import (
     save_upload_chunk,
     storage_root,
 )
+from .cta import delete_cta_asset, import_cta_stream, list_cta_assets
+from .review_edit import manual_cut_review_output, replace_review_output_design
 from .source_imports import (
     SOURCE_TYPE,
     TARGET_APPROVED,
@@ -907,6 +910,11 @@ def candidate_design_info(config: dict[str, Any], candidate_id: str) -> dict[str
     production_candidate_id, _ = resolve_production_candidate(config, resolve_candidate_id)
     if output_path.is_file():
         output_width, output_height = media_dimensions(output_path)
+        package_metadata = review_package_metadata(
+            config, review_asset_package_id(str((output_asset or {}).get("id") or ""))
+        )
+        segment = package_metadata.get("segment") if isinstance(package_metadata.get("segment"), dict) else {}
+        content_duration = float(segment.get("duration_sec") or media_duration(output_path))
         return {
             "candidate_id": candidate_id,
             "source_candidate_id": production_candidate_id,
@@ -916,6 +924,7 @@ def candidate_design_info(config: dict[str, Any], candidate_id: str) -> dict[str
             "source_fit": "contain",
             "design_base_asset_id": str((output_asset or {}).get("id") or ""),
             "design_base_variant": str((output_asset or {}).get("variant") or ""),
+            "content_duration_sec": content_duration,
         }
     source_media = candidate_source_media(config, candidate_id)
     result = {
@@ -4013,6 +4022,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         {"error": "missing or invalid upload token"}, HTTPStatus.UNAUTHORIZED
                     )
                 return self.send_json(upload_rows(self.server.config))
+            if parsed.path == "/api/cta":
+                return self.send_json(list_cta_assets(self.server.config))
             if parsed.path.startswith("/api/uploads/") and parsed.path.endswith("/link"):
                 if not self.authorized_for_uploads():
                     return self.send_json(
@@ -4120,6 +4131,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         category=str((query.get("category") or [""])[0]),
                         actor=self.headers.get("X-Operator", ""),
                         batch_size=int(self.headers.get("X-Poster-Batch-Size") or 1),
+                    ),
+                    HTTPStatus.CREATED,
+                )
+            if parsed.path == "/api/cta/import":
+                query = parse_qs(parsed.query)
+                return self.send_json(
+                    import_cta_stream(
+                        self.server.config,
+                        self.rfile,
+                        filename=str((query.get("filename") or [""])[0]),
+                        content_length=int(self.headers.get("Content-Length") or 0),
+                        actor=self.headers.get("X-Operator", "") or "dashboard",
                     ),
                     HTTPStatus.CREATED,
                 )
@@ -4366,6 +4389,40 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     return self.send_json({"error": str(error)}, HTTPStatus.SERVICE_UNAVAILABLE)
             if parsed.path == "/api/candidates/delete":
                 return self.send_json(delete_candidates(self.server.config, payload), HTTPStatus.OK)
+            cta_parts = parsed.path.strip("/").split("/")
+            if len(cta_parts) == 4 and cta_parts[:2] == ["api", "cta"] and cta_parts[3] == "delete":
+                return self.send_json(
+                    delete_cta_asset(
+                        self.server.config,
+                        unquote(cta_parts[2]),
+                        actor=str(payload.get("actor") or self.headers.get("X-Operator", "") or "dashboard"),
+                    ),
+                    HTTPStatus.OK,
+                )
+            if parsed.path == "/api/review/manual-cut":
+                return self.send_json(
+                    manual_cut_review_output(
+                        self.server.config,
+                        str(payload.get("asset_id") or ""),
+                        float(payload.get("cut_start_sec")),
+                        float(payload.get("cut_end_sec")),
+                        actor=str(payload.get("actor") or self.headers.get("X-Operator", "") or "dashboard"),
+                    ),
+                    HTTPStatus.OK,
+                )
+            if parsed.path == "/api/review/design-replace":
+                layers = payload.get("layers")
+                if not isinstance(layers, list):
+                    raise ValueError("layers must be a list")
+                return self.send_json(
+                    replace_review_output_design(
+                        self.server.config,
+                        str(payload.get("asset_id") or ""),
+                        layers,
+                        actor=str(payload.get("actor") or self.headers.get("X-Operator", "") or "dashboard"),
+                    ),
+                    HTTPStatus.OK,
+                )
             poster_parts = parsed.path.strip("/").split("/")
             if len(poster_parts) == 4 and poster_parts[:2] == ["api", "posters"]:
                 poster_id = unquote(poster_parts[2])
@@ -4871,7 +4928,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def send_media(self, relative: str, download: bool = False) -> None:
         relative = unquote(relative)
-        if relative.startswith("review/"):
+        if relative.startswith(("review/", "cta/")):
             root = storage_root(self.server.config)
             path = (root / relative).resolve()
         else:
@@ -4925,7 +4982,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             handle.seek(start)
             remaining = length
             while remaining and (chunk := handle.read(min(256 * 1024, remaining))):
-                self.wfile.write(chunk)
+                try:
+                    self.wfile.write(chunk)
+                except (BrokenPipeError, ConnectionResetError):
+                    return
                 remaining -= len(chunk)
 
 

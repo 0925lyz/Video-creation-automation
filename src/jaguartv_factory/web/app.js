@@ -11,6 +11,7 @@ const state = {
   settings: null,
   sessions: [],
   uploads: [],
+  ctaAssets: [],
   health: null,
   publishCapabilities: {},
   publishAccounts: [],
@@ -53,6 +54,7 @@ const state = {
   designCandidate: null,
   designLayers: [],
   selectedDesignLayerId: "design-text",
+  pendingTrimAsset: null,
   youtubeGrowth: {
     page: 1,
     pageSize: 20,
@@ -67,6 +69,7 @@ const state = {
 const views = {
   overview: ["OPERATIONS", "内容生产总览"],
   inventory: ["INVENTORY", "内容库存"],
+  cta: ["CTA", "CTA 库"],
   posters: ["POSTER INVENTORY", "海报库存"],
   publishing: ["DISTRIBUTION", "发布队列"],
   analytics: ["GROWTH", "增长分析"],
@@ -162,9 +165,10 @@ async function refreshAll(showToast = false) {
   const button = document.querySelector("#refreshButton");
   button.disabled = true;
   try {
-    const [overview, candidatePage, publications, xAuths, workers, feedback, downloadClaims, keywordGroups, categoryKeywords, tasks, settings, sessions, health, capabilities, uploads, posterCounts, importCapabilities] = await Promise.all([
+    const [overview, candidatePage, publications, xAuths, workers, feedback, downloadClaims, keywordGroups, categoryKeywords, tasks, settings, sessions, health, capabilities, uploads, ctaAssets, posterCounts, importCapabilities] = await Promise.all([
       api("/api/overview"), api(inventoryApiPath()), api("/api/publications"), api("/api/x-auths"), api("/api/workers"), api("/api/feedback"), api("/api/download-claims"), api("/api/keywords"), api("/api/category-keywords?date=today"), api("/api/tasks"), api("/api/settings"), api("/api/sessions"), api("/api/health"), api("/api/publish/capabilities"),
       api("/api/uploads").catch(() => []),
+      api("/api/cta").catch(() => []),
       api("/api/posters/counts"),
       api("/api/import-capabilities").catch(() => ({ default_target_area: "pending_production", can_direct_approve: false })),
     ]);
@@ -180,7 +184,7 @@ async function refreshAll(showToast = false) {
       inventorySourceCounts: candidatePage.source_counts || { all: 0, source_import: 0 },
       importCapabilities,
       publications, xAuths, workers, feedback, downloadClaims, keywordGroups, categoryKeywords,
-      tasks, settings, sessions, health, publishCapabilities: capabilities, uploads, posterCounts,
+      tasks, settings, sessions, health, publishCapabilities: capabilities, uploads, ctaAssets, posterCounts,
     });
     renderAll();
     if (document.querySelector("#view-posters").classList.contains("active")) await loadPosters();
@@ -256,6 +260,7 @@ function renderAll() {
   renderSettings();
   renderSessions();
   renderUploads();
+  renderCtaAssets();
   renderServerHealth();
   renderTasks();
   fillCandidateSelects();
@@ -436,7 +441,7 @@ function renderInventory() {
       <td>${Number(item.highlight_score || 0).toFixed(1)}</td>
       <td><span title="${escapeHtml(scoreTooltip(item.score_breakdown))}">${Number(item.score || 0).toFixed(1)}</span></td>
       <td><span class="status-pill ${task ? "running" : statusClass(item.status)}">${status}</span>${publicationNote}${failure}</td><td>${dateText(item.updated_at)}</td>
-      <td>${task ? `<span class="row-progress">${task.progress || 0}%</span>` : candidateAction(item) + (isParent && item.status !== 'DOWNLOAD_FAILED' ? ` <button class="secondary-button" style="margin-top: 4px;" onclick="openProductionDialog('${item.id}')">手动切片</button>` : '')}</td>
+      <td>${task ? `<span class="row-progress">${task.progress || 0}%</span>` : candidateAction(item)}</td>
     </tr>`;
   }).join("") : `<tr><td colspan="10"><div class="empty-state">${state.sourceFilter === "source_import" ? "还没有导入视频" : "没有符合条件的内容"}</div></td></tr>`;
   document.querySelectorAll("[data-candidate-select]").forEach((checkbox) => checkbox.addEventListener("change", () => {
@@ -449,6 +454,7 @@ function renderInventory() {
   document.querySelectorAll("[data-review-decision]").forEach((button) => button.addEventListener("click", () => submitReview(button.dataset.reviewDecision, button.dataset.candidateId)));
   document.querySelectorAll("[data-publish-asset]").forEach((button) => button.addEventListener("click", () => openPublishDialog(button.dataset.publishAsset, button.dataset.publishCandidate || "")));
   document.querySelectorAll("[data-design-id]").forEach((button) => button.addEventListener("click", () => openDesignDialog(button.dataset.designId, button.dataset.designAssets || "")));
+  document.querySelectorAll("[data-trim-asset]").forEach((button) => button.addEventListener("click", () => openTrimDialog(button.dataset.trimAsset)));
   document.querySelectorAll("[data-import-retry]").forEach((button) => button.addEventListener("click", () => retrySourceImport(button.dataset.importRetry)));
   updateBatchToolbar();
 }
@@ -1031,13 +1037,8 @@ function outputAssetsFor(item) {
   }];
 }
 
-function isDesignOutput(asset) {
-  const text = `${asset.label || ""} ${asset.batch_label || ""} ${asset.content_type || ""} ${asset.filename || ""}`;
-  return text.includes("文案设计版") || text.includes("design_overlay");
-}
-
 function outputDesignButton(item, asset) {
-  if (!asset?.id || isDesignOutput(asset)) return "";
+  if (!asset?.id || item?.status !== "READY_FOR_REVIEW") return "";
   const payload = escapeHtml(JSON.stringify([{
     id: asset.id,
     label: asset.label || "",
@@ -1048,6 +1049,17 @@ function outputDesignButton(item, asset) {
   return `<button class="table-action" data-design-id="${escapeHtml(item.id)}" data-design-assets='${payload}' type="button">文案设计</button>`;
 }
 
+function outputTrimButton(item, asset) {
+  if (!asset?.id || item?.status !== "READY_FOR_REVIEW") return "";
+  const payload = escapeHtml(JSON.stringify({
+    id: asset.id,
+    candidate_id: item.id,
+    label: asset.label || "通用版",
+    video_url: asset.video_url || "",
+  }));
+  return `<button class="table-action" data-trim-asset='${payload}' type="button">剪切</button>`;
+}
+
 function outputActionLinks(asset, item = null) {
   const videoUrl = String(asset.video_url || "");
   if (!videoUrl) return "";
@@ -1056,7 +1068,7 @@ function outputActionLinks(asset, item = null) {
   const filename = String(asset.filename || `${asset.id || "jaguartv-video"}.mp4`).replace(/[^0-9A-Za-z_.-]+/g, "_");
   const payload = escapeHtml(JSON.stringify({ ...asset, download_url: downloadUrl, server_url: serverUrl, filename }));
   const publishButton = item?.status === "APPROVED" ? `<button class="table-action" data-publish-candidate="${escapeHtml(item.id)}" data-publish-asset='${payload}' type="button">发布</button>` : "";
-  return `${publishButton}<a class="table-action" href="${escapeHtml(serverUrl)}" target="_blank" rel="noopener">服务器成片</a>${item ? outputDesignButton(item, asset) : ""}`;
+  return `${publishButton}<a class="table-action" href="${escapeHtml(serverUrl)}" target="_blank" rel="noopener">服务器成片</a>${item ? outputTrimButton(item, asset) + outputDesignButton(item, asset) : ""}`;
 }
 
 function approvedOutputActions(item) {
@@ -1807,6 +1819,48 @@ function renderUploads() {
   });
 }
 
+function renderCtaAssets() {
+  const grid = document.querySelector("#ctaGrid");
+  if (!grid) return;
+  document.querySelector("#navCta").textContent = String(state.ctaAssets.length);
+  grid.innerHTML = state.ctaAssets.length ? state.ctaAssets.map((item) => `
+    <article class="cta-item">
+      ${item.media_type === "video"
+        ? `<video class="cta-preview" src="${escapeHtml(item.preview_url)}" controls preload="metadata"></video>`
+        : `<img class="cta-preview" src="${escapeHtml(item.preview_url)}" alt="${escapeHtml(item.name)}" loading="lazy">`}
+      <div class="cta-meta">
+        <strong title="${escapeHtml(item.original_name || item.name)}">${escapeHtml(item.original_name || item.name)}</strong>
+        <small>${item.orientation === "landscape" ? "横版" : "竖版"} · ${item.media_type === "video" ? `视频 ${Number(item.duration_sec).toFixed(1)} 秒` : "图片 2 秒"}</small>
+        <small>${item.width} × ${item.height} · ${formatBytes(item.size_bytes)}</small>
+        <div class="cta-actions"><a class="table-action" href="${escapeHtml(item.preview_url)}" target="_blank" rel="noopener">预览</a><button class="table-action danger-action" data-cta-delete="${escapeHtml(item.id)}" type="button">删除</button></div>
+      </div>
+    </article>`).join("") : `<div class="empty-state">还没有 CTA，请先导入横版和竖版素材</div>`;
+  grid.querySelectorAll("[data-cta-delete]").forEach((button) => button.addEventListener("click", () => deleteCtaAsset(button.dataset.ctaDelete)));
+}
+
+async function uploadCtaFiles(files) {
+  for (const file of Array.from(files || [])) {
+    const response = await fetch(`/api/cta/import?filename=${encodeURIComponent(file.name)}`, {
+      method: "POST",
+      headers: { "Content-Type": file.type || "application/octet-stream" },
+      body: file,
+    });
+    await parseUploadResponse(response);
+  }
+  state.ctaAssets = await api("/api/cta");
+  renderCtaAssets();
+  toast(`已导入 ${files.length} 个 CTA`);
+}
+
+async function deleteCtaAsset(assetId) {
+  const item = state.ctaAssets.find((asset) => asset.id === assetId);
+  if (!item || !confirm(`删除 CTA「${item.original_name || item.name}」？`)) return;
+  await api(`/api/cta/${encodeURIComponent(assetId)}/delete`, { method: "POST", body: "{}" });
+  state.ctaAssets = state.ctaAssets.filter((asset) => asset.id !== assetId);
+  renderCtaAssets();
+  toast("CTA 已删除");
+}
+
 async function parseUploadResponse(response) {
   const text = await response.text();
   let payload = {};
@@ -1899,8 +1953,8 @@ function openView(name) {
   document.querySelectorAll(".view").forEach((item) => item.classList.toggle("active", item.id === `view-${name}`));
   document.querySelector("#viewEyebrow").textContent = views[name][0];
   document.querySelector("#viewTitle").textContent = views[name][1];
-  document.querySelector(".top-actions .search").hidden = name === "posters";
-  document.querySelector("#discoverButton").hidden = name === "posters";
+  document.querySelector(".top-actions .search").hidden = ["posters", "cta"].includes(name);
+  document.querySelector("#discoverButton").hidden = ["posters", "cta"].includes(name);
   if (name === "posters") loadPosters();
   if (name === "analytics" && !state.youtubeGrowth.loaded) loadYouTubeAnalytics();
 }
@@ -1909,6 +1963,40 @@ function openProductionDialog(candidateIds) {
   const ids = Array.isArray(candidateIds) ? candidateIds : [candidateIds];
   state.pendingProductionIds = [...new Set(ids.filter(Boolean))];
   document.querySelector("#productionDialog").showModal();
+}
+
+async function openTrimDialog(rawAsset) {
+  let asset;
+  try { asset = JSON.parse(rawAsset || "{}"); }
+  catch { return toast("成片信息无效", "error"); }
+  if (!asset.id || !asset.video_url) return toast("找不到可剪切的通用版", "error");
+  try {
+    const info = await api(`/api/candidates/${encodeURIComponent(`${asset.candidate_id}::asset::${asset.id}`)}/design`);
+    asset.content_duration_sec = Number(info.content_duration_sec || 0);
+  } catch (error) {
+    return toast(`读取正文时长失败：${error.message}`, "error");
+  }
+  state.pendingTrimAsset = asset;
+  const video = document.querySelector("#trimVideo");
+  video.src = asset.video_url;
+  document.querySelector("#trimAssetLabel").textContent = asset.label || asset.id;
+  document.querySelector("#trimStart").value = Math.max(0.1, asset.content_duration_sec / 3).toFixed(2);
+  document.querySelector("#trimEnd").value = Math.max(0.2, asset.content_duration_sec * 2 / 3).toFixed(2);
+  updateTrimPreview();
+  document.querySelector("#trimDialog").showModal();
+}
+
+function updateTrimPreview() {
+  const asset = state.pendingTrimAsset || {};
+  const duration = Math.max(0.01, Number(asset.content_duration_sec || 0));
+  const start = clamp(document.querySelector("#trimStart").value, 0, duration);
+  const end = clamp(document.querySelector("#trimEnd").value, 0, duration);
+  const selection = document.querySelector("#trimSelection");
+  selection.style.left = `${start / duration * 100}%`;
+  selection.style.width = `${Math.max(0, end - start) / duration * 100}%`;
+  document.querySelector("#trimSummary").textContent = end > start
+    ? `删除正文 ${start.toFixed(2)}–${end.toFixed(2)} 秒，保留 ${(duration - end + start).toFixed(2)} 秒；CTA 不变。`
+    : "终点必须晚于起点。";
 }
 
 function parseDesignAssets(raw) {
@@ -2010,6 +2098,10 @@ function setDesignSource(item) {
     video.style.objectFit = item.source_fit || "contain";
     video.style.display = "block";
     empty.hidden = true;
+    video.ontimeupdate = () => {
+      const contentEnd = Number(item.content_duration_sec || 0);
+      if (contentEnd > 0 && video.currentTime >= contentEnd) video.currentTime = 0;
+    };
     video.play().catch(() => {});
     return;
   }
@@ -2030,8 +2122,8 @@ function sizeDesignCanvas() {
   const canvas = document.querySelector("#designCanvas");
   if (!shell || !canvas) return;
   const scale = Math.min(shell.clientWidth / width, shell.clientHeight / height);
-  canvas.style.width = `${Math.max(160, Math.floor(width * scale))}px`;
-  canvas.style.height = `${Math.max(220, Math.floor(height * scale))}px`;
+  canvas.style.width = `${Math.max(1, Math.floor(width * scale))}px`;
+  canvas.style.height = `${Math.max(1, Math.floor(height * scale))}px`;
   document.querySelector("#designCanvasSize").textContent = `${width} × ${height}`;
 }
 
@@ -2257,6 +2349,14 @@ document.querySelector("#assetUploadForm").addEventListener("submit", async (eve
 });
 
 document.querySelectorAll(".nav-item").forEach((button) => button.addEventListener("click", () => openView(button.dataset.view)));
+document.querySelector("#ctaImportFiles").addEventListener("change", async (event) => {
+  const files = Array.from(event.target.files || []);
+  if (!files.length) return;
+  event.target.disabled = true;
+  try { await uploadCtaFiles(files); }
+  catch (error) { toast(`CTA 导入失败：${error.message}`, "error"); }
+  finally { event.target.disabled = false; event.target.value = ""; }
+});
 document.querySelectorAll("[data-open-view]").forEach((button) => button.addEventListener("click", () => openView(button.dataset.openView)));
 document.querySelector("#refreshButton").addEventListener("click", () => refreshAll(true));
 document.querySelector("#publicationTable").addEventListener("click", (event) => {
@@ -2281,6 +2381,22 @@ document.querySelector("#closeDiscoverDialog").addEventListener("click", () => d
 document.querySelector("#cancelDiscoverDialog").addEventListener("click", () => document.querySelector("#discoverDialog").close());
 document.querySelector("#closePublishDialog").addEventListener("click", () => document.querySelector("#publishDialog").close());
 document.querySelector("#cancelPublishDialog").addEventListener("click", () => document.querySelector("#publishDialog").close());
+document.querySelector("#closeTrimDialog").addEventListener("click", () => document.querySelector("#trimDialog").close());
+document.querySelector("#cancelTrimDialog").addEventListener("click", () => document.querySelector("#trimDialog").close());
+document.querySelector("#trimStart").addEventListener("input", updateTrimPreview);
+document.querySelector("#trimEnd").addEventListener("input", updateTrimPreview);
+document.querySelector("#setTrimStart").addEventListener("click", () => {
+  document.querySelector("#trimStart").value = document.querySelector("#trimVideo").currentTime.toFixed(2);
+  updateTrimPreview();
+});
+document.querySelector("#setTrimEnd").addEventListener("click", () => {
+  document.querySelector("#trimEnd").value = document.querySelector("#trimVideo").currentTime.toFixed(2);
+  updateTrimPreview();
+});
+document.querySelector("#trimVideo").addEventListener("timeupdate", (event) => {
+  const duration = Math.max(0.01, Number(state.pendingTrimAsset?.content_duration_sec || event.target.duration || 0));
+  document.querySelector("#trimPlayhead").style.left = `${Math.min(100, event.target.currentTime / duration * 100)}%`;
+});
 document.querySelector("#closeClaimMetricsDialog").addEventListener("click", () => document.querySelector("#claimMetricsDialog").close());
 document.querySelector("#cancelClaimMetricsDialog").addEventListener("click", () => document.querySelector("#claimMetricsDialog").close());
 document.querySelector("#globalSearch").addEventListener("input", (event) => {
@@ -2746,19 +2862,44 @@ document.querySelector("#designForm").addEventListener("submit", async (event) =
       x: layer.x,
       y: layer.y,
     });
-    const baseAssetIds = state.designCandidate?.design_base_asset_ids || {};
-    const options = {
-      content_type: "auto",
-      segment_strategy: "uniform",
-      audio_policy: "auto",
-      rights_status: "MANUAL_REVIEW",
-      batch_label: "文案设计版",
-      design: { layers, base_asset_ids: baseAssetIds, base_asset_id: baseAssetIds["通用版"] || "" },
-    };
+    const assetId = state.designCandidate?.design_base_asset_id || state.designCandidate?.design_base_asset_ids?.["通用版"] || "";
+    if (!assetId) throw new Error("找不到要替换的通用版成片");
+    setDesignUploadProgress(99, "正在原位替换通用版");
+    await api("/api/review/design-replace", {
+      method: "POST",
+      body: JSON.stringify({ asset_id: assetId, layers }),
+    });
     document.querySelector("#designDialog").close();
-    await runBatchAction("produce", [], options, state.pendingProductionIds);
+    toast("文案设计已替换通用版；CTA 区域未添加文案或图片");
+    await refreshAll();
   } catch (error) {
     toast(error.message, "error");
+  } finally {
+    submit.disabled = false;
+  }
+});
+
+document.querySelector("#trimForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const asset = state.pendingTrimAsset;
+  if (!asset?.id) return toast("没有选择待审核成片", "error");
+  const start = Number(document.querySelector("#trimStart").value);
+  const end = Number(document.querySelector("#trimEnd").value);
+  if (!(start > 0.05 && end > start && end < Number(asset.content_duration_sec || 0) - 0.05)) {
+    return toast("剪切范围必须位于正文内，且终点晚于起点", "error");
+  }
+  const submit = document.querySelector("#submitTrim");
+  submit.disabled = true;
+  try {
+    await api("/api/review/manual-cut", {
+      method: "POST",
+      body: JSON.stringify({ asset_id: asset.id, cut_start_sec: start, cut_end_sec: end }),
+    });
+    document.querySelector("#trimDialog").close();
+    toast("中间片段已删除，前后内容已合并，CTA 保持不变");
+    await refreshAll();
+  } catch (error) {
+    toast(`剪切失败：${error.message}`, "error");
   } finally {
     submit.disabled = false;
   }

@@ -8,7 +8,9 @@
 - KrillinAI performs transcription, pt-BR translation, line timing, and TTS. Its configured providers may be changed without modifying factory code.
 - A task can override the TTS voice with `--krillinai-voice`; an empty Edge voice uses `KRILLIN_EDGE_TTS_DEFAULT_VOICE`, while other providers use their configured default.
 - Any transcription, translation, Portuguese language-gate, or TTS failure stops production. There is no generic script or system-voice fallback.
-- Remotion places at most two compact subtitle lines inside the source-frame safe area and produces one generic review video with the configured bottom banner and one endcard. Subtitle positions do not follow OCR detections.
+- Remotion places at most two compact subtitle lines inside the source-frame safe area and produces one generic review video. The content is followed by one randomly selected, orientation-matched CTA from the import-only CTA inventory. CTA videos keep their full duration; CTA images display for two seconds. Subtitle positions do not follow OCR detections.
+- Media QA rejects sustained black or green frames, conservative glitch/decode signals, and frozen content. The still-image CTA interval is excluded from freeze analysis.
+- Pending-review operators may remove one middle interval and concatenate the before/after sections. Freeform text/image design uses normalized coordinates on the exact output canvas and replaces the generic output; neither edit may place layers over the CTA.
 
 ## States
 
@@ -19,6 +21,7 @@ Failure states include `LANGUAGE_REJECTED`, `DOWNLOAD_FAILED`, `PRODUCTION_FAILE
 ## Outputs
 
 - `workspace/factory.db`: shared candidate and event state.
+- `workspace/server_media/cta/`: imported CTA assets; these never enter the crawler candidate table.
 - `workspace/jobs/<id>/source.mp4`: downloaded source.
 - `workspace/jobs/<id>/source.krillinai.srt`: KrillinAI source-language transcription.
 - `workspace/jobs/<id>/subtitles_ptbr.srt`: KrillinAI pt-BR subtitle timing.

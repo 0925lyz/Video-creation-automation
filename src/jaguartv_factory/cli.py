@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from .audit import audit_review_inventory, repair_review_inventory, set_repair_run_status
+from .cta import delete_cta_asset, import_cta_path, list_cta_assets
 from .binaries import require_binary
 from .krillinai_adapter import krillinai_available
 from .core import (
@@ -220,6 +221,12 @@ def build_parser() -> argparse.ArgumentParser:
     upload_parser.add_argument("path", type=Path)
     upload_parser.add_argument("--kind", choices=("source", "reaction"), required=True)
 
+    cta_import_parser = subparsers.add_parser("cta-import")
+    cta_import_parser.add_argument("path", type=Path, help="CTA file or directory to import")
+    subparsers.add_parser("cta-list")
+    cta_delete_parser = subparsers.add_parser("cta-delete")
+    cta_delete_parser.add_argument("asset_id")
+
     run_parser = subparsers.add_parser("run")
     run_parser.add_argument("--discover", type=int, default=5)
     run_parser.add_argument("--download", type=int, default=1)
@@ -354,6 +361,14 @@ def main(argv: list[str] | None = None) -> int:
             raise FileNotFoundError(path)
         with path.open("rb") as handle:
             print_json(save_upload(config, handle, filename=path.name, kind=args.kind, content_length=path.stat().st_size))
+    elif args.command == "cta-import":
+        path = args.path.expanduser().resolve()
+        sources = sorted(item for item in path.iterdir() if item.is_file()) if path.is_dir() else [path]
+        print_json([import_cta_path(config, item, actor="cli") for item in sources if item.name != ".DS_Store"])
+    elif args.command == "cta-list":
+        print_json(list_cta_assets(config))
+    elif args.command == "cta-delete":
+        print_json(delete_cta_asset(config, args.asset_id, actor="cli"))
     elif args.command == "integrations":
         manifest = load_integration_manifest(args.manifest)
         project_root = Path(str(config.get("_root") or Path.cwd()))

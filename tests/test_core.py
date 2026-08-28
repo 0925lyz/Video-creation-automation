@@ -2,12 +2,15 @@ from pathlib import Path
 import json
 import shutil
 import sys
+from types import SimpleNamespace
 import wave
 
 import pytest
 from PIL import Image
+from jaguartv_factory import cli
 
 from jaguartv_factory.core import (
+    analyze_visual_quality,
     brand_kit,
     candidate_market_rejection,
     connect_db,
@@ -39,7 +42,37 @@ from jaguartv_factory.core import (
     upsert_render_job,
     write_srt_blocks,
 )
-from jaguartv_factory import cli
+
+
+def test_visual_quality_rejects_sustained_black_frames(tmp_path: Path, monkeypatch):
+    frame = bytes([0, 0, 0]) * (32 * 32)
+    monkeypatch.setattr(
+        "jaguartv_factory.core.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=frame * 4, stderr=b""),
+    )
+
+    result = analyze_visual_quality(
+        tmp_path / "video.mp4", {"quality": {"visual": {"sample_fps": 2}}}
+    )
+
+    assert result["black_screen"] is True
+    assert result["passed"] is False
+
+
+def test_visual_quality_rejects_frozen_frames_but_ignores_short_repeat(tmp_path: Path, monkeypatch):
+    red = bytes([180, 25, 20]) * (32 * 32)
+    blue = bytes([20, 25, 180]) * (32 * 32)
+    responses = iter((red + red + blue, red * 8))
+    monkeypatch.setattr(
+        "jaguartv_factory.core.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=next(responses), stderr=b""),
+    )
+
+    short = analyze_visual_quality(tmp_path / "short.mp4")
+    frozen = analyze_visual_quality(tmp_path / "frozen.mp4")
+
+    assert short["frozen_screen"] is False
+    assert frozen["frozen_screen"] is True
 
 
 def test_language_detection():
@@ -214,14 +247,11 @@ def test_pipeline_does_not_auto_add_remotion_promo_copy():
     assert remotion.get("endcard_cta", "") == ""
 
 
-def test_remotion_generic_keeps_bottom_banner_and_endcard(tmp_path: Path, monkeypatch):
+def test_remotion_generic_appends_matching_cta_without_fixed_banner(tmp_path: Path, monkeypatch):
     clean = tmp_path / "clean.mp4"
     clean.write_bytes(b"video")
-    assets = tmp_path / "assets" / "brand"
-    assets.mkdir(parents=True)
-    for name in ("logo.png", "overlay_tu_yi.jpg", "overlay_tu_er.png", "generic_bottom_banner.jpg", "endcard_portrait_green_v2.png", "endcard_landscape_blue_v2.png"):
-        (assets / name).write_bytes(b"asset")
-    Image.new("RGB", (992, 136), "white").save(assets / "generic_bottom_banner.jpg")
+    cta = tmp_path / "cta-portrait.jpg"
+    Image.new("RGB", (720, 1280), "white").save(cta)
     runtime = tmp_path / "runtime"
     runtime.mkdir()
     captured: dict[str, dict] = {}
@@ -236,6 +266,10 @@ def test_remotion_generic_keeps_bottom_banner_and_endcard(tmp_path: Path, monkey
     monkeypatch.setattr("jaguartv_factory.core.media_dimensions", lambda path: (1080, 1920))
     monkeypatch.setattr("jaguartv_factory.core.media_duration", lambda path: 20.0)
     monkeypatch.setattr("jaguartv_factory.core.run_remotion_renderer_api", fake_runner)
+    monkeypatch.setattr("jaguartv_factory.cta.select_random_cta", lambda config, orientation: {
+        "id": "cta-1", "name": cta.name, "file_path": str(cta), "media_type": "image",
+        "orientation": orientation, "duration_sec": 2.0,
+    })
 
     config = {
         "_root": str(tmp_path),
@@ -243,21 +277,16 @@ def test_remotion_generic_keeps_bottom_banner_and_endcard(tmp_path: Path, monkey
         "edit": {"layout_mode": "original"},
         "mobile_review_format": {"enabled": False},
         "aspect_thresholds": {"vertical_min": 0.5, "vertical_max": 0.75, "horizontal_min": 1.6, "horizontal_max": 1.9},
-        "brand": {"default_kit": "jaguartv", "kits": {"jaguartv": {"watermark": {"image": "assets/brand/logo.png"}}}},
-        "remotion": {
-            "render_runner": "renderer_api",
-            "promo_duration_sec": 1.5,
-            "bottom_banner": "assets/brand/generic_bottom_banner.jpg",
-            "portrait_endcard": "assets/brand/endcard_portrait_green_v2.png",
-            "landscape_endcard": "assets/brand/endcard_landscape_blue_v2.png",
-        },
+        "remotion": {"render_runner": "renderer_api"},
     }
 
     render_video_remotion_generic(config, clean, tmp_path / "generic.mp4")
 
-    assert "imgEndcard" in captured["通用版"]
-    assert captured["通用版"]["promoSeconds"] == 1.5
-    assert captured["通用版"]["durationSeconds"] == 21.5
+    assert captured["通用版"]["ctaSrc"].endswith("cta.jpg")
+    assert captured["通用版"]["ctaType"] == "image"
+    assert captured["通用版"]["ctaSeconds"] == 2.0
+    assert captured["通用版"]["durationSeconds"] == 22.0
+    assert "imgBottomBanner" not in captured["通用版"]
 
 
 def test_remotion_renderer_cleans_isolated_tmpdir_after_failure(tmp_path: Path, monkeypatch):
@@ -331,15 +360,13 @@ def test_demo_config_loads():
     assert config["localization"]["krillinai"]["caption_source"] == "any"
     assert config["audio"]["bgm_volume"] == 0.0
     assert config["audio"]["source_mode"] == "localize"
-    assert config["remotion"]["add_bgm_under_source"] is False
-    assert config["brand"]["kits"]["jaguartv"]["endcard"]["site"] == "Jarg.top"
+    assert "add_bgm_under_source" not in config["remotion"]
+    assert "endcard" not in config["brand"]["kits"]["jaguartv"]
     assert config["edit"]["render_engine"] == "remotion"
     assert config["edit"]["layout_mode"] == "original"
     assert config["remotion"]["captions"]["max_lines"] == 2
     assert config["selection"]["max_source_duration_sec"] == 900
     assert config["edit"]["segment_overlap_sec"] == 3
-    assert config["brand"]["kits"]["jaguartv"]["endcard"]["mode"] == "orientation_image"
-    assert config["brand"]["kits"]["jaguartv"]["endcard"]["duration_sec"] == 1.5
     assert config["mobile_review_format"]["target_resolution"] == [1080, 1440]
     assert config["sources"]["enabled"] == [
         "youtube", "bilibili", "douyin", "xiaohongshu", "tiktok",
@@ -381,20 +408,17 @@ def test_cli_discover_accepts_keyword_overrides(monkeypatch, tmp_path: Path, cap
     assert '"inserted": 0' in capsys.readouterr().out
 
 
-def test_standard_production_requires_remotion_generic_assets():
+def test_standard_production_requires_remotion_and_both_cta_orientations(monkeypatch):
     config = load_config(Path("config/pipeline.yaml"))
+    requested = []
+    monkeypatch.setattr("jaguartv_factory.cta.select_random_cta", lambda config, orientation: requested.append(orientation) or {})
     enforce_generic_remotion(config)
+    assert requested == ["portrait", "landscape"]
     broken = {
         **config,
         "edit": {**config["edit"], "render_engine": "ffmpeg"},
     }
     with pytest.raises(RuntimeError, match="render_engine=remotion"):
-        enforce_generic_remotion(broken)
-    broken = {
-        **config,
-        "remotion": {**config["remotion"], "promo_duration_sec": 2},
-    }
-    with pytest.raises(RuntimeError, match="promo_duration_sec=1.5"):
         enforce_generic_remotion(broken)
 
 

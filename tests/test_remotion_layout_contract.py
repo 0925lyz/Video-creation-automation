@@ -4,25 +4,27 @@ from pathlib import Path
 TEMPLATE = Path("src/jaguartv_factory/remotion_template/src/index.tsx")
 
 
-def test_generic_uses_external_bottom_banner_without_corner_overlays():
+def test_generic_uses_full_canvas_content_without_fixed_banner():
     source = TEMPLATE.read_text(encoding="utf-8")
     assert "GenericContentLayout" in source
-    assert "imgBottomBanner" in source
+    assert "imgBottomBanner" not in source
+    assert "bottomBannerAspectRatio" not in source
     assert "CornerOverlays" not in source
     assert "DesignCopyOverlay" not in source
 
 
-def test_single_generic_composition_uses_bottom_banner():
+def test_single_generic_composition_has_no_fb_variant():
     source = TEMPLATE.read_text(encoding="utf-8")
-    assert "genericBannerHeight" in source
     assert "objectFit: \"contain\"" in source
     assert "FB版" not in source
 
 
-def test_endcard_remains_a_single_sequence_after_content():
+def test_cta_remains_a_single_sequence_after_content_and_supports_video():
     source = TEMPLATE.read_text(encoding="utf-8")
     assert source.count("from={contentFrames}") == 1
-    assert source.count("imgEndcard") >= 2
+    assert "ctaType === \"video\"" in source
+    assert "ctaSeconds" in source
+    assert "imgEndcard" not in source
 
 
 def test_captions_have_no_background_box_by_default():

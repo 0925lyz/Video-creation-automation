@@ -19,6 +19,7 @@ from jaguartv_factory.dashboard import (
     category_keyword_rows,
     dashboard_overview,
     DashboardApplication,
+    DashboardHandler,
     extract_json_object,
     gemini_model_candidates,
     gemini_model_name,
@@ -247,12 +248,31 @@ def test_generate_copywriter_with_gemini_normalizes_response(monkeypatch):
 
 
 def test_public_brand_asset_path_is_limited_to_brand_assets():
-    asset = public_brand_asset_path("/assets/brand/endcard_landscape_blue_v2.png")
+    asset = public_brand_asset_path("/assets/brand/dashboard_favicon.png")
 
     assert asset is not None
-    assert asset.name == "endcard_landscape_blue_v2.png"
+    assert asset.name == "dashboard_favicon.png"
     assert public_brand_asset_path("/assets/brand/../../config/pipeline.yaml") is None
     assert public_brand_asset_path("/assets/brand/missing.png") is None
+
+
+def test_cta_media_is_served_from_managed_server_storage(tmp_path: Path):
+    config = dashboard_config(tmp_path)
+    cta = tmp_path / "workspace" / "server_media" / "cta" / "demo.jpg"
+    cta.parent.mkdir(parents=True)
+    cta.write_bytes(b"cta")
+    server = DashboardApplication(("127.0.0.1", 0), config)
+    try:
+        handler = object.__new__(DashboardHandler)
+        handler.server = server
+        captured = {}
+        handler.send_file = lambda path, **kwargs: captured.update(path=path, kwargs=kwargs)
+        handler.send_error = lambda status: captured.update(error=status)
+        handler.send_media("cta/demo.jpg")
+    finally:
+        server.server_close()
+    assert captured["path"] == cta.resolve()
+    assert "error" not in captured
 
 
 def test_all_upload_kinds_require_upload_token():

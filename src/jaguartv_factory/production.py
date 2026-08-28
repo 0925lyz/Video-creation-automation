@@ -19,7 +19,7 @@ from .core import (
 from .source_imports import sync_source_import_workflow_status
 
 
-PRODUCTION_CONTRACT = "candidate-production-v2"
+PRODUCTION_CONTRACT = "candidate-production-v3-cta"
 REQUIRED_VARIANTS = ("通用版",)
 LEGACY_REQUIRED_VARIANTS = ("通用版", "FB版")
 ALLOWED_TRIGGER_SOURCES = {
@@ -180,6 +180,9 @@ def validate_generic_output(
         qa = item.get("qa") if isinstance(item.get("qa"), dict) else {}
         if not qa.get("passed"):
             raise ProductionGateError(f"slice {slice_id} {variant} media QA did not pass")
+        visual = qa.get("visual_quality") if isinstance(qa.get("visual_quality"), dict) else {}
+        if not visual.get("passed"):
+            raise ProductionGateError(f"slice {slice_id} {variant} visual QA did not pass")
         if "has_video" in qa and not qa.get("has_video"):
             raise ProductionGateError(f"slice {slice_id} {variant} has no video stream")
         if "has_audio" in qa and not qa.get("has_audio"):
@@ -197,10 +200,19 @@ def validate_generic_output(
 
     generic = variants["通用版"]
     if int(generic.get("endcard_count") or 0) != 1:
-        raise ProductionGateError(f"slice {slice_id} 通用版 must contain exactly one endcard")
+        raise ProductionGateError(f"slice {slice_id} 通用版 must contain exactly one CTA")
     generic_layout = generic.get("layout") if isinstance(generic.get("layout"), dict) else {}
-    if generic_layout.get("mode") != "external_bottom_banner":
+    cta = generic_layout.get("cta") if isinstance(generic_layout.get("cta"), dict) else {}
+    if generic_layout.get("mode") != "content_then_cta":
         raise ProductionGateError(f"slice {slice_id} 通用版 layout gate failed")
+    if (
+        not str(cta.get("asset_id") or "").strip()
+        or cta.get("media_type") not in {"image", "video"}
+        or cta.get("orientation") not in {"portrait", "landscape"}
+        or cta.get("orientation") != generic_layout.get("source_orientation")
+        or float(cta.get("duration_sec") or 0) <= 0
+    ):
+        raise ProductionGateError(f"slice {slice_id} 通用版 CTA gate failed")
     return {
         "passed": True,
         "slice_id": slice_id,
@@ -275,8 +287,17 @@ def assert_candidate_ready_for_review(
             if output["duration_sec"] <= 0 or output["width"] <= 0 or output["height"] <= 0 or output["fps"] < 20:
                 raise ProductionGateError(f"completed output media metadata is invalid: {path}")
             layout = json.loads(output["layout_json"] or "{}")
-            if output["variant"] == "通用版":
-                if output["endcard_count"] != 1 or layout.get("mode") != "external_bottom_banner":
+            if output["variant"] == "通用版" and str(run["contract_version"] or "") == PRODUCTION_CONTRACT:
+                cta = layout.get("cta") if isinstance(layout.get("cta"), dict) else {}
+                if (
+                    output["endcard_count"] != 1
+                    or layout.get("mode") != "content_then_cta"
+                    or not output["cta_asset_id"]
+                    or output["cta_asset_id"] != str(cta.get("asset_id") or "")
+                    or output["cta_orientation"] != layout.get("source_orientation")
+                    or output["cta_media_type"] not in {"image", "video"}
+                    or output["cta_duration_sec"] <= 0
+                ):
                     raise ProductionGateError(f"generic layout gate failed: {path}")
             elif output["variant"] == "FB版" and (
                 output["endcard_count"] != 0 or layout.get("mode") == "external_bottom_banner"

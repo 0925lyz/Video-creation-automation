@@ -68,6 +68,17 @@ edit:
   aspect_ratio: "9:16"
   resolution: [1080, 1920]
 
+remotion:
+  render_runner: cli
+
+quality:
+  visual:
+    sample_fps: 2
+    black_duration_sec: 1.0
+    green_duration_sec: 1.0
+    freeze_duration_sec: 3.0
+    freeze_frame_delta: 1.2
+
 localization:
   enabled: true
   target: pt-BR
@@ -85,8 +96,6 @@ localization:
     responses_bridge: false
 
 brand:
-  logo: assets/brand/logo.png
-  end_card: assets/brand/end-card.mp4
   default_cta: https://copa.jarg.top/
 
 publishing:

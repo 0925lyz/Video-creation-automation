@@ -333,6 +333,27 @@ def _connect_db_unlocked(config: dict[str, Any]) -> sqlite3.Connection:
         );
         CREATE INDEX IF NOT EXISTS production_outputs_candidate
           ON production_outputs(candidate_id, slice_id, variant);
+        CREATE TABLE IF NOT EXISTS cta_assets (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          original_name TEXT NOT NULL,
+          file_path TEXT NOT NULL,
+          media_type TEXT NOT NULL,
+          orientation TEXT NOT NULL,
+          mime_type TEXT NOT NULL DEFAULT '',
+          width INTEGER NOT NULL,
+          height INTEGER NOT NULL,
+          duration_sec REAL NOT NULL DEFAULT 0,
+          size_bytes INTEGER NOT NULL,
+          sha256 TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'ACTIVE',
+          created_by TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          deleted_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS cta_assets_active_orientation
+          ON cta_assets(status, orientation, media_type, created_at);
         CREATE TABLE IF NOT EXISTS repair_runs (
           id TEXT PRIMARY KEY,
           status TEXT NOT NULL,
@@ -649,6 +670,18 @@ def _connect_db_unlocked(config: dict[str, Any]) -> sqlite3.Connection:
             "ALTER TABLE candidates ADD COLUMN published_flag INTEGER NOT NULL DEFAULT 0"
         )
         connection.commit()
+    production_output_columns = {
+        str(row["name"]) for row in connection.execute("PRAGMA table_info(production_outputs)")
+    }
+    production_output_column_sql = {
+        "cta_asset_id": "ALTER TABLE production_outputs ADD COLUMN cta_asset_id TEXT NOT NULL DEFAULT ''",
+        "cta_media_type": "ALTER TABLE production_outputs ADD COLUMN cta_media_type TEXT NOT NULL DEFAULT ''",
+        "cta_orientation": "ALTER TABLE production_outputs ADD COLUMN cta_orientation TEXT NOT NULL DEFAULT ''",
+        "cta_duration_sec": "ALTER TABLE production_outputs ADD COLUMN cta_duration_sec REAL NOT NULL DEFAULT 0",
+    }
+    for column, statement in production_output_column_sql.items():
+        if column not in production_output_columns:
+            connection.execute(statement)
     publication_columns = {
         str(row["name"]) for row in connection.execute("PRAGMA table_info(publications)")
     }
@@ -2637,15 +2670,10 @@ def production_design_config(config: dict[str, Any], options: dict[str, Any]) ->
             custom_design_payload["base_asset_ids"] = filtered_asset_ids
         remotion["custom_design"] = custom_design_payload
         return patched
-    if str(design.get("endcard_portrait") or "").strip():
-        remotion["portrait_endcard"] = str(design.get("endcard_portrait")).strip()
-    if str(design.get("endcard_landscape") or "").strip():
-        remotion["landscape_endcard"] = str(design.get("endcard_landscape")).strip()
     for source, target in (
         ("top_badge", "top_badge"),
         ("headline", "bottom_headline"),
         ("subline", "bottom_subline"),
-        ("cta", "endcard_cta"),
     ):
         value = str(design.get(source) or "").strip()
         if value:
@@ -2728,40 +2756,14 @@ def remotion_design_base_video(config: dict[str, Any], variant: str | None = Non
     return design_base_video_path(config, value)
 
 
-def configured_remotion_asset(config: dict[str, Any], key: str) -> Path:
-    settings = config.get("remotion", {}) or {}
-    path = resolve_config_path(config, str(settings.get(key) or ""))
-    if not path.is_file() or path.stat().st_size <= 0:
-        raise FileNotFoundError(f"missing Remotion asset {key}: {path}")
-    return path
-
-
-def selected_endcard_asset(config: dict[str, Any], width: int, height: int) -> tuple[Path, str]:
-    aspect = width / max(1, height)
-    settings = config.get("aspect_thresholds", {}) or {}
-    vertical_min = float(settings.get("vertical_min", 0.5))
-    vertical_max = float(settings.get("vertical_max", 0.75))
-    horizontal_min = float(settings.get("horizontal_min", 1.6))
-    horizontal_max = float(settings.get("horizontal_max", 1.9))
-    if vertical_min <= aspect <= vertical_max:
-        return configured_remotion_asset(config, "portrait_endcard"), "9:16"
-    if horizontal_min <= aspect <= horizontal_max:
-        return configured_remotion_asset(config, "landscape_endcard"), "16:9"
-    if aspect < 1.0:
-        return configured_remotion_asset(config, "portrait_endcard"), "9:16_fallback"
-    return configured_remotion_asset(config, "landscape_endcard"), "16:9_fallback"
-
-
 def enforce_generic_remotion(config: dict[str, Any]) -> None:
-    """Require the single generic Remotion output and its promotion assets."""
+    """Require the single generic Remotion output and both CTA orientations."""
     if str(config.get("edit", {}).get("render_engine", "ffmpeg")).strip().lower() != "remotion":
         raise RuntimeError("standard production requires edit.render_engine=remotion")
-    remotion_settings = config.get("remotion", {}) or {}
-    promo = float(remotion_settings.get("promo_duration_sec", 1.5))
-    if abs(promo - 1.5) > 0.01:
-        raise RuntimeError("standard production requires remotion.promo_duration_sec=1.5")
-    for key in ("bottom_banner", "portrait_endcard", "landscape_endcard"):
-        configured_remotion_asset(config, key)
+    from .cta import select_random_cta
+
+    for orientation in ("portrait", "landscape"):
+        select_random_cta(config, orientation)
 
 
 def render_clean_segment(
@@ -3006,7 +3008,10 @@ def render_video_remotion_generic(
     subtitles: Path | None = None,
     job_id: str | None = None,
     candidate_id: str | None = None,
+    content_duration_override: float | None = None,
 ) -> dict[str, Any]:
+    from .cta import select_random_cta
+
     clean_media = clean_media.expanduser().resolve()
     output = output.expanduser().resolve()
     runtime = ensure_remotion_runtime(config)
@@ -3015,7 +3020,7 @@ def render_video_remotion_generic(
         canvas = {
             "width": source_width,
             "height": source_height,
-            "source_fit": "cover",
+            "source_fit": "contain",
             "overlay_placement": "video_corners",
             "mobile_format": {
                 "applied": False,
@@ -3027,11 +3032,17 @@ def render_video_remotion_generic(
     else:
         canvas = remotion_canvas_for_source(config, source_width, source_height)
     width, height = int(canvas["width"]), int(canvas["height"])
-    content_duration = media_duration(clean_media)
+    source_duration = media_duration(clean_media)
+    content_duration = min(source_duration, float(content_duration_override or source_duration))
+    if content_duration <= 0:
+        raise ValueError("content duration must be greater than zero")
     remotion_settings = config.get("remotion", {}) or {}
     custom_design = remotion_settings.get("custom_design", {}) or {}
     custom_design_enabled = bool(custom_design.get("enabled"))
-    promo_seconds = max(1.0, min(6.0, float(remotion_settings.get("promo_duration_sec", 1.5))))
+    source_orientation = "landscape" if source_width >= source_height else "portrait"
+    cta = select_random_cta(config, source_orientation)
+    cta_path = Path(str(cta["file_path"])).resolve()
+    cta_seconds = float(cta["duration_sec"]) if cta["media_type"] == "video" else 2.0
     public_dir = runtime / "public" / "renders" / output.stem
     if public_dir.exists():
         shutil.rmtree(public_dir)
@@ -3045,15 +3056,15 @@ def render_video_remotion_generic(
         "height": height,
         "fps": 30,
         "contentSeconds": content_duration,
-        "promoSeconds": promo_seconds,
-        "durationSeconds": content_duration + promo_seconds,
+        "ctaSeconds": cta_seconds,
+        "ctaType": str(cta["media_type"]),
+        "durationSeconds": content_duration + cta_seconds,
         "overlayMaxWidthRatio": float(remotion_settings.get("overlay_max_width_ratio", 0.18)),
         "overlayLeftMaxWidthRatio": float(remotion_settings.get("mobile_overlay_left_width_ratio", 0.22)),
         "overlayRightMaxWidthRatio": float(remotion_settings.get("mobile_overlay_right_width_ratio", 0.36)),
         "overlayMarginHRatio": float(remotion_settings.get("overlay_margin_h_ratio", 0.03)),
         "overlayMarginVRatio": float(remotion_settings.get("overlay_margin_v_ratio", 0.05)),
         "sourceFit": str(canvas["source_fit"]),
-        "endcardFit": "contain" if (canvas.get("mobile_format") or {}).get("applied") else "cover",
         "overlayPlacement": str(canvas["overlay_placement"]),
         "sourceAspectRatio": source_width / max(1, source_height),
         "customDesign": custom_design_enabled,
@@ -3076,16 +3087,9 @@ def render_video_remotion_generic(
                 )
             design_layers.append(rendered_layer)
         props["designLayers"] = design_layers
-    endcard_class = ""
-    bottom_banner = configured_remotion_asset(config, "bottom_banner")
-    props["imgBottomBanner"] = copy_remotion_public_asset(
-        bottom_banner, public_dir, f"bottom_banner{bottom_banner.suffix or '.jpg'}"
+    props["ctaSrc"] = copy_remotion_public_asset(
+        cta_path, public_dir, f"cta{cta_path.suffix.lower()}"
     )
-    with Image.open(bottom_banner) as banner_image:
-        banner_width, banner_height = banner_image.size
-    props["bottomBannerAspectRatio"] = banner_width / max(1, banner_height)
-    endcard_path, endcard_class = selected_endcard_asset(config, source_width, source_height)
-    props["imgEndcard"] = copy_remotion_public_asset(endcard_path, public_dir, f"endcard{endcard_path.suffix or '.png'}")
 
     props_path = output.with_name(f"{output.stem}_remotion_props.json")
     props_path.write_text(json.dumps(props, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -3133,17 +3137,27 @@ def render_video_remotion_generic(
     else:
         raise RuntimeError("remotion.render_runner must be renderer_api or cli")
     layout = {
-        "mode": "external_bottom_banner",
-        "banner_asset": str((config.get("remotion", {}) or {}).get("bottom_banner") or ""),
-        "banner_fit": "contain",
-        "overlays_removed": True,
+        "mode": "content_then_cta",
+        "content_duration_sec": content_duration,
+        "source_orientation": source_orientation,
+        "cta": {
+            "asset_id": str(cta["id"]),
+            "name": str(cta["name"]),
+            "media_type": str(cta["media_type"]),
+            "orientation": str(cta["orientation"]),
+            "duration_sec": cta_seconds,
+        },
+        "design_scope": "content_only",
     }
     return {
         "variant": "通用版",
         "path": str(output),
         "filename": output.name,
         **runner_info,
-        "endcard_class": endcard_class,
+        "cta_asset_id": str(cta["id"]),
+        "cta_media_type": str(cta["media_type"]),
+        "cta_orientation": str(cta["orientation"]),
+        "cta_duration_sec": cta_seconds,
         "endcard_count": 1,
         "layout": layout,
         "duration": media_duration(output),
@@ -3175,7 +3189,97 @@ def render_video(
     return render_video_ffmpeg(config, media, voice, bgm, subtitles, output, duration, audio_mode, start_time)
 
 
-def qa_video(path: Path, config: dict[str, Any] | None = None) -> dict[str, Any]:
+def _frame_metrics(frame: bytes) -> dict[str, float]:
+    pixels = max(1, len(frame) // 3)
+    black = green = saturated = spatial_delta = 0
+    previous: tuple[int, int, int] | None = None
+    for offset in range(0, len(frame) - 2, 3):
+        red, channel_green, blue = frame[offset], frame[offset + 1], frame[offset + 2]
+        black += int(max(red, channel_green, blue) <= 18)
+        green += int(channel_green >= 80 and channel_green > red * 1.45 and channel_green > blue * 1.35)
+        saturated += int(max(red, channel_green, blue) - min(red, channel_green, blue) >= 220)
+        if previous is not None:
+            spatial_delta += abs(red - previous[0]) + abs(channel_green - previous[1]) + abs(blue - previous[2])
+        previous = (red, channel_green, blue)
+    return {
+        "black_ratio": black / pixels,
+        "green_ratio": green / pixels,
+        "saturated_ratio": saturated / pixels,
+        "spatial_delta": spatial_delta / max(1, (pixels - 1) * 3),
+    }
+
+
+def analyze_visual_quality(
+    path: Path, config: dict[str, Any] | None = None, *, content_duration: float | None = None
+) -> dict[str, Any]:
+    settings = (((config or {}).get("quality") or {}).get("visual") or {})
+    sample_fps = max(0.5, min(4.0, float(settings.get("sample_fps", 2))))
+    frame_width = frame_height = 32
+    args = [require_binary("ffmpeg"), "-v", "warning", "-i", str(path)]
+    if content_duration is not None:
+        args.extend(["-t", f"{max(0.01, float(content_duration)):.3f}"])
+    args.extend([
+        "-vf", f"fps={sample_fps},scale={frame_width}:{frame_height}:flags=area,format=rgb24",
+        "-an", "-f", "rawvideo", "pipe:1",
+    ])
+    result = subprocess.run(args, capture_output=True, check=False)
+    frame_size = frame_width * frame_height * 3
+    frames = [
+        result.stdout[offset:offset + frame_size]
+        for offset in range(0, len(result.stdout) - frame_size + 1, frame_size)
+    ]
+    stderr = result.stderr.decode("utf-8", errors="replace").lower()
+    decode_error = result.returncode != 0 or any(marker in stderr for marker in (
+        "invalid data", "error while decoding", "corrupt", "concealing", "missing picture",
+        "damaged", "decode_slice_header error", "moov atom not found",
+    ))
+    if not frames:
+        return {
+            "passed": False, "sampled_frames": 0, "decode_error": True,
+            "black_screen": False, "green_screen": False, "glitch_screen": False,
+            "frozen_screen": False, "reason": "no decodable frames",
+        }
+    metrics = [_frame_metrics(frame) for frame in frames]
+
+    def longest_run(values: list[bool]) -> int:
+        longest = current = 0
+        for value in values:
+            current = current + 1 if value else 0
+            longest = max(longest, current)
+        return longest
+
+    black_run = longest_run([item["black_ratio"] >= 0.98 for item in metrics])
+    green_run = longest_run([item["green_ratio"] >= 0.90 for item in metrics])
+    freeze_flags = [False]
+    threshold = float(settings.get("freeze_frame_delta", 1.2))
+    for previous, current in zip(frames, frames[1:]):
+        difference = sum(abs(left - right) for left, right in zip(previous, current)) / frame_size
+        freeze_flags.append(difference <= threshold)
+    freeze_run = longest_run(freeze_flags)
+    glitch_flags = [
+        item["spatial_delta"] >= 105 and item["saturated_ratio"] >= 0.72 for item in metrics
+    ]
+    black_screen = black_run >= max(2, round(sample_fps * float(settings.get("black_duration_sec", 1.0))))
+    green_screen = green_run >= max(2, round(sample_fps * float(settings.get("green_duration_sec", 1.0))))
+    frozen_screen = freeze_run >= max(2, round(sample_fps * float(settings.get("freeze_duration_sec", 3.0))))
+    glitch_screen = decode_error or longest_run(glitch_flags) >= max(2, round(sample_fps))
+    checks = {
+        "sampled_frames": len(frames), "sample_fps": sample_fps, "decode_error": decode_error,
+        "black_screen": black_screen, "green_screen": green_screen,
+        "glitch_screen": glitch_screen, "frozen_screen": frozen_screen,
+        "longest_black_sec": black_run / sample_fps,
+        "longest_green_sec": green_run / sample_fps,
+        "longest_freeze_sec": freeze_run / sample_fps,
+    }
+    checks["passed"] = not any(
+        checks[key] for key in ("decode_error", "black_screen", "green_screen", "glitch_screen", "frozen_screen")
+    )
+    return checks
+
+
+def qa_video(
+    path: Path, config: dict[str, Any] | None = None, *, content_duration: float | None = None
+) -> dict[str, Any]:
     result = run_command([
         "ffprobe", "-v", "error", "-show_entries",
         "stream=codec_type,width,height,codec_name,r_frame_rate:format=duration,size", "-of", "json", str(path)
@@ -3200,11 +3304,10 @@ def qa_video(path: Path, config: dict[str, Any] | None = None) -> dict[str, Any]
         "fps": fps,
         "size": int((payload.get("format") or {}).get("size") or path.stat().st_size),
     }
+    checks["visual_quality"] = analyze_visual_quality(path, config, content_duration=content_duration)
     layout = str((config or {}).get("edit", {}).get("layout_mode", "vertical")).strip().lower()
     minimum, maximum = short_duration_bounds(config or {})
-    extra_duration = 0.0
-    if str((config or {}).get("edit", {}).get("render_engine", "")).strip().lower() == "remotion":
-        extra_duration = max(0.0, float((config or {}).get("remotion", {}).get("promo_duration_sec", 1.5)))
+    extra_duration = max(0.0, duration - float(content_duration or duration))
     if layout == "original":
         checks["passed"] = (
             int(checks["width"] or 0) >= 360
@@ -3212,12 +3315,14 @@ def qa_video(path: Path, config: dict[str, Any] | None = None) -> dict[str, Any]
             and checks["has_audio"]
             and fps >= 20
             and minimum <= duration <= maximum + extra_duration + 0.5
+            and checks["visual_quality"]["passed"]
         )
     else:
         checks["passed"] = (
             checks["width"] == 1080 and checks["height"] == 1920
             and checks["has_audio"] and fps >= 20
             and minimum <= duration <= maximum + extra_duration + 0.5
+            and checks["visual_quality"]["passed"]
         )
     return checks
 
@@ -3542,7 +3647,9 @@ def produce_candidate(
             info["size"] = variant_output.stat().st_size
             inventory_dir = inventory_root(config) / batch_label / "通用版" / source_label if batch_label else inventory_root(config) / "通用版" / source_label
             inventory_path = inventory_dir / variant_output.name
-            qa_variant = qa_video(variant_output, config)
+            qa_variant = qa_video(
+                variant_output, config, content_duration=float(segment["duration"])
+            )
             qa_variant["variant"] = "通用版"
             info.update({
                 "path": str(variant_output),
@@ -3586,7 +3693,7 @@ def produce_candidate(
                 "mobile_format": mobile_format,
                 "batch_label": batch_label,
             })
-        qa = qa_video(output, config)
+        qa = qa_video(output, config, content_duration=float(segment["duration"]))
         qa["segment"] = {
             "index": segment_index,
             "total": segment_total,
@@ -3669,7 +3776,7 @@ def produce_candidate(
             "brand_assets": {
                 "cover_source": cover_source,
                 "watermark": str(brand_kit(config).get("watermark", {}).get("image") or ""),
-                "endcard": str(brand_kit(config).get("endcard", {}).get("image") or ""),
+                "cta_inventory": "database:cta_assets",
             },
             "production_contract": production_contract,
             "production_run_id": production_run_id,
@@ -3810,8 +3917,9 @@ def produce_candidate(
                     INSERT INTO production_outputs(
                       id,production_run_id,slice_id,candidate_id,variant,status,path,sha256,
                       source_sha256,size_bytes,duration_sec,width,height,fps,has_video,has_audio,
-                      render_job_id,endcard_count,layout_json,qa_json,created_at,updated_at
-                    ) VALUES(?,?,?,?,?,'COMPLETED',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                      render_job_id,endcard_count,cta_asset_id,cta_media_type,cta_orientation,
+                      cta_duration_sec,layout_json,qa_json,created_at,updated_at
+                    ) VALUES(?,?,?,?,?,'COMPLETED',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         output_id, production_run_id, slice_id, row["id"], variant,
@@ -3822,6 +3930,10 @@ def produce_candidate(
                         float(qa_payload.get("fps") or 0), int(bool(qa_payload.get("has_video", True))),
                         int(bool(qa_payload.get("has_audio", True))), str(output_info.get("render_job_id") or ""),
                         int(output_info.get("endcard_count") or 0),
+                        str(output_info.get("cta_asset_id") or ""),
+                        str(output_info.get("cta_media_type") or ""),
+                        str(output_info.get("cta_orientation") or ""),
+                        float(output_info.get("cta_duration_sec") or 0),
                         json.dumps(output_info.get("layout") or {}, ensure_ascii=False),
                         json.dumps(qa_payload, ensure_ascii=False), timestamp, timestamp,
                     ),

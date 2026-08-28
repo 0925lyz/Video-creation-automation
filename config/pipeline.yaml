@@ -78,7 +78,7 @@ selection:
     target: brazil_trends
 
 edit:
-  render_engine: remotion           # the generic banner/endcard composition requires Remotion
+  render_engine: remotion           # the single generic output and imported CTA sequence require Remotion
   output_duration_sec: [12, 60]
   max_segments_per_source: 3
   segment_overlap_sec: 3
@@ -119,18 +119,11 @@ audio:
 
 remotion:
   render_runner: cli
-  promo_duration_sec: 1.5
   overlay_max_width_ratio: 0.18
   mobile_overlay_left_width_ratio: 0.22
   mobile_overlay_right_width_ratio: 0.36
   overlay_margin_h_ratio: 0.03
   overlay_margin_v_ratio: 0.05
-  bottom_banner: assets/brand/generic_bottom_banner.jpg
-  portrait_endcard: assets/brand/endcard_portrait_green_v2.png
-  landscape_endcard: assets/brand/endcard_landscape_blue_v2.png
-  add_bgm_under_source: false
-  content_bgm_volume: 0.0
-  endcard_bgm_volume: 0.0
   captions:
     enabled: true
     position: bottom
@@ -145,7 +138,14 @@ remotion:
   top_badge: ""
   bottom_headline: ""
   bottom_subline: ""
-  endcard_cta: ""
+
+quality:
+  visual:
+    sample_fps: 2
+    black_duration_sec: 1.0
+    green_duration_sec: 1.0
+    freeze_duration_sec: 3.0
+    freeze_frame_delta: 1.2
 
 aspect_thresholds:
   vertical_min: 0.5
@@ -167,7 +167,7 @@ brand:
     jaguartv:
       watermark:
         mode: image            # image | text
-        image: assets/brand/logo.png
+        image: ""
         text: "Jaguar TV"      # fallback when image missing
         position: top_left     # top_left | top_right | bottom_left | bottom_right
         opacity: 0.92
@@ -175,23 +175,6 @@ brand:
       cover:
         mode: frame            # frame | image
         image: ""              # mode=image: server path or project-relative image
-      endcard:
-        mode: orientation_image        # generated | image | orientation_image
-        image: ""              # mode=image: full-frame 1080x1920 PNG
-        portrait_image: assets/brand/endcard_portrait_green_v2.png
-        landscape_image: assets/brand/endcard_landscape_blue_v2.png
-        title: "Jaguar TV"
-        tagline: "O melhor app de TV ao vivo e esportes"
-        site: "Jarg.top"
-        duration_sec: 1.5
-        background: "#04220E"
-        accent: "#8CE522"
-        features:
-          - ["Anti-Freeze", "Estabilidade máxima em dias de jogos"]
-          - ["4K Real", "A definição mais nítida do mercado"]
-          - ["Futebol Total", "Canais premium 100% liberados"]
-          - ["Sinal Raiz", "Servidores dedicados, sem intermediários"]
-
 publishing:
   enabled: true
   timezone: America/Sao_Paulo

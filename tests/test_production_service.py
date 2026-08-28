@@ -20,7 +20,7 @@ def config_for(tmp_path: Path) -> dict:
         "run": {"workspace": "workspace"},
         "storage": {"provider": "disabled"},
         "edit": {"output_duration_sec": [12, 60]},
-        "remotion": {"promo_duration_sec": 1.5},
+        "remotion": {},
     }
 
 
@@ -224,7 +224,7 @@ def test_imported_pending_video_uses_standard_production_and_syncs_workflow_stat
     saved = connect_db(config).execute(
         "SELECT actual_workflow_status FROM source_imports WHERE id='import-task-1'"
     ).fetchone()
-    assert calls == [("source-import-1", "candidate-production-v2")]
+    assert calls == [("source-import-1", "candidate-production-v3-cta")]
     assert saved["actual_workflow_status"] == "READY_FOR_REVIEW"
 
 
@@ -313,9 +313,12 @@ def test_generic_output_passes_single_version_gate(tmp_path: Path):
         "variant": "通用版",
         "path": str(path),
         "render_job_id": "slice:generic",
-        "qa": {"passed": True, "playable": True, "has_video": True, "has_audio": True},
+        "qa": {"passed": True, "playable": True, "has_video": True, "has_audio": True, "visual_quality": {"passed": True}},
         "endcard_count": 1,
-        "layout": {"mode": "external_bottom_banner"},
+        "layout": {
+            "mode": "content_then_cta", "source_orientation": "portrait",
+            "cta": {"asset_id": "cta-1", "media_type": "image", "orientation": "portrait", "duration_sec": 2},
+        },
     }])
     assert result["variants"] == ["通用版"]
 
@@ -369,7 +372,10 @@ def install_fake_persisted_outputs(
         output = package / f"{candidate_id}-{variant}.mp4"
         output.write_bytes(f"rendered-{variant}".encode())
         render_job_id = f"{slice_id}:{variant}"
-        layout = {"mode": "external_bottom_banner" if variant == "通用版" else "existing_fb_layout"}
+        layout = {
+            "mode": "content_then_cta", "source_orientation": "portrait",
+            "cta": {"asset_id": "cta-1", "media_type": "image", "orientation": "portrait", "duration_sec": 2},
+        } if variant == "通用版" else {"mode": "existing_fb_layout"}
         connection.execute(
             "INSERT INTO render_jobs(id,candidate_id,variant,engine,status,output_path,metadata_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
             (render_job_id, candidate_id, variant, "remotion", "COMPLETED", str(output), "{}", timestamp, timestamp),
@@ -379,13 +385,18 @@ def install_fake_persisted_outputs(
             INSERT INTO production_outputs(
               id,production_run_id,slice_id,candidate_id,variant,status,path,sha256,source_sha256,
               size_bytes,duration_sec,width,height,fps,has_video,has_audio,render_job_id,
-              endcard_count,layout_json,qa_json,created_at,updated_at
-            ) VALUES(?,?,?,?,?,'COMPLETED',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+              endcard_count,cta_asset_id,cta_media_type,cta_orientation,cta_duration_sec,
+              layout_json,qa_json,created_at,updated_at
+            ) VALUES(?,?,?,?,?,'COMPLETED',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 f"{slice_id}:{variant}", run_id, slice_id, candidate_id, variant, str(output),
                 file_sha256(output), file_sha256(source), output.stat().st_size, 13.5 if variant == "通用版" else 12.0,
                 1080, 1920, 30.0, 1, 1, render_job_id, 1 if variant == "通用版" else 0,
+                "cta-1" if variant == "通用版" else "",
+                "image" if variant == "通用版" else "",
+                "portrait" if variant == "通用版" else "",
+                2.0 if variant == "通用版" else 0,
                 json.dumps(layout), json.dumps({"passed": True}), timestamp, timestamp,
             ),
         )

@@ -12,11 +12,8 @@ import {
 
 type BrandProps = {
   sourceVideo: string;
-  imgLogo?: string;
-  imgTuYi?: string;
-  imgTuEr?: string;
-  imgBottomBanner?: string;
-  imgEndcard?: string;
+  ctaSrc?: string;
+  ctaType?: "image" | "video";
   topBadge?: string;
   bottomHeadline?: string;
   bottomSubline?: string;
@@ -30,17 +27,15 @@ type BrandProps = {
   fps: number;
   durationSeconds: number;
   contentSeconds: number;
-  promoSeconds: number;
+  ctaSeconds: number;
   overlayMaxWidthRatio: number;
   overlayLeftMaxWidthRatio?: number;
   overlayRightMaxWidthRatio?: number;
   overlayMarginHRatio: number;
   overlayMarginVRatio: number;
   sourceFit?: "cover" | "contain";
-  endcardFit?: "cover" | "contain";
   overlayPlacement?: "video_corners" | "mobile_top_band";
   sourceAspectRatio?: number;
-  bottomBannerAspectRatio?: number;
 };
 
 type DesignLayer = {
@@ -77,11 +72,8 @@ type CaptionStyle = {
 
 const fallbackProps: BrandProps = {
   sourceVideo: "",
-  imgLogo: "",
-  imgTuYi: "",
-  imgTuEr: "",
-  imgBottomBanner: "",
-  imgEndcard: "",
+  ctaSrc: "",
+  ctaType: "image",
   topBadge: "",
   bottomHeadline: "",
   bottomSubline: "",
@@ -93,17 +85,15 @@ const fallbackProps: BrandProps = {
   fps: 30,
   durationSeconds: 30,
   contentSeconds: 28.5,
-  promoSeconds: 1.5,
+  ctaSeconds: 2,
   overlayMaxWidthRatio: 0.18,
   overlayLeftMaxWidthRatio: 0.22,
   overlayRightMaxWidthRatio: 0.36,
   overlayMarginHRatio: 0.03,
   overlayMarginVRatio: 0.05,
   sourceFit: "cover",
-  endcardFit: "cover",
   overlayPlacement: "video_corners",
   sourceAspectRatio: 16 / 9,
-  bottomBannerAspectRatio: 992 / 136,
   captions: [],
   captionStyle: {
     position: "bottom",
@@ -132,7 +122,7 @@ function JaguarTVGeneric(props: BrandProps) {
   const p = {...fallbackProps, ...props};
   const {width, height, fps} = useVideoConfig();
   const contentFrames = Math.round(p.contentSeconds * fps);
-  const endcardFrames = Math.max(1, Math.round(p.promoSeconds * fps));
+  const ctaFrames = Math.max(1, Math.round(p.ctaSeconds * fps));
 
   return (
     <AbsoluteFill style={{backgroundColor: "#000"}}>
@@ -147,10 +137,14 @@ function JaguarTVGeneric(props: BrandProps) {
           frameRect={genericContentRects(p, width, height).video}
         />
       </Sequence>
-      {p.imgEndcard ? (
-        <Sequence from={contentFrames} durationInFrames={endcardFrames}>
+      {p.ctaSrc ? (
+        <Sequence from={contentFrames} durationInFrames={ctaFrames}>
           <AbsoluteFill style={{backgroundColor: "#000", alignItems: "center", justifyContent: "center"}}>
-            <Img src={assetSrc(p.imgEndcard)} style={{width, height, objectFit: p.endcardFit || "cover"}} />
+            {p.ctaType === "video" ? (
+              <OffthreadVideo src={assetSrc(p.ctaSrc)} style={{width, height, objectFit: "cover"}} />
+            ) : (
+              <Img src={assetSrc(p.ctaSrc)} style={{width, height, objectFit: "cover"}} />
+            )}
           </AbsoluteFill>
         </Sequence>
       ) : null}
@@ -161,17 +155,14 @@ function JaguarTVGeneric(props: BrandProps) {
 type ContentRect = {x: number; y: number; width: number; height: number};
 
 function genericContentRects(p: BrandProps, width: number, height: number) {
-  const sourceAspect = Math.max(0.1, p.sourceAspectRatio || width / height);
-  const bannerAspect = Math.max(1, p.bottomBannerAspectRatio || 992 / 136);
-  const videoWidth = Math.min(width, height / (1 / sourceAspect + 1 / bannerAspect));
-  const videoHeight = videoWidth / sourceAspect;
-  const genericBannerHeight = videoWidth / bannerAspect;
-  const groupHeight = videoHeight + genericBannerHeight;
-  const x = (width - videoWidth) / 2;
-  const y = (height - groupHeight) / 2;
+  const video = sourceVideoRect(
+    width,
+    height,
+    Math.max(0.1, p.sourceAspectRatio || width / height),
+    p.sourceFit || "contain",
+  );
   return {
-    video: {x, y, width: videoWidth, height: videoHeight},
-    banner: {x, y: y + videoHeight, width: videoWidth, height: genericBannerHeight},
+    video,
   };
 }
 
@@ -188,14 +179,6 @@ function GenericContentLayout(p: BrandProps) {
         height: rects.video.height,
         objectFit: "contain",
       }} muted={false} /> : null}
-      {p.imgBottomBanner ? <Img src={assetSrc(p.imgBottomBanner)} style={{
-        position: "absolute",
-        left: rects.banner.x,
-        top: rects.banner.y,
-        width: rects.banner.width,
-        height: rects.banner.height,
-        objectFit: "contain",
-      }} /> : null}
     </AbsoluteFill>
   );
 }

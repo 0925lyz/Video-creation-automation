@@ -20,8 +20,7 @@ ffmpeg -y -v error \
   -f lavfi -i "testsrc2=size=640x360:rate=30:duration=1" \
   -f lavfi -i "sine=frequency=880:sample_rate=48000:duration=1" \
   -shortest -c:v libx264 -pix_fmt yuv420p -c:a aac "$PUBLIC_SMOKE/source.mp4"
-cp "$ROOT/assets/brand/generic_bottom_banner.jpg" "$PUBLIC_SMOKE/banner.jpg"
-cp "$ROOT/assets/brand/endcard_landscape_blue_v2.png" "$PUBLIC_SMOKE/endcard.png"
+cp "$ROOT/assets/brand/dashboard_favicon.png" "$PUBLIC_SMOKE/cta.png"
 
 render_generic() {
   local payload="$OUT_DIR/通用版.json"
@@ -39,20 +38,18 @@ const payload = {
   timeoutMs: 120000,
   props: {
     sourceVideo: "smoke/source.mp4",
-    imgBottomBanner: "smoke/banner.jpg",
-    imgEndcard: "smoke/endcard.png",
-    bottomBannerAspectRatio: 992 / 136,
+    ctaSrc: "smoke/cta.png",
+    ctaType: "image",
     width: 360,
     height: 640,
     fps: 30,
     contentSeconds: 1,
-    promoSeconds: 1.5,
-    durationSeconds: 2.5,
+    ctaSeconds: 2,
+    durationSeconds: 3,
     overlayMaxWidthRatio: 0.18,
     overlayMarginHRatio: 0.03,
     overlayMarginVRatio: 0.05,
-    sourceFit: "cover",
-    endcardFit: "contain",
+    sourceFit: "contain",
     overlayPlacement: "none",
     sourceAspectRatio: 16 / 9,
     captions: [{startSeconds: 0.05, endSeconds: 0.95, text: "Um golaço mudou o jogo."}],
@@ -86,7 +83,7 @@ done
 
 ffmpeg -y -v error -ss 0.2 -i "$OUT_DIR/通用版.mp4" -frames:v 1 "$OUT_DIR/generic-start.png"
 ffmpeg -y -v error -ss 0.8 -i "$OUT_DIR/通用版.mp4" -frames:v 1 "$OUT_DIR/generic-content-end.png"
-ffmpeg -y -v error -ss 1.3 -i "$OUT_DIR/通用版.mp4" -frames:v 1 "$OUT_DIR/generic-endcard.png"
+ffmpeg -y -v error -ss 1.3 -i "$OUT_DIR/通用版.mp4" -frames:v 1 "$OUT_DIR/generic-cta.png"
 
 "$PYTHON_BIN" - "$OUT_DIR" <<'PY'
 from pathlib import Path
@@ -103,12 +100,11 @@ def nonblack_ratio(path: Path, box=None) -> float:
     return sum(1 for red, green, blue in pixels if max(red, green, blue) > 24) / max(1, len(pixels))
 
 generic = root / "generic-start.png"
-# The 16:9 source occupies y=194..396; the banner begins immediately below it.
-assert nonblack_ratio(generic, (0, 194, 360, 397)) > 0.55, "generic source frame is blank"
-assert nonblack_ratio(generic, (0, 397, 360, 447)) > 0.20, "bottom banner is missing or detached"
+# The 16:9 source is centered in the 9:16 canvas during the content sequence.
+assert nonblack_ratio(generic, (0, 219, 360, 421)) > 0.55, "generic source frame is blank"
 assert nonblack_ratio(generic, (0, 0, 360, 170)) < 0.08, "unexpected generic top-corner overlay"
-assert nonblack_ratio(root / "generic-content-end.png", (0, 397, 360, 447)) > 0.20, "banner did not persist"
-assert nonblack_ratio(root / "generic-endcard.png") > 0.10, "generic endcard is blank"
+assert nonblack_ratio(root / "generic-content-end.png", (0, 219, 360, 421)) > 0.55, "content did not persist"
+assert nonblack_ratio(root / "generic-cta.png") > 0.45, "generic CTA is blank"
 PY
 
 echo "Remotion generic smoke output: $OUT_DIR/通用版.mp4"
