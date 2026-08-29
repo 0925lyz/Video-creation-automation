@@ -1215,7 +1215,7 @@ async function pollTask(taskId) {
 
 function renderPublications() {
   document.querySelector("#publicationTable").innerHTML = state.publications.length ? state.publications.map((item) => `
-    <tr><td title="${escapeHtml(item.title || item.candidate_id)}">${escapeHtml((item.title || item.candidate_id).slice(0, 42))}</td><td class="platform-name">${escapeHtml(item.platform)}</td><td>${escapeHtml(item.account || "未指定")}</td><td>${dateText(item.scheduled_at)}</td><td><div class="publication-status-actions"><span class="status-pill ${statusClass(item.status)}">${statusLabels[item.status] || item.status}</span>${canCancelPublication(item) ? `<button class="table-action danger-action" type="button" data-publication-cancel="${Number(item.id)}">取消发布</button>` : ""}</div></td></tr>
+    <tr><td title="${escapeHtml(item.title || item.candidate_id)}">${escapeHtml((item.title || item.candidate_id).slice(0, 42))}</td><td class="platform-name">${escapeHtml(item.platform)}</td><td>${escapeHtml(item.account_label || item.account || "未指定")}</td><td>${dateText(item.scheduled_at)}</td><td><div class="publication-status-actions"><span class="status-pill ${statusClass(item.status)}">${statusLabels[item.status] || item.status}</span>${canCancelPublication(item) ? `<button class="table-action danger-action" type="button" data-publication-cancel="${Number(item.id)}">取消发布</button>` : ""}</div></td></tr>
   `).join("") : `<tr><td colspan="5"><div class="empty-state">尚无发布任务<br>先选择审核通过的成片加入队列</div></td></tr>`;
 }
 

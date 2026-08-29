@@ -2823,7 +2823,7 @@ def server_review_rows(config: dict[str, Any], exclude: set[str] | None = None) 
 
 def publication_rows(config: dict[str, Any]) -> list[dict[str, Any]]:
     connection = connect_db(config)
-    return [
+    rows = [
         dict(row) for row in connection.execute(
             """
             SELECT publications.*,candidates.title FROM publications
@@ -2832,6 +2832,19 @@ def publication_rows(config: dict[str, Any]) -> list[dict[str, Any]]:
             """
         )
     ]
+    current_names: dict[str, str] = {}
+    for platform in ("youtube", "x"):
+        accounts = list_publish_accounts(config, platform)
+        for account in accounts:
+            name = str(account.get("display_name") or account.get("username") or account.get("id") or "")
+            if name:
+                current_names[(platform, str(account.get("id") or ""))] = name
+    for item in rows:
+        account = str(item.get("account") or "")
+        label = current_names.get((str(item.get("platform") or ""), account))
+        if label:
+            item["account_label"] = label
+    return rows
 
 
 def worker_rows(config: dict[str, Any]) -> list[dict[str, Any]]:

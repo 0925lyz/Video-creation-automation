@@ -12,6 +12,7 @@ from jaguartv_factory.publish_flow import (
     platform_capabilities,
     validate_publish_copy,
 )
+from jaguartv_factory.dashboard import publication_rows
 
 
 def config_for(tmp_path: Path) -> dict:
@@ -175,6 +176,44 @@ def test_publish_accounts_are_realtime_and_sanitized(tmp_path: Path):
     ]
     assert "encrypted_refresh_token" not in rows[0]
     assert "private_path" not in json.dumps(rows, ensure_ascii=False)
+
+
+def test_publication_rows_show_current_channel_name_not_internal_account(
+    tmp_path: Path, monkeypatch
+):
+    config = config_for(tmp_path)
+    authorize_youtube(config)
+    connection = connect_db(config)
+    timestamp = now_iso()
+    connection.execute(
+        """
+        INSERT INTO publications(
+          candidate_id,asset_id,variant,platform,account,account_label,title,
+          operation_type,status,created_at,updated_at
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            "cand-1",
+            "cand-1:0803-YouTube-1-通用版",
+            "通用版",
+            "youtube",
+            "consumer_football",
+            "旧频道名",
+            "旧标题",
+            "PUBLICATION",
+            "SCHEDULED",
+            timestamp,
+            timestamp,
+        ),
+    )
+    connection.execute(
+        "UPDATE youtube_channel_auths SET channel_title='Nuevo Canal Jaguar' WHERE account='consumer_football'"
+    )
+    connection.commit()
+
+    rows = publication_rows(config)
+    assert rows[0]["account"] == "consumer_football"
+    assert rows[0]["account_label"] == "Nuevo Canal Jaguar"
 
 
 def test_create_youtube_publish_operation_records_utc_and_is_idempotent(tmp_path: Path):
@@ -692,6 +731,7 @@ def test_publish_dialog_uses_final_field_names_and_platform_switching():
     assert 'id="publishHint"' in html
     assert "publishHint" in javascript
     assert "hint: document.querySelector(\"#publishHint\")?.value.trim() || \"\"" in javascript
+    assert "item.account_label || item.account || \"未指定\"" in javascript
     styles = Path("src/jaguartv_factory/web/styles.css").read_text(encoding="utf-8")
 
     assert "AI 标题" not in html
