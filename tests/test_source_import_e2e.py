@@ -158,7 +158,9 @@ def test_authorized_direct_approval_is_mutually_exclusive_and_confirms(browser_d
         raise
 
 
-def test_authorized_finished_upload_defaults_to_original_and_approved(browser_dashboard: str):
+def test_authorized_upload_defaults_to_pending_production_for_secondary_creation(
+    browser_dashboard: str,
+):
     playwright = pytest.importorskip("playwright.sync_api")
     try:
         with playwright.sync_playwright() as runtime:
@@ -176,8 +178,9 @@ def test_authorized_finished_upload_defaults_to_original_and_approved(browser_da
 
             assert page.locator("#discoverPlatform").input_value() == "original"
             assert page.locator("#discoverPlatform").is_disabled()
-            assert page.locator('input[name="discoverTarget"][value="approved"]').is_checked()
-            assert page.locator("#discoverApprovalWarning").is_visible()
+            assert page.locator('input[name="discoverTarget"][value="pending_production"]').is_checked()
+            assert page.locator('input[name="discoverTarget"][value="approved"]').is_enabled()
+            assert page.locator("#discoverApprovalWarning").is_hidden()
             upload_init = page.evaluate(
                 """async () => {
                     const response = await fetch('/api/uploads/init', {

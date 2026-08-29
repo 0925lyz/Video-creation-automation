@@ -415,6 +415,203 @@ def test_generate_publish_copy_retries_transient_openai_failure(tmp_path: Path, 
     assert not statuses
 
 
+def test_generate_publish_copy_accepts_custom_hint_without_provenance(
+    tmp_path: Path, monkeypatch
+):
+    config = config_for(tmp_path)
+    config["publishing"] = {"copywriter": {"base_url": "https://relay.example.test/v1"}}
+    insert_candidate(config, status="APPROVED")
+    connection = connect_db(config)
+    connection.execute(
+        "UPDATE candidates SET metadata_json='{}',title='',description='' WHERE id='cand-1'"
+    )
+    connection.commit()
+    write_review_asset(config)
+    metadata_path = (
+        Path(config["_root"]) / "workspace" / "server_media" / "review" / "cand-1" / "metadata.json"
+    )
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "job_id": "cand-1",
+                "output_variants": [
+                    {
+                        "variant": "通用版",
+                        "path": str(
+                            Path(config["_root"])
+                            / "workspace"
+                            / "server_media"
+                            / "review"
+                            / "cand-1"
+                            / "0803-YouTube-1-通用版.mp4"
+                        ),
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    captured: dict[str, Any] = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "output_text": json.dumps(
+                    {
+                        "title": "Aprenda a instalar em minutos",
+                        "description": "Um passo a passo rápido para instalar.",
+                        "tags": ["Tutorial", "Brasil"],
+                    }
+                )
+            }
+
+    def fake_post(url, *, headers, data, timeout):
+        captured["url"] = url
+        captured["body"] = json.loads(data.decode("utf-8"))
+        return FakeResponse()
+
+    monkeypatch.setattr("jaguartv_factory.publish_flow.requests.post", fake_post)
+
+    result = generate_publish_copy_preview(
+        config,
+        {
+            "candidate_id": "cand-1",
+            "asset_id": "cand-1:0803-YouTube-1-通用版",
+            "platform": "youtube",
+            "variant": "通用版",
+            "hint": "这是一段巴西安装APP的教程短视频，标题要突出快",
+        },
+    )
+
+    assert result["title"] == "Aprenda a instalar em minutos"
+    assert "巴西安装APP的教程短视频" in json.dumps(captured["body"]["input"], ensure_ascii=False)
+
+
+def test_generate_publish_copy_falls_back_to_deepseek_when_openai_unavailable(
+    tmp_path: Path, monkeypatch
+):
+    config = config_for(tmp_path)
+    config["publishing"] = {
+        "copywriter": {
+            "attempts": 1,
+            "retry_delay_sec": 0,
+            "base_url": "https://relay.example.test/v1",
+        }
+    }
+    insert_candidate(config)
+    write_review_asset(config)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("JAGUARTV_DEEPSEEK_API_KEY", "ds-test")
+    monkeypatch.setenv("JAGUARTV_DEEPSEEK_BASE_URL", "https://ds.example.test/v1")
+    monkeypatch.setenv("JAGUARTV_DEEPSEEK_MODEL", "deepseek-v4-flash")
+    calls: list[str] = []
+
+    class OpenAIResponse:
+        status_code = 503
+
+        def json(self):
+            return {}
+
+    class DeepSeekResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "title": "Esse grau é absurdo",
+                                    "description": "Um lance que ninguém esperava.",
+                                    "tags": ["Futebol", "Brasil"],
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+
+    def fake_post(url, **kwargs):
+        calls.append(url)
+        if url.endswith("/responses"):
+            return OpenAIResponse()
+        return DeepSeekResponse()
+
+    monkeypatch.setattr("jaguartv_factory.publish_flow.requests.post", fake_post)
+
+    result = generate_publish_copy_preview(
+        config,
+        {
+            "candidate_id": "cand-1",
+            "asset_id": "cand-1:0803-YouTube-1-通用版",
+            "platform": "youtube",
+            "variant": "通用版",
+        },
+    )
+
+    assert result["model"] == "deepseek-v4-flash"
+    assert result["fallback_reason"] == "deepseek_after_openai_unavailable"
+    assert calls[0].endswith("/responses")
+    assert calls[1].endswith("/chat/completions")
+
+
+def test_generate_publish_copy_uses_deepseek_without_openai_key(
+    tmp_path: Path, monkeypatch
+):
+    config = config_for(tmp_path)
+    config["publishing"] = {"copywriter": {"base_url": "https://relay.example.test/v1"}}
+    insert_candidate(config)
+    write_review_asset(config)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("JAGUARTV_PUBLISHING_AI_API_KEY", raising=False)
+    monkeypatch.setenv("JAGUARTV_DEEPSEEK_API_KEY", "ds-test")
+    monkeypatch.setenv("JAGUARTV_DEEPSEEK_BASE_URL", "https://ds.example.test/v1")
+    monkeypatch.setenv("JAGUARTV_DEEPSEEK_MODEL", "deepseek-v4-flash")
+
+    class DeepSeekResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "title": "Esse lance é surreal",
+                                    "description": "Veja o momento que parou a torcida.",
+                                    "tags": ["Futebol", "Brasil"],
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(
+        "jaguartv_factory.publish_flow.requests.post",
+        lambda *args, **kwargs: DeepSeekResponse(),
+    )
+
+    result = generate_publish_copy_preview(
+        config,
+        {
+            "candidate_id": "cand-1",
+            "asset_id": "cand-1:0803-YouTube-1-通用版",
+            "platform": "youtube",
+            "variant": "通用版",
+        },
+    )
+
+    assert result["model"] == "deepseek-v4-flash"
+    assert result["fallback_reason"] == "deepseek_fallback"
+
+
 def test_generate_publish_copy_falls_back_after_openai_is_unavailable(tmp_path: Path, monkeypatch):
     config = config_for(tmp_path)
     config["publishing"] = {"copywriter": {"attempts": 2, "retry_delay_sec": 0}}
@@ -558,6 +755,10 @@ def test_social_copy_is_one_combined_pt_br_field_under_250_chars(tmp_path: Path,
 def test_publish_dialog_uses_final_field_names_and_platform_switching():
     html = Path("src/jaguartv_factory/web/index.html").read_text(encoding="utf-8")
     javascript = Path("src/jaguartv_factory/web/app.js").read_text(encoding="utf-8")
+
+    assert 'id="publishHint"' in html
+    assert "publishHint" in javascript
+    assert "hint: document.querySelector(\"#publishHint\")?.value.trim() || \"\"" in javascript
     styles = Path("src/jaguartv_factory/web/styles.css").read_text(encoding="utf-8")
 
     assert "AI 标题" not in html

@@ -352,6 +352,56 @@ def test_pending_import_completion_enters_pending_production_only(tmp_path: Path
     assert "APPROVED" not in events
 
 
+def test_uploaded_source_into_pending_production_is_ready_for_secondary_creation(
+    tmp_path: Path, monkeypatch
+):
+    config = import_config(tmp_path)
+    insert_candidate(config, "upload-pending")
+    media = tmp_path / "workspace" / "jobs" / "upload-pending" / "source.mp4"
+    media.parent.mkdir(parents=True)
+    media.write_bytes(b"validated-uploaded-video")
+    record = create_uploaded_source_import(
+        config,
+        upload_id="b" * 32,
+        source_platform="original",
+        source_category="素材",
+        target_area="pending_production",
+        operator_id="operator-1",
+    )
+    monkeypatch.setattr(
+        "jaguartv_factory.source_imports.validate_imported_media",
+        lambda config, candidate_id, path: media_result(path, "e" * 64),
+    )
+
+    completed = complete_source_import(
+        config,
+        record["id"],
+        candidate_id="upload-pending",
+        media_path=media,
+        original_title="Uploaded for secondary creation",
+    )
+    connection = connect_db(config)
+    candidate = connection.execute(
+        "SELECT status,metadata_json FROM candidates WHERE id='upload-pending'"
+    ).fetchone()
+    events = [
+        row[0]
+        for row in connection.execute(
+            "SELECT event_type FROM events WHERE candidate_id='upload-pending' ORDER BY id"
+        )
+    ]
+
+    assert completed["actual_workflow_status"] == "DOWNLOADED"
+    assert completed["target_area"] == "pending_production"
+    assert candidate["status"] == "DOWNLOADED"
+    assert json.loads(candidate["metadata_json"])["category"] == "素材"
+    assert "READY_FOR_REVIEW" not in events
+    assert "APPROVED" not in events
+    assert media.is_file()
+    assert media.parent.name == "upload-pending"
+    assert media.suffix == ".mp4"
+
+
 def test_direct_approval_records_external_finished_asset_without_fake_production(
     tmp_path: Path, monkeypatch
 ):

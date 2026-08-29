@@ -1602,6 +1602,7 @@ async function generatePublishCopy() {
         filename: asset.filename,
         variant: asset.variant || "",
         platform: document.querySelector("#publishPlatform").value,
+        hint: document.querySelector("#publishHint")?.value.trim() || "",
       }),
     });
     document.querySelector("#publishTitle").value = result.title || "";
@@ -1634,6 +1635,7 @@ async function openPublishDialog(rawAsset, candidateId = "") {
   document.querySelector("#publishTitle").value = "";
   document.querySelector("#publishDescription").value = "";
   document.querySelector("#publishTags").value = "";
+  document.querySelector("#publishHint").value = "";
   configurePublishCopyFields("youtube");
   document.querySelector("#publishDialog").showModal();
   await loadPublishAccounts("youtube");
@@ -2721,8 +2723,8 @@ function updateDiscoverMode() {
   if (mode === "upload") {
     platformSelect.value = "original";
     platformSelect.disabled = true;
-    const approved = document.querySelector('input[name="discoverTarget"][value="approved"]');
-    if (state.importCapabilities.can_direct_approve && approved) approved.checked = true;
+    const pending = document.querySelector('input[name="discoverTarget"][value="pending_production"]');
+    if (pending) pending.checked = true;
   } else {
     platformSelect.disabled = false;
     if (platformSelect.value === "original") platformSelect.value = "youtube";
@@ -2745,7 +2747,7 @@ function updateDiscoverMode() {
   const targetLabel = target === "approved" ? "审核通过" : "待制作";
   const modeNotes = {
     url: `粘贴单条视频 URL 后会在服务器解析并下载；目标区域：${targetLabel}。超过 30 分钟的素材不会进入成功库存。`,
-    upload: `上传原创完成视频后会执行完整媒体校验并进入自动发布队列；目标区域：${targetLabel}。`,
+    upload: `上传视频后进入“待制作”，可继续智能切片和二创制作；管理员如需直接作为完整成片发布，可在下方选择“审核通过”。`,
   };
   document.querySelector("#discoverPlatformNote").textContent = modeNotes[mode] || notes[platform];
   document.querySelector("#discoverApprovalWarning").hidden = target !== "approved";
