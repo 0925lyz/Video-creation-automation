@@ -328,12 +328,15 @@ def test_youtube_uses_tags_as_description_when_copy_field_is_blank():
     assert result["description"] == " ".join(tags)
 
 
-def test_generate_publish_copy_preview_uses_openai_and_platform_limits(tmp_path: Path, monkeypatch):
+def test_generate_publish_copy_preview_uses_deepseek_and_platform_limits(
+    tmp_path: Path, monkeypatch
+):
     config = config_for(tmp_path)
-    config["publishing"] = {"copywriter": {"base_url": "https://relay.example.test/v1"}}
+    config["publishing"] = {"copywriter": {"deepseek_base_url": "https://ds.example.test/v1"}}
     insert_candidate(config)
     write_review_asset(config)
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("JAGUARTV_DEEPSEEK_API_KEY", "ds-test")
+    monkeypatch.setenv("JAGUARTV_DEEPSEEK_MODEL", "deepseek-v4-flash")
 
     calls = []
 
@@ -342,13 +345,19 @@ def test_generate_publish_copy_preview_uses_openai_and_platform_limits(tmp_path:
 
         def json(self):
             return {
-                "output_text": json.dumps(
+                "choices": [
                     {
-                        "title": "Esse lance virou assunto",
-                        "description": "Um momento perfeito para assistir e comentar.",
-                        "tags": ["Jaguar TV", "Futebol", "Brasil"],
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "title": "Esse lance virou assunto",
+                                    "description": "Um momento perfeito para assistir e comentar.",
+                                    "tags": ["Jaguar TV", "Futebol", "Brasil"],
+                                }
+                            )
+                        }
                     }
-                )
+                ]
             }
 
     def fake_post(url, *, headers, data, timeout):
@@ -373,53 +382,16 @@ def test_generate_publish_copy_preview_uses_openai_and_platform_limits(tmp_path:
     assert all(tag.startswith("#") for tag in result["tags"])
     assert len([tag for tag in result["tags"] if "jaguar" in tag.lower() or "unitv" in tag.lower() or "tv" in tag.lower()]) >= 10
     assert result["description"] == " ".join(result["tags"])
-    assert calls[0][0] == "https://relay.example.test/v1/responses"
-    assert calls[0][2]["model"] == "gpt-5.6-terra"
-    assert calls[0][2]["reasoning"]["effort"] == "medium"
-    assert calls[0][2]["store"] is False
-    assert calls[0][2]["text"]["format"]["type"] == "json_schema"
-    assert calls[0][2]["text"]["format"]["strict"] is True
-    assert calls[0][1]["Authorization"] == "Bearer sk-test"
-
-
-def test_generate_publish_copy_retries_transient_openai_failure(tmp_path: Path, monkeypatch):
-    config = config_for(tmp_path)
-    config["publishing"] = {"copywriter": {"attempts": 3, "retry_delay_sec": 0}}
-    insert_candidate(config)
-    write_review_asset(config)
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-    statuses = [503, 200]
-
-    class FakeResponse:
-        def __init__(self, status_code):
-            self.status_code = status_code
-
-        def json(self):
-            return {
-                "output_text": json.dumps(
-                    {"title": "Esse lance virou assunto", "description": "", "tags": ["Futebol"]}
-                )
-            }
-
-    def fake_post(*_args, **_kwargs):
-        return FakeResponse(statuses.pop(0))
-
-    monkeypatch.setattr("jaguartv_factory.publish_flow.requests.post", fake_post)
-
-    result = generate_publish_copy_preview(
-        config,
-        {"candidate_id": "cand-1", "asset_id": "cand-1:0803-YouTube-1-通用版", "platform": "youtube"},
-    )
-
-    assert result["model"] == "gpt-5.6-terra"
-    assert not statuses
+    assert calls[0][0] == "https://ds.example.test/v1/chat/completions"
+    assert calls[0][2]["model"] == "deepseek-v4-flash"
+    assert calls[0][1]["Authorization"] == "Bearer ds-test"
 
 
 def test_generate_publish_copy_accepts_custom_hint_without_provenance(
     tmp_path: Path, monkeypatch
 ):
     config = config_for(tmp_path)
-    config["publishing"] = {"copywriter": {"base_url": "https://relay.example.test/v1"}}
+    config["publishing"] = {"copywriter": {"deepseek_base_url": "https://ds.example.test/v1"}}
     insert_candidate(config, status="APPROVED")
     connection = connect_db(config)
     connection.execute(
@@ -452,7 +424,8 @@ def test_generate_publish_copy_accepts_custom_hint_without_provenance(
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("JAGUARTV_DEEPSEEK_API_KEY", "ds-test")
+    monkeypatch.setenv("JAGUARTV_DEEPSEEK_MODEL", "deepseek-v4-flash")
     captured: dict[str, Any] = {}
 
     class FakeResponse:
@@ -460,13 +433,19 @@ def test_generate_publish_copy_accepts_custom_hint_without_provenance(
 
         def json(self):
             return {
-                "output_text": json.dumps(
+                "choices": [
                     {
-                        "title": "Aprenda a instalar em minutos",
-                        "description": "Um passo a passo rápido para instalar.",
-                        "tags": ["Tutorial", "Brasil"],
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "title": "Aprenda a instalar em minutos",
+                                    "description": "Um passo a passo rápido para instalar.",
+                                    "tags": ["Tutorial", "Brasil"],
+                                }
+                            )
+                        }
                     }
-                )
+                ]
             }
 
     def fake_post(url, *, headers, data, timeout):
@@ -488,59 +467,32 @@ def test_generate_publish_copy_accepts_custom_hint_without_provenance(
     )
 
     assert result["title"] == "Aprenda a instalar em minutos"
-    assert "巴西安装APP的教程短视频" in json.dumps(captured["body"]["input"], ensure_ascii=False)
+    assert "巴西安装APP的教程短视频" in json.dumps(captured["body"]["messages"], ensure_ascii=False)
 
 
-def test_generate_publish_copy_falls_back_to_deepseek_when_openai_unavailable(
+def test_generate_publish_copy_falls_back_to_deterministic_when_deepseek_unavailable(
     tmp_path: Path, monkeypatch
 ):
     config = config_for(tmp_path)
     config["publishing"] = {
         "copywriter": {
-            "attempts": 1,
-            "retry_delay_sec": 0,
-            "base_url": "https://relay.example.test/v1",
+            "deepseek_base_url": "https://ds.example.test/v1",
         }
     }
     insert_candidate(config)
     write_review_asset(config)
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.setenv("JAGUARTV_DEEPSEEK_API_KEY", "ds-test")
-    monkeypatch.setenv("JAGUARTV_DEEPSEEK_BASE_URL", "https://ds.example.test/v1")
-    monkeypatch.setenv("JAGUARTV_DEEPSEEK_MODEL", "deepseek-v4-flash")
     calls: list[str] = []
 
-    class OpenAIResponse:
+    class DeepSeekFailure:
         status_code = 503
 
         def json(self):
             return {}
 
-    class DeepSeekResponse:
-        status_code = 200
-
-        def json(self):
-            return {
-                "choices": [
-                    {
-                        "message": {
-                            "content": json.dumps(
-                                {
-                                    "title": "Esse grau é absurdo",
-                                    "description": "Um lance que ninguém esperava.",
-                                    "tags": ["Futebol", "Brasil"],
-                                }
-                            )
-                        }
-                    }
-                ]
-            }
-
     def fake_post(url, **kwargs):
         calls.append(url)
-        if url.endswith("/responses"):
-            return OpenAIResponse()
-        return DeepSeekResponse()
+        return DeepSeekFailure()
 
     monkeypatch.setattr("jaguartv_factory.publish_flow.requests.post", fake_post)
 
@@ -554,23 +506,20 @@ def test_generate_publish_copy_falls_back_to_deepseek_when_openai_unavailable(
         },
     )
 
-    assert result["model"] == "deepseek-v4-flash"
-    assert result["fallback_reason"] == "deepseek_after_openai_unavailable"
-    assert calls[0].endswith("/responses")
-    assert calls[1].endswith("/chat/completions")
+    assert result["model"] == "deterministic-provenance"
+    assert result["fallback_reason"] == "deepseek_unavailable"
+    assert calls[0].endswith("/chat/completions")
 
 
-def test_generate_publish_copy_uses_deepseek_without_openai_key(
+def test_generate_publish_copy_uses_deepseek_primary_without_openai(
     tmp_path: Path, monkeypatch
 ):
     config = config_for(tmp_path)
-    config["publishing"] = {"copywriter": {"base_url": "https://relay.example.test/v1"}}
+    config["publishing"] = {"copywriter": {"deepseek_base_url": "https://ds.example.test/v1"}}
     insert_candidate(config)
     write_review_asset(config)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("JAGUARTV_PUBLISHING_AI_API_KEY", raising=False)
+    monkeypatch.delenv("JAGUARTV_DEEPSEEK_API_KEY", raising=False)
     monkeypatch.setenv("JAGUARTV_DEEPSEEK_API_KEY", "ds-test")
-    monkeypatch.setenv("JAGUARTV_DEEPSEEK_BASE_URL", "https://ds.example.test/v1")
     monkeypatch.setenv("JAGUARTV_DEEPSEEK_MODEL", "deepseek-v4-flash")
 
     class DeepSeekResponse:
@@ -609,28 +558,16 @@ def test_generate_publish_copy_uses_deepseek_without_openai_key(
     )
 
     assert result["model"] == "deepseek-v4-flash"
-    assert result["fallback_reason"] == "deepseek_fallback"
+    assert "fallback_reason" not in result
 
 
-def test_generate_publish_copy_falls_back_after_openai_is_unavailable(tmp_path: Path, monkeypatch):
+def test_generate_publish_copy_falls_back_when_deepseek_not_configured(
+    tmp_path: Path, monkeypatch
+):
     config = config_for(tmp_path)
-    config["publishing"] = {"copywriter": {"attempts": 2, "retry_delay_sec": 0}}
     insert_candidate(config)
     write_review_asset(config)
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-    calls = []
-
-    class FakeResponse:
-        status_code = 503
-
-        def json(self):
-            return {}
-
-    def fake_post(*_args, **_kwargs):
-        calls.append(1)
-        return FakeResponse()
-
-    monkeypatch.setattr("jaguartv_factory.publish_flow.requests.post", fake_post)
+    monkeypatch.delenv("JAGUARTV_DEEPSEEK_API_KEY", raising=False)
 
     result = generate_publish_copy_preview(
         config,
@@ -638,16 +575,14 @@ def test_generate_publish_copy_falls_back_after_openai_is_unavailable(tmp_path: 
     )
 
     assert result["model"] == "deterministic-provenance"
-    assert result["fallback_reason"] == "openai_unavailable"
-    assert len(calls) == 2
+    assert result["fallback_reason"] == "deepseek_not_configured"
 
 
 def test_generate_publish_copy_without_ai_key_uses_provenance_fallback(tmp_path: Path, monkeypatch):
     config = config_for(tmp_path)
     insert_candidate(config)
     write_review_asset(config)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("JAGUARTV_PUBLISHING_AI_API_KEY", raising=False)
+    monkeypatch.delenv("JAGUARTV_DEEPSEEK_API_KEY", raising=False)
 
     result = generate_publish_copy_preview(
         config,
@@ -684,8 +619,7 @@ def test_generate_publish_copy_accepts_legacy_package_with_approved_review_file(
         / "review.json"
     )
     review_file.write_text(json.dumps({"decision": "approved"}), encoding="utf-8")
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("JAGUARTV_PUBLISHING_AI_API_KEY", raising=False)
+    monkeypatch.delenv("JAGUARTV_DEEPSEEK_API_KEY", raising=False)
 
     result = generate_publish_copy_preview(
         config,
@@ -732,8 +666,7 @@ def test_social_copy_is_one_combined_pt_br_field_under_250_chars(tmp_path: Path,
     config = config_for(tmp_path)
     insert_candidate(config)
     write_review_asset(config)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("JAGUARTV_PUBLISHING_AI_API_KEY", raising=False)
+    monkeypatch.delenv("JAGUARTV_DEEPSEEK_API_KEY", raising=False)
 
     result = generate_publish_copy_preview(
         config,

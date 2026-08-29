@@ -134,28 +134,6 @@ CONTENT_HASHTAG_FALLBACKS = (
 )
 
 
-def openai_api_key() -> str:
-    return str(
-        os.environ.get("JAGUARTV_PUBLISHING_AI_API_KEY")
-        or os.environ.get("OPENAI_API_KEY")
-        or ""
-    ).strip()
-
-
-def openai_responses_url(config: dict[str, Any]) -> str:
-    settings = ((config.get("publishing") or {}).get("copywriter") or {}) if isinstance(config, dict) else {}
-    base_url = str(
-        os.environ.get("JAGUARTV_OPENAI_BASE_URL")
-        or os.environ.get("OPENAI_BASE_URL")
-        or (settings.get("base_url") if isinstance(settings, dict) else "")
-        or "https://api.openai.com/v1"
-    ).strip()
-    base_url = base_url.rstrip("/")
-    if base_url.endswith("/responses"):
-        return base_url
-    return f"{base_url}/responses"
-
-
 def deepseek_api_key() -> str:
     return str(os.environ.get("JAGUARTV_DEEPSEEK_API_KEY") or "").strip()
 
@@ -398,7 +376,7 @@ def read_review_metadata(config: dict[str, Any], asset_id: str) -> dict[str, Any
     return {}
 
 
-def build_openai_copy_prompt(
+def build_copy_prompt(
     source_material: dict[str, Any], *, platform: str, variant: str, hint: str = ""
 ) -> str:
     payload: dict[str, Any] = {
@@ -440,28 +418,6 @@ def build_openai_copy_prompt(
     )
 
 
-def parse_openai_output(payload: dict[str, Any]) -> dict[str, Any]:
-    text = str(payload.get("output_text") or "").strip()
-    if not text:
-        chunks: list[str] = []
-        for item in payload.get("output") or []:
-            if not isinstance(item, dict):
-                continue
-            for content in item.get("content") or []:
-                if isinstance(content, dict) and content.get("text"):
-                    chunks.append(str(content["text"]))
-        text = "\n".join(chunks).strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.DOTALL).strip()
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError as error:
-        raise ValueError("OpenAI copywriter response was not valid JSON") from error
-    if not isinstance(parsed, dict):
-        raise ValueError("OpenAI copywriter response must be a JSON object")
-    return parsed
-
-
 def parse_chat_output(payload: dict[str, Any]) -> dict[str, Any]:
     choices = payload.get("choices") or []
     if not choices:
@@ -500,7 +456,7 @@ def generate_copy_with_deepseek(
         "messages": [
             {
                 "role": "user",
-                "content": build_openai_copy_prompt(
+                "content": build_copy_prompt(
                     source_material, platform=platform, variant=variant, hint=hint
                 ),
             }
@@ -544,16 +500,8 @@ def generate_publish_copy_preview(config: dict[str, Any], payload: dict[str, Any
         for field in ("keywords", "category_tags", "source_title", "source_description")
     ):
         raise ValueError("source provenance is missing; copy generation is blocked")
-    key = openai_api_key()
     settings = ((config.get("publishing") or {}).get("copywriter") or {})
-    model = str(
-        os.environ.get("JAGUARTV_PUBLISHING_AI_MODEL")
-        or settings.get("model")
-        or "gpt-5.6-terra"
-    ).strip()
-    attempts = max(1, min(int(settings.get("attempts") or 3), 4))
     timeout_sec = max(10, min(float(settings.get("timeout_sec") or 60), 120))
-    retry_delay_sec = max(0, min(float(settings.get("retry_delay_sec") or 0.75), 5))
     raw: dict[str, Any] = {
         "title": _fallback_title(source_material),
         "description": "",
@@ -562,54 +510,7 @@ def generate_publish_copy_preview(config: dict[str, Any], payload: dict[str, Any
     generation_model = "deterministic-provenance"
     fallback_reason = ""
     reasoning_effort = "not_applicable"
-    if key:
-        prompt = build_openai_copy_prompt(
-            source_material, platform=platform, variant=variant, hint=hint
-        )
-        request_body = {
-            "model": model,
-            "reasoning": {"effort": "medium"},
-            "input": prompt,
-            "store": False,
-            "max_output_tokens": 800,
-            "text": {
-                "format": {
-                    "type": "json_schema",
-                    "name": "jaguartv_publish_copy",
-                    "strict": True,
-                    "schema": {
-                        "type": "object",
-                        "properties": {
-                            "title": {"type": "string"},
-                            "description": {"type": "string"},
-                            "tags": {"type": "array", "items": {"type": "string"}},
-                        },
-                        "required": ["title", "description", "tags"],
-                        "additionalProperties": False,
-                    },
-                }
-            },
-        }
-        for attempt in range(attempts):
-            try:
-                response = requests.post(
-                    openai_responses_url(config),
-                    headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                    data=json.dumps(request_body, ensure_ascii=False).encode("utf-8"),
-                    timeout=timeout_sec,
-                )
-                if response.status_code >= 400:
-                    raise RuntimeError(f"OpenAI copywriter failed: HTTP {response.status_code}")
-                raw = parse_openai_output(response.json())
-                generation_model = model
-                reasoning_effort = "medium"
-                break
-            except (requests.RequestException, RuntimeError, ValueError, json.JSONDecodeError):
-                if attempt + 1 < attempts:
-                    time.sleep(retry_delay_sec * (attempt + 1))
-                    continue
-                fallback_reason = "openai_unavailable"
-    if generation_model == "deterministic-provenance" and deepseek_api_key():
+    if deepseek_api_key():
         try:
             raw = generate_copy_with_deepseek(
                 config,
@@ -620,9 +521,10 @@ def generate_publish_copy_preview(config: dict[str, Any], payload: dict[str, Any
             )
             generation_model = deepseek_model(config)
             reasoning_effort = "not_applicable"
-            fallback_reason = "deepseek_after_openai_unavailable" if key else "deepseek_fallback"
         except (requests.RequestException, RuntimeError, ValueError, json.JSONDecodeError):
-            fallback_reason = fallback_reason or "deepseek_unavailable"
+            fallback_reason = "deepseek_unavailable"
+    else:
+        fallback_reason = "deepseek_not_configured"
     if platform == "youtube":
         result = youtube_copy_from_provenance(raw, source_material, seed=f"{candidate['id']}:{asset_id}")
     elif platform in COMBINED_COPY_PLATFORMS:
