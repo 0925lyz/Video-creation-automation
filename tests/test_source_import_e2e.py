@@ -203,3 +203,29 @@ def test_authorized_upload_defaults_to_pending_production_for_secondary_creation
         if "Executable doesn't exist" in str(error):
             pytest.skip("Playwright Chromium is not installed")
         raise
+
+
+def test_upload_mode_can_select_approved_without_being_reset(
+    browser_dashboard: str,
+):
+    playwright = pytest.importorskip("playwright.sync_api")
+    try:
+        with playwright.sync_playwright() as runtime:
+            browser = runtime.chromium.launch(headless=True)
+            page = browser.new_page(viewport={"width": 1280, "height": 900})
+            page.goto(f"{browser_dashboard}/login", wait_until="networkidle")
+            page.locator("#password").fill("e2e-admin-token")
+            page.locator("#submitButton").click()
+            page.wait_for_url(f"{browser_dashboard}/")
+            page.locator("#discoverButton").click()
+            page.locator("#discoverMode").select_option("upload")
+            page.locator("#discoverApprovedTarget span").click()
+
+            assert page.locator('input[name="discoverTarget"][value="approved"]').is_checked()
+            assert not page.locator('input[name="discoverTarget"][value="pending_production"]').is_checked()
+            assert page.locator("#discoverApprovalWarning").is_visible()
+            browser.close()
+    except Exception as error:
+        if "Executable doesn't exist" in str(error):
+            pytest.skip("Playwright Chromium is not installed")
+        raise

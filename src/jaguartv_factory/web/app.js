@@ -2723,8 +2723,6 @@ function updateDiscoverMode() {
   if (mode === "upload") {
     platformSelect.value = "original";
     platformSelect.disabled = true;
-    const pending = document.querySelector('input[name="discoverTarget"][value="pending_production"]');
-    if (pending) pending.checked = true;
   } else {
     platformSelect.disabled = false;
     if (platformSelect.value === "original") platformSelect.value = "youtube";
