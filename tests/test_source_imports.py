@@ -509,6 +509,53 @@ def test_uploaded_finished_asset_records_original_source_and_enqueues_publicatio
     }]
 
 
+def test_uploaded_source_import_approves_without_admin_permission(
+    tmp_path: Path, monkeypatch
+):
+    config = import_config(tmp_path)
+    insert_candidate(config, "upload-approved")
+    media = tmp_path / "workspace" / "jobs" / "upload-approved" / "source.mp4"
+    media.parent.mkdir(parents=True)
+    media.write_bytes(b"validated-upload-approved")
+
+    record = create_uploaded_source_import(
+        config,
+        upload_id="c" * 32,
+        source_platform="original",
+        source_category="素材",
+        target_area="approved",
+        operator_id="operator-1",
+        can_direct_approve=False,
+    )
+    monkeypatch.setattr(
+        "jaguartv_factory.source_imports.validate_imported_media",
+        lambda config, candidate_id, path: media_result(path, "f" * 64),
+    )
+    monkeypatch.setattr(
+        "jaguartv_factory.source_imports.create_import_cover",
+        lambda config, media_path, destination: destination.write_bytes(b"cover"),
+    )
+    monkeypatch.setattr(
+        "jaguartv_factory.source_imports.auto_enqueue_approved_publication",
+        lambda config, candidate_id, **kwargs: {"status": "SCHEDULED", "publication_id": 8},
+    )
+
+    completed = complete_source_import(
+        config,
+        record["id"],
+        candidate_id="upload-approved",
+        media_path=media,
+        original_title="Uploaded approved asset",
+    )
+    connection = connect_db(config)
+    candidate = connection.execute(
+        "SELECT status FROM candidates WHERE id='upload-approved'"
+    ).fetchone()
+
+    assert completed["actual_workflow_status"] == "APPROVED"
+    assert candidate["status"] == "APPROVED"
+
+
 def test_media_validation_failure_never_enters_success_state(tmp_path: Path, monkeypatch):
     config = import_config(tmp_path)
     insert_candidate(config, "bad-import")

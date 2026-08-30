@@ -57,6 +57,7 @@ def test_import_capabilities_reflect_existing_admin_permission(dashboard_server:
     assert status == 200
     assert anonymous["default_target_area"] == "pending_production"
     assert anonymous["source_category_labels"][-1] == "素材"
+    assert anonymous["allow_upload_approved"] is True
     assert anonymous["can_direct_approve"] is False
     assert administrator["can_direct_approve"] is True
 

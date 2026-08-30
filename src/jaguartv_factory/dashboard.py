@@ -3968,6 +3968,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "default_target_area": "pending_production",
                     "allowed_target_areas": ["pending_production", "approved"],
                     "source_category_labels": list(SOURCE_IMPORT_CATEGORY_LABELS),
+                    "allow_upload_approved": True,
                     "can_direct_approve": self.authorized_for_admin(parsed),
                 })
             if parsed.path == "/api/posters":
@@ -4286,7 +4287,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     if bool(payload.get("source_import")):
                         target_area = normalize_target_area(payload.get("target_area"))
                         source_category = normalize_source_category(payload.get("source_category"))
-                        can_direct_approve = self.authorized_for_admin(parsed)
                         source_import = create_uploaded_source_import(
                             self.server.config,
                             upload_id=upload_id,
@@ -4294,13 +4294,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                             source_category=source_category,
                             target_area=target_area,
                             operator_id=str(
-                                "dashboard_admin"
-                                if target_area == TARGET_APPROVED and can_direct_approve
-                                else payload.get("operator_id")
+                                payload.get("operator_id")
                                 or self.headers.get("X-Operator", "")
                                 or "dashboard"
                             ),
-                            can_direct_approve=can_direct_approve,
                             idempotency_key=str(payload.get("idempotency_key") or ""),
                         )
                         candidate_id = ingest_uploaded_media(

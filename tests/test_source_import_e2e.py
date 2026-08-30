@@ -54,6 +54,8 @@ def test_finished_upload_exposes_original_source_and_submits_it():
     assert 'id="discoverUploadFile" type="file" multiple' in html
     assert 'Array.from(document.querySelector("#discoverUploadFile").files || [])' in javascript
     assert 'for (let fileIndex = 0; fileIndex < files.length; fileIndex += 1)' in javascript
+    assert "mode === \"upload\" && !!state.importCapabilities.allow_upload_approved" in javascript
+    assert "importCapabilities.allow_upload_approved" in javascript
 
 
 @pytest.mark.parametrize("viewport", [{"width": 1440, "height": 900}, {"width": 390, "height": 844}])

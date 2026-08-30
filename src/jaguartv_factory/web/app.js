@@ -27,7 +27,7 @@ const state = {
   inventoryRequestSerial: 0,
   inventoryPagination: { page: 1, page_size: 50, total: 0, pages: 0 },
   inventorySourceCounts: { all: 0, source_import: 0 },
-  importCapabilities: { default_target_area: "pending_production", can_direct_approve: false },
+  importCapabilities: { default_target_area: "pending_production", can_direct_approve: false, allow_upload_approved: false },
   discoverIdempotencyKey: "",
   pendingProductionIds: [],
   pendingPublishAsset: null,
@@ -2760,7 +2760,10 @@ function selectedDiscoverTarget() {
 
 function updateDiscoverTarget() {
   const approvedInput = document.querySelector('input[name="discoverTarget"][value="approved"]');
-  const canApprove = !!state.importCapabilities.can_direct_approve;
+  const mode = document.querySelector("#discoverMode").value;
+  const canApprove =
+    (mode === "upload" && !!state.importCapabilities.allow_upload_approved) ||
+    !!state.importCapabilities.can_direct_approve;
   approvedInput.disabled = !canApprove;
   document.querySelector("#discoverApprovedTarget").classList.toggle("disabled", !canApprove);
   document.querySelector("#discoverApprovalPermission").hidden = canApprove;
@@ -2936,7 +2939,10 @@ document.querySelector("#discoverForm").addEventListener("submit", async (event)
     if (!sourceCategory) throw new Error("请选择标签");
     const targetArea = selectedDiscoverTarget();
     const targetLabel = targetArea === "approved" ? "审核通过" : "待制作";
-    if (targetArea === "approved" && !state.importCapabilities.can_direct_approve) {
+    const canDirectApprove =
+      (mode === "upload" && !!state.importCapabilities.allow_upload_approved) ||
+      !!state.importCapabilities.can_direct_approve;
+    if (targetArea === "approved" && !canDirectApprove) {
       throw new Error("当前账号没有直接导入审核通过成片的后台权限");
     }
     if (targetArea === "approved" && !confirm("该视频将作为外部完整成片直接进入审核通过，并跳过智能切片与自动制作。确认继续？")) {

@@ -396,8 +396,6 @@ def create_uploaded_source_import(
 ) -> dict[str, Any]:
     target = normalize_target_area(target_area)
     category = normalize_source_category(source_category)
-    if target == TARGET_APPROVED and not can_direct_approve:
-        raise SourceImportPermissionError("direct approval requires dashboard administrator permission")
     upload_id = str(upload_id or "").strip()
     if not upload_id:
         raise ValueError("upload_id is required")
