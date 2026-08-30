@@ -732,6 +732,7 @@ def test_publish_dialog_uses_final_field_names_and_platform_switching():
     assert "publishHint" in javascript
     assert "hint: document.querySelector(\"#publishHint\")?.value.trim() || \"\"" in javascript
     assert "item.account_label || item.account || \"未指定\"" in javascript
+    assert 'app.js?v=20260830-account-label-v1' in html
     styles = Path("src/jaguartv_factory/web/styles.css").read_text(encoding="utf-8")
 
     assert "AI 标题" not in html
