@@ -172,7 +172,7 @@ async function refreshAll(showToast = false) {
       api("/api/uploads").catch(() => []),
       api("/api/cta").catch(() => []),
       api("/api/posters/counts"),
-      api("/api/import-capabilities").catch(() => ({ default_target_area: "pending_production", can_direct_approve: false })),
+      api("/api/import-capabilities").catch(() => ({ default_target_area: "pending_production", can_direct_approve: false, allow_upload_approved: true })),
     ]);
     Object.assign(state, {
       overview,
@@ -2761,9 +2761,7 @@ function selectedDiscoverTarget() {
 function updateDiscoverTarget() {
   const approvedInput = document.querySelector('input[name="discoverTarget"][value="approved"]');
   const mode = document.querySelector("#discoverMode").value;
-  const canApprove =
-    (mode === "upload" && !!state.importCapabilities.allow_upload_approved) ||
-    !!state.importCapabilities.can_direct_approve;
+  const canApprove = mode === "upload" || !!state.importCapabilities.can_direct_approve;
   approvedInput.disabled = !canApprove;
   document.querySelector("#discoverApprovedTarget").classList.toggle("disabled", !canApprove);
   document.querySelector("#discoverApprovalPermission").hidden = canApprove;
@@ -2939,9 +2937,7 @@ document.querySelector("#discoverForm").addEventListener("submit", async (event)
     if (!sourceCategory) throw new Error("请选择标签");
     const targetArea = selectedDiscoverTarget();
     const targetLabel = targetArea === "approved" ? "审核通过" : "待制作";
-    const canDirectApprove =
-      (mode === "upload" && !!state.importCapabilities.allow_upload_approved) ||
-      !!state.importCapabilities.can_direct_approve;
+    const canDirectApprove = mode === "upload" || !!state.importCapabilities.can_direct_approve;
     if (targetArea === "approved" && !canDirectApprove) {
       throw new Error("当前账号没有直接导入审核通过成片的后台权限");
     }
