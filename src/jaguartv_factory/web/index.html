@@ -470,7 +470,7 @@
       <label>标签<select id="discoverCategory" required><option value="">请选择标签</option><option value="教程及优点展示类">教程及优点展示类</option><option value="官方性质类">官方性质类</option><option value="合作类">合作类</option><option value="运营教学类">运营教学类</option><option value="教程及答疑类">教程及答疑类</option><option value="素材">素材</option></select></label>
       <label id="discoverUrlField">具体视频 URL（填写后直接导入并可下载）<input id="discoverUrl" type="url" placeholder="https://..."></label>
       <div id="discoverUploadFields" hidden>
-        <label>上传源视频<input id="discoverUploadFile" type="file" accept="video/mp4,video/quicktime,video/webm,.mkv,.m4v"></label>
+        <label>上传源视频（可多选）<input id="discoverUploadFile" type="file" multiple accept="video/mp4,video/quicktime,video/webm,.mkv,.m4v"></label>
         <div class="upload-progress compact-progress" id="discoverUploadProgress" hidden><div><span id="discoverUploadMessage">准备上传</span><strong id="discoverUploadPercent">0%</strong></div><div class="progress-track"><span id="discoverUploadBar" style="width:0%"></span></div></div>
       </div>
       <fieldset class="import-target-field" id="discoverTargetField">

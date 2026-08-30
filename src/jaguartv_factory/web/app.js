@@ -2943,19 +2943,31 @@ document.querySelector("#discoverForm").addEventListener("submit", async (event)
       return;
     }
     if (mode === "upload") {
-      const file = document.querySelector("#discoverUploadFile").files[0];
-      if (!file) throw new Error("请选择要上传的源视频");
-      const uploaded = await uploadServerFile(file, "source", "", setDiscoverUploadProgress, {
-        source_import: true,
-        source_platform: platform,
-        source_category: sourceCategory,
-        target_area: targetArea,
-        idempotency_key: state.discoverIdempotencyKey,
-        operator_id: localStorage.getItem("jaguartvOperatorName") || "dashboard",
-      });
+      const files = Array.from(document.querySelector("#discoverUploadFile").files || []);
+      if (!files.length) throw new Error("请选择要上传的源视频");
+      const uploadedResults = [];
+      const operatorId = localStorage.getItem("jaguartvOperatorName") || "dashboard";
+      for (let fileIndex = 0; fileIndex < files.length; fileIndex += 1) {
+        const file = files[fileIndex];
+        const uploadStart = Date.now();
+        const fileKey = globalThis.crypto?.randomUUID?.() || `${uploadStart}-${fileIndex}`;
+        const perFileProgress = (percent, message) => {
+          setDiscoverUploadProgress(percent, `${message}（${fileIndex + 1}/${files.length}：${file.name}）`);
+        };
+        const uploaded = await uploadServerFile(file, "source", "", perFileProgress, {
+          source_import: true,
+          source_platform: platform,
+          source_category: sourceCategory,
+          target_area: targetArea,
+          idempotency_key: fileKey,
+          operator_id: operatorId,
+        });
+        uploadedResults.push(uploaded);
+      }
       document.querySelector("#discoverUploadFile").value = "";
       document.querySelector("#discoverDialog").close();
-      const publication = uploaded.publication || {};
+      const last = uploadedResults[uploadedResults.length - 1];
+      const publication = last.publication || {};
       const publishMessage = publication.status === "SCHEDULED"
         ? "，已加入自动发布队列"
         : publication.status === "EXISTS"
@@ -2963,7 +2975,7 @@ document.querySelector("#discoverForm").addEventListener("submit", async (event)
           : targetArea === "approved"
             ? `，自动发布未排队：${publication.reason || publication.status || "未匹配发布账号"}`
             : "";
-      toast(`视频已入库：${uploaded.candidate_id}，来源：原创，目标区域：${targetLabel}${publishMessage}`);
+      toast(`已入库 ${uploadedResults.length} 个视频：${uploadedResults.map((item) => item.candidate_id).join("、")}，来源：原创，目标区域：${targetLabel}${publishMessage}`);
       state.status = targetArea === "approved" ? "APPROVED" : "DOWNLOADED";
       state.sourceFilter = "source_import";
       await refreshAll();
