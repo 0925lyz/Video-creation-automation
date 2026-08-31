@@ -91,6 +91,11 @@ def youtube_access_token(config: dict[str, Any], account: str) -> dict[str, str]
 
 
 def publication_video_path(config: dict[str, Any], publication: dict[str, Any]) -> Path:
+    if str(publication.get("publication_origin") or "").upper() == "ORIGINAL_FACTORY":
+        from .original_factory import resolve_original_file
+
+        item_id = str(publication.get("candidate_id") or publication.get("asset_id") or "")
+        return resolve_original_file(config, item_id, require_approved=True)
     package_id = str(publication.get("package_id") or publication.get("candidate_id") or "")
     asset_id = str(publication.get("asset_id") or package_id)
     roots = [workspace_dir(config) / "ready_for_review", storage_root(config) / "review"]

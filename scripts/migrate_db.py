@@ -57,6 +57,10 @@ def migrate(db_path: Path, *, backup_path: Path | None = None) -> dict:
         "production_outputs",
         "cta_assets",
         "repair_runs",
+        "original_factory_items",
+        "original_factory_social_sources",
+        "original_factory_audit_events",
+        "original_factory_copy_generations",
     }
     missing = sorted(required - tables)
     connection.close()

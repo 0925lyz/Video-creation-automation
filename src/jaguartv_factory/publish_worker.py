@@ -125,6 +125,15 @@ def publish_due_once(
         connection.commit()
         if not cursor.rowcount:
             continue
+        if str(publication.get("publication_origin") or "").upper() == "ORIGINAL_FACTORY":
+            from .original_factory import set_original_publication_state
+
+            set_original_publication_state(
+                config,
+                str(publication["candidate_id"]),
+                status="PUBLISHING",
+                publication_id=int(publication["id"]),
+            )
         append_event(connection, str(publication["candidate_id"]), "PUBLICATION_STARTED", {
             "publication_id": publication["id"],
             "account": publication.get("account") or "",
@@ -226,6 +235,15 @@ def publish_due_once(
                     ),
                 )
             connection.commit()
+            if str(publication.get("publication_origin") or "").upper() == "ORIGINAL_FACTORY":
+                from .original_factory import set_original_publication_state
+
+                set_original_publication_state(
+                    config,
+                    str(publication["candidate_id"]),
+                    status="PUBLISHED",
+                    publication_id=int(publication["id"]),
+                )
             append_event(connection, str(publication["candidate_id"]), "PUBLICATION_PUBLISHED", {
                 "publication_id": publication["id"],
                 "account": publication.get("account") or "",
@@ -238,6 +256,16 @@ def publish_due_once(
         except Exception as error:
             failed += 1
             mark_publication_failed(connection, publication, error)
+            if str(publication.get("publication_origin") or "").upper() == "ORIGINAL_FACTORY":
+                from .original_factory import set_original_publication_state
+
+                set_original_publication_state(
+                    config,
+                    str(publication["candidate_id"]),
+                    status="FAILED",
+                    publication_id=int(publication["id"]),
+                    error=str(error),
+                )
             results.append({"publication_id": publication["id"], "status": "FAILED", "error": str(error)})
     return {"dry_run": False, "due": len(due), "published": published, "failed": failed, "results": results}
 

@@ -33,8 +33,8 @@ const state = {
   pendingPublishAsset: null,
   pendingPublishItem: null,
   posters: [],
-  posterCounts: { ALL: 0, PENDING_SCREENING: 0, PENDING_REVIEW: 0, APPROVED: 0 },
-  posterStatus: "",
+  posterCounts: { ALL: 0, PENDING_REVIEW: 0, APPROVED: 0 },
+  posterStatus: "PENDING_REVIEW",
   posterCategory: "",
   posterPagination: { page: 1, page_size: 24, total: 0, pages: 0 },
   posterLoading: false,
@@ -42,14 +42,11 @@ const state = {
   posterRequestSerial: 0,
   posterAbortController: null,
   posterPendingActions: new Set(),
+  posterSelected: new Set(),
   posterPreviewIndex: -1,
-  posterZoom: 1,
   posterImportItems: [],
   posterImportRunning: false,
-  posterImportLimits: { max_bytes: 15 * 1024 * 1024, max_pixels: 40000000, max_dimension: 12000, max_batch: 20 },
-  posterContentDetail: null,
-  posterContentBusy: false,
-  posterAttachmentReplaceId: "",
+  posterImportLimits: { max_bytes: 500 * 1024 * 1024, max_duration_sec: 900, max_pixels: 16000000, max_dimension: 7680, max_batch: 20 },
   pendingPosterDelete: null,
   designCandidate: null,
   designLayers: [],
@@ -70,7 +67,7 @@ const views = {
   overview: ["OPERATIONS", "内容生产总览"],
   inventory: ["INVENTORY", "内容库存"],
   cta: ["CTA", "CTA 库"],
-  posters: ["POSTER INVENTORY", "海报库存"],
+  posters: ["ORIGINAL FACTORY", "原创工厂"],
   publishing: ["DISTRIBUTION", "发布队列"],
   analytics: ["GROWTH", "增长分析"],
   nodes: ["INFRASTRUCTURE", "运行节点"],
@@ -113,11 +110,9 @@ const importCategoryLabels = [
 ];
 
 const posterCategoryLabels = [
-  ["time_location", "时间地点"],
-  ["factor_analysis", "因素分析"],
-  ["match_prediction", "预测比赛"],
-  ["multi_schedule", "多赛程"],
-  ["star_fans", "球星球迷"],
+  ["pre_match_prediction", "赛前预测"],
+  ["pre_match_discussion", "赛前讨论"],
+  ["post_match_score", "赛后比分"],
 ];
 
 const xAccountSlots = [
@@ -171,7 +166,7 @@ async function refreshAll(showToast = false) {
       api("/api/overview"), api(inventoryApiPath()), api("/api/publications"), api("/api/x-auths"), api("/api/workers"), api("/api/feedback"), api("/api/download-claims"), api("/api/keywords"), api("/api/category-keywords?date=today"), api("/api/tasks"), api("/api/settings"), api("/api/sessions"), api("/api/health"), api("/api/publish/capabilities"),
       api("/api/uploads").catch(() => []),
       api("/api/cta").catch(() => []),
-      api("/api/posters/counts"),
+      api("/api/originals/counts"),
       api("/api/import-capabilities").catch(() => ({ default_target_area: "pending_production", can_direct_approve: false, allow_upload_approved: true })),
     ]);
     Object.assign(state, {
@@ -503,16 +498,26 @@ function renderPosterCategoryFilters() {
 
 function posterActionButtons(item) {
   const pending = (action) => state.posterPendingActions.has(`${action}:${item.id}`);
-  const deleteButton = `<button class="table-action danger-action" data-poster-delete="${escapeHtml(item.id)}" type="button" ${pending("delete") ? "disabled" : ""}>${pending("delete") ? "删除中" : "删除"}</button>`;
-  const previewButton = `<button class="table-action" data-poster-preview="${escapeHtml(item.id)}" type="button">预览</button>`;
-  const contentButton = `<button class="table-action" data-poster-content="${escapeHtml(item.id)}" type="button">文案设计</button>`;
-  const approveButton = ["PENDING_SCREENING", "PENDING_REVIEW"].includes(item.status_id)
-    ? `<button class="table-action" data-poster-approve="${escapeHtml(item.id)}" type="button" ${pending("approve") ? "disabled" : ""}>${pending("approve") ? "处理中" : "通过"}</button>`
-    : "";
-  const downloadButton = item.status_id === "APPROVED"
-    ? `<a class="table-action" data-poster-download="${escapeHtml(item.id)}" href="${escapeHtml(item.download_url)}" download>下载</a>`
-    : "";
-  return `<div class="row-actions poster-row-actions">${deleteButton}${previewButton}${contentButton}${approveButton}${downloadButton}</div>`;
+  const preview = `<button class="table-action" data-poster-preview="${escapeHtml(item.id)}" type="button">预览</button>`;
+  const remove = `<button class="table-action danger-action" data-poster-delete="${escapeHtml(item.id)}" type="button" ${pending("delete") ? "disabled" : ""}>${pending("delete") ? "删除中" : "删除"}</button>`;
+  if (item.status_id !== "APPROVED") return `<div class="row-actions poster-row-actions">${preview}${remove}</div>`;
+  const publishAsset = escapeHtml(JSON.stringify(item.publish_asset || {}));
+  const publish = `<button class="table-action" data-original-publish="${publishAsset}" data-original-id="${escapeHtml(item.id)}" type="button">发布</button>`;
+  const download = `<button class="table-action" data-poster-download="${escapeHtml(item.id)}" type="button" ${pending("download") ? "disabled" : ""}>${pending("download") ? "登记中" : "登记下载"}</button>`;
+  return `<div class="row-actions poster-row-actions">${publish}${download}${remove}${preview}</div>`;
+}
+
+function updatePosterBulkToolbar() {
+  const visibleIds = state.posters.map((item) => item.id);
+  const selected = visibleIds.filter((id) => state.posterSelected.has(id));
+  const selectAll = document.querySelector("#posterSelectAll");
+  selectAll.checked = Boolean(visibleIds.length) && selected.length === visibleIds.length;
+  selectAll.indeterminate = selected.length > 0 && selected.length < visibleIds.length;
+  document.querySelector("#posterSelectionSummary").textContent = `已选择 ${selected.length} 条`;
+  document.querySelector("#posterBulkDelete").disabled = state.posterLoading || selected.length === 0;
+  const approveButton = document.querySelector("#posterBulkApprove");
+  approveButton.hidden = state.posterStatus !== "PENDING_REVIEW";
+  approveButton.disabled = state.posterLoading || selected.length === 0;
 }
 
 function renderPosterInventory() {
@@ -520,49 +525,50 @@ function renderPosterInventory() {
   renderPosterCategoryFilters();
   const table = document.querySelector("#posterInventoryTable");
   const pagination = document.querySelector("#posterPagination");
-  const posterTableEmpty = state.posterLoading || Boolean(state.posterError) || state.posters.length === 0;
-  table.closest(".poster-table-wrap").classList.toggle("poster-table-empty", posterTableEmpty);
-  document.querySelector("#posterInventoryCount").textContent = `${number(state.posterPagination.total || 0)} 张海报`;
+  table.closest(".poster-table-wrap").classList.toggle("poster-table-empty", state.posterLoading || Boolean(state.posterError) || state.posters.length === 0);
+  document.querySelector("#posterInventoryCount").textContent = `${number(state.posterPagination.total || 0)} 条原创视频`;
   if (state.posterLoading) {
-    table.innerHTML = `<tr><td colspan="6"><div class="empty-state poster-loading-state"><span class="loading-spinner"></span>正在加载海报</div></td></tr>`;
+    table.innerHTML = `<tr><td colspan="7"><div class="empty-state poster-loading-state"><span class="loading-spinner"></span>正在加载原创视频</div></td></tr>`;
     pagination.hidden = true;
+    updatePosterBulkToolbar();
     return;
   }
   if (state.posterError) {
-    table.innerHTML = `<tr><td colspan="6"><div class="empty-state poster-error-state"><span>${escapeHtml(state.posterError)}</span><button class="secondary-button" id="retryPosters" type="button">重试</button></div></td></tr>`;
+    table.innerHTML = `<tr><td colspan="7"><div class="empty-state poster-error-state"><span>${escapeHtml(state.posterError)}</span><button class="secondary-button" id="retryPosters" type="button">重试</button></div></td></tr>`;
     document.querySelector("#retryPosters").addEventListener("click", loadPosters);
     pagination.hidden = true;
+    updatePosterBulkToolbar();
     return;
   }
   table.innerHTML = state.posters.length ? state.posters.map((item) => {
-    const reviewedAt = item.approved_at || item.screened_at;
-    const statusClassName = item.status_id === "APPROVED" ? "ready" : item.status_id === "PENDING_REVIEW" ? "running" : "";
-    const unknownClass = item.category_known ? "" : " unknown";
+    const statusClassName = item.status_id === "APPROVED" ? "ready" : "running";
+    const channels = (item.channels || []).join("、") || "未登记频道";
     return `<tr>
-      <td><div class="content-cell poster-content-cell"><div class="poster-thumb-shell"><img class="poster-thumbnail" src="${escapeHtml(item.thumbnail_url)}" alt="${escapeHtml(item.name)}" loading="lazy"><span class="poster-thumb-error" hidden>图片失效</span></div><div><strong title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</strong><small>${escapeHtml(item.id)}</small></div></div></td>
-      <td><span class="category-pill${unknownClass}" title="${escapeHtml(item.category_id)}">${escapeHtml(item.category_label)}</span></td>
-      <td><span class="status-pill ${statusClassName}">${escapeHtml(item.status_label)}</span></td>
-      <td>${dateText(item.created_at)}</td>
-      <td>${dateText(reviewedAt)}</td>
+      <td class="original-check-column"><input data-poster-select="${escapeHtml(item.id)}" type="checkbox" aria-label="选择 ${escapeHtml(item.name)}" ${state.posterSelected.has(item.id) ? "checked" : ""}></td>
+      <td><div class="content-cell poster-content-cell"><div class="poster-thumb-shell"><img class="poster-thumbnail" src="${escapeHtml(item.thumbnail_url)}" alt="${escapeHtml(item.name)}" loading="lazy"><span class="poster-thumb-error" hidden>封面失效</span></div><div><strong title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</strong><small>${item.width} × ${item.height} · ${formatFileSize(item.size_bytes)}</small></div></div></td>
+      <td><strong>${escapeHtml(item.match_name)}</strong><small class="original-match-meta">${escapeHtml(item.match_time_sao_paulo)} · ${escapeHtml(channels)}</small></td>
+      <td><span class="category-pill${item.category_known ? "" : " unknown"}">${escapeHtml(item.category_label)}</span></td>
+      <td><span class="status-pill ${statusClassName}">${escapeHtml(item.status_label)}</span><small class="original-match-meta">发布：${escapeHtml(item.publish_status)}</small></td>
+      <td>${dateText(item.generated_at)}${item.approved_at ? `<small class="original-match-meta">通过 ${dateText(item.approved_at)}</small>` : ""}</td>
       <td>${posterActionButtons(item)}</td>
     </tr>`;
-  }).join("") : `<tr><td colspan="6"><div class="empty-state">当前筛选条件下没有海报</div></td></tr>`;
-
-  table.querySelectorAll(".poster-thumbnail").forEach((image) => image.addEventListener("error", () => {
-    image.hidden = true;
-    image.nextElementSibling.hidden = false;
-  }, { once: true }));
+  }).join("") : `<tr><td colspan="7"><div class="empty-state">当前没有${state.posterStatus === "APPROVED" ? "审核通过" : "待审核"}的原创视频</div></td></tr>`;
+  table.querySelectorAll(".poster-thumbnail").forEach((image) => image.addEventListener("error", () => { image.hidden = true; image.nextElementSibling.hidden = false; }, { once: true }));
+  table.querySelectorAll("[data-poster-select]").forEach((checkbox) => checkbox.addEventListener("change", () => {
+    if (checkbox.checked) state.posterSelected.add(checkbox.dataset.posterSelect);
+    else state.posterSelected.delete(checkbox.dataset.posterSelect);
+    updatePosterBulkToolbar();
+  }));
   table.querySelectorAll("[data-poster-preview]").forEach((button) => button.addEventListener("click", () => openPosterPreview(button.dataset.posterPreview)));
-  table.querySelectorAll("[data-poster-content]").forEach((button) => button.addEventListener("click", () => openPosterContentDialog(button.dataset.posterContent)));
-  table.querySelectorAll("[data-poster-approve]").forEach((button) => button.addEventListener("click", () => approvePoster(button.dataset.posterApprove)));
   table.querySelectorAll("[data-poster-delete]").forEach((button) => button.addEventListener("click", () => openPosterDelete(button.dataset.posterDelete)));
-  table.querySelectorAll("[data-poster-download]").forEach((link) => link.addEventListener("click", () => toast("正在下载审核通过的海报")));
-
+  table.querySelectorAll("[data-poster-download]").forEach((button) => button.addEventListener("click", () => registerPosterDownload(button.dataset.posterDownload)));
+  table.querySelectorAll("[data-original-publish]").forEach((button) => button.addEventListener("click", () => openPublishDialog(button.dataset.originalPublish, button.dataset.originalId)));
   const { page, pages, total } = state.posterPagination;
   pagination.hidden = total === 0;
-  document.querySelector("#posterPageSummary").textContent = pages ? `第 ${page} / ${pages} 页 · 共 ${number(total)} 张` : "";
+  document.querySelector("#posterPageSummary").textContent = pages ? `第 ${page} / ${pages} 页 · 共 ${number(total)} 条` : "";
   document.querySelector("#posterPreviousPage").disabled = page <= 1;
   document.querySelector("#posterNextPage").disabled = !pages || page >= pages;
+  updatePosterBulkToolbar();
 }
 
 async function loadPosters() {
@@ -573,54 +579,45 @@ async function loadPosters() {
   state.posterLoading = true;
   state.posterError = "";
   renderPosterInventory();
-  const query = new URLSearchParams({
-    page: String(state.posterPagination.page || 1),
-    page_size: String(state.posterPagination.page_size || 24),
-  });
-  if (state.posterStatus) query.set("status", state.posterStatus);
+  const query = new URLSearchParams({ status: state.posterStatus, page: String(state.posterPagination.page || 1), page_size: String(state.posterPagination.page_size || 24) });
   if (state.posterCategory) query.set("category", state.posterCategory);
   try {
-    const payload = await api(`/api/posters?${query}`, { signal: controller.signal });
+    const payload = await api(`/api/originals?${query}`, { signal: controller.signal });
     if (serial !== state.posterRequestSerial) return;
     state.posters = payload.items || [];
     state.posterCounts = payload.counts || state.posterCounts;
     state.posterPagination = payload.pagination || state.posterPagination;
+    const visible = new Set(state.posters.map((item) => item.id));
+    state.posterSelected = new Set([...state.posterSelected].filter((id) => visible.has(id)));
   } catch (error) {
     if (error.name === "AbortError" || serial !== state.posterRequestSerial) return;
-    state.posterError = `海报列表加载失败：${error.message}`;
+    state.posterError = `原创视频加载失败：${error.message}`;
   } finally {
-    if (serial === state.posterRequestSerial) {
-      state.posterLoading = false;
-      renderPosterInventory();
-    }
+    if (serial === state.posterRequestSerial) { state.posterLoading = false; renderPosterInventory(); }
   }
 }
 
-async function approvePoster(posterId) {
-  const item = state.posters.find((poster) => poster.id === posterId);
-  if (!item || !["PENDING_SCREENING", "PENDING_REVIEW"].includes(item.status_id)) return;
-  const target = item.status_id === "PENDING_SCREENING" ? "待审核" : "审核通过";
-  if (!confirm(`确认通过“${item.name}”并进入${target}？`)) return;
-  const pendingKey = `approve:${posterId}`;
-  if (state.posterPendingActions.has(pendingKey)) return;
-  state.posterPendingActions.add(pendingKey);
-  renderPosterInventory();
+async function runPosterBulkAction(action, ids) {
+  const unique = [...new Set(ids)].filter(Boolean);
+  if (!unique.length || state.posterPendingActions.has(`bulk:${action}`)) return;
+  const label = action === "approve" ? "通过" : "删除";
+  if (!confirm(`确认统一${label}所选 ${unique.length} 条原创视频？`)) return;
+  state.posterPendingActions.add(`bulk:${action}`);
+  updatePosterBulkToolbar();
   try {
-    const result = await api(`/api/posters/${encodeURIComponent(posterId)}/approve`, {
+    await api(`/api/originals/bulk-${action === "approve" ? "approve" : "delete"}`, {
       method: "POST",
-      headers: { "X-Request-ID": posterRequestId("approve", posterId) },
-      body: JSON.stringify({
-        actor: localStorage.getItem("jaguartvOperatorName") || "dashboard",
-        expected_status: item.status_id,
-      }),
+      headers: { "X-Request-ID": posterRequestId(`bulk-${action}`, unique.length) },
+      body: JSON.stringify({ item_ids: unique, actor: localStorage.getItem("jaguartvOperatorName") || "dashboard" }),
     });
-    toast(`海报已进入${result.status_label}`);
+    state.posterSelected.clear();
+    toast(`已统一${label} ${unique.length} 条原创视频`);
     await loadPosters();
   } catch (error) {
-    toast(`通过失败：${error.message}`, "error");
+    toast(`统一${label}失败：${error.message}`, "error");
   } finally {
-    state.posterPendingActions.delete(pendingKey);
-    if (!state.posterLoading) renderPosterInventory();
+    state.posterPendingActions.delete(`bulk:${action}`);
+    updatePosterBulkToolbar();
   }
 }
 
@@ -638,12 +635,6 @@ function openPosterDelete(posterId) {
   document.querySelector("#posterDeleteDialog").showModal();
 }
 
-function applyPosterZoom(value) {
-  state.posterZoom = Math.min(4, Math.max(0.25, value));
-  document.querySelector("#posterPreviewImage").style.transform = `scale(${state.posterZoom})`;
-  document.querySelector("#posterZoomValue").textContent = `${Math.round(state.posterZoom * 100)}%`;
-}
-
 function showPosterPreview(index) {
   if (!state.posters.length || index < 0 || index >= state.posters.length) return;
   state.posterPreviewIndex = index;
@@ -652,25 +643,25 @@ function showPosterPreview(index) {
   document.querySelector("#posterPreviewMeta").textContent = `${item.category_label} · ${item.status_label} · 创建于 ${dateText(item.created_at)}`;
   document.querySelector("#posterPreviewPrevious").disabled = index <= 0;
   document.querySelector("#posterPreviewNext").disabled = index >= state.posters.length - 1;
-  const image = document.querySelector("#posterPreviewImage");
+  const video = document.querySelector("#posterPreviewVideo");
   const message = document.querySelector("#posterPreviewMessage");
-  applyPosterZoom(1);
-  image.hidden = true;
+  video.pause();
+  video.hidden = true;
   message.hidden = false;
-  message.textContent = "正在加载图片";
+  message.textContent = "正在加载视频";
   message.classList.remove("error");
-  image.onload = () => {
-    image.hidden = false;
+  video.onloadedmetadata = () => {
+    video.hidden = false;
     message.hidden = true;
   };
-  image.onerror = () => {
-    image.hidden = true;
+  video.onerror = () => {
+    video.hidden = true;
     message.hidden = false;
-    message.textContent = "图片不存在、格式错误或加载失败";
+    message.textContent = "视频不存在、格式错误或加载失败";
     message.classList.add("error");
   };
-  image.alt = item.name;
-  image.src = item.preview_url;
+  video.src = item.preview_url;
+  video.load();
 }
 
 function openPosterPreview(posterId) {
@@ -688,23 +679,23 @@ function formatFileSize(bytes) {
   return `${(value / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function imageDimensions(file) {
+function videoDimensions(file) {
   return new Promise((resolve) => {
     const url = URL.createObjectURL(file);
-    const image = new Image();
-    image.onload = () => { URL.revokeObjectURL(url); resolve({ width: image.naturalWidth, height: image.naturalHeight, error: "" }); };
-    image.onerror = () => { URL.revokeObjectURL(url); resolve({ width: 0, height: 0, error: "图片无法在浏览器中解码" }); };
-    image.src = url;
+    const video = document.createElement("video");
+    video.preload = "metadata";
+    video.onloadedmetadata = () => { URL.revokeObjectURL(url); resolve({ width: video.videoWidth, height: video.videoHeight, duration: video.duration, error: "" }); };
+    video.onerror = () => { URL.revokeObjectURL(url); resolve({ width: 0, height: 0, duration: 0, error: "视频无法在浏览器中解码" }); };
+    video.src = url;
   });
 }
 
-function rawImageRequest(path, file, onProgress = () => {}, extraHeaders = {}) {
+function rawMediaRequest(path, file, onProgress = () => {}, extraHeaders = {}) {
   let xhr;
   const promise = new Promise((resolve, reject) => {
     xhr = new XMLHttpRequest();
     xhr.open("POST", path);
-    const extension = (file.name.split(".").pop() || "").toLowerCase();
-    const inferredMime = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp" }[extension] || "application/octet-stream";
+    const inferredMime = file.name.toLowerCase().endsWith(".mp4") ? "video/mp4" : "application/octet-stream";
     xhr.setRequestHeader("Content-Type", file.type || inferredMime);
     xhr.setRequestHeader("X-Operator", localStorage.getItem("jaguartvOperatorName") || "dashboard");
     Object.entries(extraHeaders).forEach(([name, value]) => xhr.setRequestHeader(name, String(value)));
@@ -725,27 +716,37 @@ function rawImageRequest(path, file, onProgress = () => {}, extraHeaders = {}) {
   return { promise, abort: () => xhr?.abort() };
 }
 
-function uploadPosterFile(file, category, batchSize, onProgress = () => {}) {
-  const query = new URLSearchParams({ filename: file.name, category });
-  return rawImageRequest(`/api/posters/import?${query}`, file, onProgress, { "X-Poster-Batch-Size": batchSize });
+function base64UrlJson(value) {
+  const bytes = new TextEncoder().encode(JSON.stringify(value));
+  let binary = "";
+  bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function uploadPosterFile(file, metadata, batchSize, onProgress = () => {}) {
+  const query = new URLSearchParams({ filename: file.name });
+  return rawMediaRequest(`/api/originals/import?${query}`, file, onProgress, {
+    "X-Original-Metadata": base64UrlJson(metadata),
+    "X-Request-ID": posterRequestId("import", file.name),
+    "X-Original-Batch-Size": batchSize,
+  });
 }
 
 function renderPosterImportList() {
   const container = document.querySelector("#posterImportList");
   const items = state.posterImportItems;
   container.innerHTML = items.length ? items.map((item) => {
-    const format = (item.file.name.split(".").pop() || "").toUpperCase();
-    const dimensions = item.width && item.height ? `${item.width} × ${item.height}` : "尺寸读取中";
+    const dimensions = item.width && item.height ? `${item.width} × ${item.height} · ${Math.round(item.duration || 0)} 秒` : "视频信息读取中";
     const stateText = item.status === "uploading" ? `上传中 ${item.progress}%` : item.status === "success" ? "导入成功 · 待审核" : item.status === "error" ? `失败：${item.error}` : item.status === "canceled" ? "已取消" : item.error ? `不可上传：${item.error}` : "准备上传";
     return `<div class="poster-import-item ${item.status}">
-      <div class="poster-media-frame poster-import-thumb"><img src="${escapeHtml(item.url)}" alt="${escapeHtml(item.file.name)}"><span hidden>图片失效</span></div>
-      <div class="poster-import-info"><strong title="${escapeHtml(item.file.name)}">${escapeHtml(item.file.name)}</strong><small>${escapeHtml(format)} · ${dimensions} · ${formatFileSize(item.file.size)}</small><span>${escapeHtml(stateText)}</span><div class="progress-track"><span style="width:${item.progress || 0}%"></span></div></div>
+      <div class="poster-media-frame poster-import-thumb"><video src="${escapeHtml(item.url)}" muted preload="metadata"></video><span hidden>预览失效</span></div>
+      <div class="poster-import-info"><strong title="${escapeHtml(item.file.name)}">${escapeHtml(item.file.name)}</strong><small>MP4 · ${dimensions} · ${formatFileSize(item.file.size)}</small><span>${escapeHtml(stateText)}</span><div class="progress-track"><span style="width:${item.progress || 0}%"></span></div></div>
       <button class="icon-button" data-poster-import-remove="${escapeHtml(item.id)}" type="button" title="${item.status === "uploading" ? "取消上传" : "移除"}" aria-label="${item.status === "uploading" ? "取消上传" : "移除"}" ${item.status === "success" ? "disabled" : ""}>×</button>
     </div>`;
-  }).join("") : `<div class="design-empty-list">尚未选择图片</div>`;
-  container.querySelectorAll(".poster-import-thumb img").forEach((image) => image.addEventListener("error", () => {
-    image.hidden = true;
-    image.nextElementSibling.hidden = false;
+  }).join("") : `<div class="design-empty-list">尚未选择视频</div>`;
+  container.querySelectorAll(".poster-import-thumb video").forEach((video) => video.addEventListener("error", () => {
+    video.hidden = true;
+    video.nextElementSibling.hidden = false;
   }, { once: true }));
   container.querySelectorAll("[data-poster-import-remove]").forEach((button) => button.addEventListener("click", () => {
     const item = state.posterImportItems.find((candidate) => candidate.id === button.dataset.posterImportRemove);
@@ -763,14 +764,14 @@ function renderPosterImportList() {
   const ready = items.filter((item) => item.status === "ready" && !item.error).length;
   const success = items.filter((item) => item.status === "success").length;
   const failed = items.filter((item) => ["error", "canceled"].includes(item.status) || item.error).length;
-  document.querySelector("#posterImportSummary").textContent = items.length ? `共 ${items.length} 张 · 待上传 ${ready} · 成功 ${success} · 失败 ${failed}` : "";
-  document.querySelector("#submitPosterImport").disabled = state.posterImportRunning || !ready || !document.querySelector("#posterImportCategory").value;
+  document.querySelector("#posterImportSummary").textContent = items.length ? `共 ${items.length} 个 · 待上传 ${ready} · 成功 ${success} · 失败 ${failed}` : "";
+  document.querySelector("#submitPosterImport").disabled = state.posterImportRunning || !ready;
 }
 
 async function addPosterImportFiles(fileList) {
   const files = [...fileList];
   const available = state.posterImportLimits.max_batch - state.posterImportItems.filter((item) => item.status !== "success").length;
-  if (files.length > available) toast(`单批最多 ${state.posterImportLimits.max_batch} 张，本次只加入前 ${Math.max(0, available)} 张`, "error");
+  if (files.length > available) toast(`单批最多 ${state.posterImportLimits.max_batch} 个，本次只加入前 ${Math.max(0, available)} 个`, "error");
   for (const file of files.slice(0, Math.max(0, available))) {
     const item = {
       id: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`,
@@ -784,12 +785,15 @@ async function addPosterImportFiles(fileList) {
     };
     state.posterImportItems.push(item);
     renderPosterImportList();
-    const dimensions = await imageDimensions(file);
+    const dimensions = await videoDimensions(file);
     Object.assign(item, dimensions);
     if (!file.size) item.error = "文件为空";
     else if (file.size > state.posterImportLimits.max_bytes) item.error = `超过 ${formatFileSize(state.posterImportLimits.max_bytes)} 限制`;
+    else if (file.type && file.type !== "video/mp4") item.error = "仅支持 MP4 视频";
+    else if (!file.name.toLowerCase().endsWith(".mp4")) item.error = "文件扩展名必须是 .mp4";
     else if (!dimensions.width || !dimensions.height) item.error = dimensions.error;
-    else if (Math.max(dimensions.width, dimensions.height) > state.posterImportLimits.max_dimension || dimensions.width * dimensions.height > state.posterImportLimits.max_pixels) item.error = "图片尺寸超过服务器限制";
+    else if (dimensions.duration > state.posterImportLimits.max_duration_sec) item.error = "视频时长超过服务器限制";
+    else if (Math.max(dimensions.width, dimensions.height) > state.posterImportLimits.max_dimension || dimensions.width * dimensions.height > state.posterImportLimits.max_pixels) item.error = "视频尺寸超过服务器限制";
     item.status = item.error ? "error" : "ready";
     renderPosterImportList();
   }
@@ -798,8 +802,8 @@ async function addPosterImportFiles(fileList) {
 async function openPosterImportDialog() {
   if (!state.posterImportItems.length) {
     try {
-      state.posterImportLimits = await api("/api/posters/import/limits");
-      document.querySelector("#posterImportLimits").textContent = `单批最多 ${state.posterImportLimits.max_batch} 张 · 单张最多 ${formatFileSize(state.posterImportLimits.max_bytes)} · 最长边 ${number(state.posterImportLimits.max_dimension)} px · 最大 ${number(state.posterImportLimits.max_pixels)} 像素`;
+      state.posterImportLimits = await api("/api/originals/import/limits");
+      document.querySelector("#posterImportLimits").textContent = `单批最多 ${state.posterImportLimits.max_batch} 个 · 单个最多 ${formatFileSize(state.posterImportLimits.max_bytes)} · 最长 ${number(state.posterImportLimits.max_duration_sec)} 秒 · 最大 ${number(state.posterImportLimits.max_pixels)} 像素`;
     } catch (error) {
       document.querySelector("#posterImportLimits").textContent = `上传限制读取失败：${error.message}`;
     }
@@ -813,135 +817,33 @@ function closePosterImportDialog() {
   document.querySelector("#posterImportDialog").close();
 }
 
-function renderPosterAttachments() {
-  const detail = state.posterContentDetail;
-  const container = document.querySelector("#posterAttachmentList");
-  const items = detail?.attachments || [];
-  container.innerHTML = items.length ? items.map((item, index) => `<div class="poster-attachment-item">
-    <button class="poster-media-frame poster-attachment-thumb" data-poster-attachment-preview="${escapeHtml(item.id)}" type="button" title="查看大图"><img src="${escapeHtml(item.preview_url)}" alt="${escapeHtml(item.name)}"><span hidden>图片失效</span></button>
-    <div><strong title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</strong><small>${item.width} × ${item.height} · ${formatFileSize(item.size_bytes)}</small></div>
-    <div class="poster-attachment-actions"><button class="icon-button" data-poster-attachment-up="${escapeHtml(item.id)}" type="button" title="上移" aria-label="上移" ${index === 0 ? "disabled" : ""}>↑</button><button class="icon-button" data-poster-attachment-down="${escapeHtml(item.id)}" type="button" title="下移" aria-label="下移" ${index === items.length - 1 ? "disabled" : ""}>↓</button><button class="table-action" data-poster-attachment-replace="${escapeHtml(item.id)}" type="button">替换</button><button class="table-action danger-action" data-poster-attachment-delete="${escapeHtml(item.id)}" type="button">删除</button></div>
-  </div>`).join("") : `<div class="design-empty-list">尚未添加相关图片</div>`;
-  container.querySelectorAll(".poster-attachment-thumb img").forEach((image) => image.addEventListener("error", () => { image.hidden = true; image.nextElementSibling.hidden = false; }, { once: true }));
-  container.querySelectorAll("[data-poster-attachment-preview]").forEach((button) => button.addEventListener("click", () => previewPosterAttachment(button.dataset.posterAttachmentPreview)));
-  container.querySelectorAll("[data-poster-attachment-up], [data-poster-attachment-down]").forEach((button) => button.addEventListener("click", () => {
-    const id = button.dataset.posterAttachmentUp || button.dataset.posterAttachmentDown;
-    const index = items.findIndex((item) => item.id === id);
-    const target = button.dataset.posterAttachmentUp ? index - 1 : index + 1;
-    if (index < 0 || target < 0 || target >= items.length) return;
-    [items[index], items[target]] = [items[target], items[index]];
-    renderPosterAttachments();
-  }));
-  container.querySelectorAll("[data-poster-attachment-replace]").forEach((button) => button.addEventListener("click", () => {
-    state.posterAttachmentReplaceId = button.dataset.posterAttachmentReplace;
-    document.querySelector("#posterAttachmentReplaceFile").click();
-  }));
-  container.querySelectorAll("[data-poster-attachment-delete]").forEach((button) => button.addEventListener("click", () => deletePosterAttachment(button.dataset.posterAttachmentDelete)));
-}
-
-async function openPosterContentDialog(posterId) {
-  const dialog = document.querySelector("#posterContentDialog");
-  document.querySelector("#posterContentStatus").textContent = "正在加载海报文案";
-  if (!dialog.open) dialog.showModal();
+async function registerPosterDownload(posterId) {
+  const item = state.posters.find((poster) => poster.id === posterId);
+  if (!item || item.status_id !== "APPROVED") return toast("只有审核通过的视频可以登记下载", "error");
+  const pendingKey = `download:${posterId}`;
+  if (state.posterPendingActions.has(pendingKey)) return;
+  state.posterPendingActions.add(pendingKey);
+  renderPosterInventory();
   try {
-    const detail = await api(`/api/posters/${encodeURIComponent(posterId)}`);
-    state.posterContentDetail = detail;
-    document.querySelector("#posterContentTitle").textContent = `文案设计 · ${detail.name}`;
-    document.querySelector("#posterContentMeta").textContent = `${detail.category_label} · ${detail.status_label}`;
-    document.querySelector("#posterContentTitleInput").value = detail.content?.title || "";
-    document.querySelector("#posterContentCopy").value = detail.content?.copy || "";
-    document.querySelector("#posterContentTags").value = (detail.content?.tags || []).join("，");
-    const image = document.querySelector("#posterContentMainImage");
-    const loading = image.previousElementSibling;
-    image.hidden = true;
-    loading.hidden = false;
-    loading.textContent = "正在加载主海报";
-    image.onload = () => { image.hidden = false; loading.hidden = true; };
-    image.onerror = () => { image.hidden = true; loading.hidden = false; loading.textContent = "主海报加载失败"; };
-    image.src = detail.preview_url;
-    image.alt = detail.name;
-    document.querySelector("#posterContentStatus").textContent = "";
-    renderPosterAttachments();
-  } catch (error) {
-    document.querySelector("#posterContentStatus").textContent = `加载失败：${error.message}`;
-  }
-}
-
-function previewPosterAttachment(attachmentId) {
-  const item = state.posterContentDetail?.attachments?.find((attachment) => attachment.id === attachmentId);
-  if (!item) return;
-  const dialog = document.querySelector("#posterAssetDialog");
-  const image = document.querySelector("#posterAssetImage");
-  const message = document.querySelector("#posterAssetMessage");
-  image.hidden = true;
-  message.hidden = false;
-  message.textContent = "正在加载图片";
-  image.onload = () => { image.hidden = false; message.hidden = true; };
-  image.onerror = () => { image.hidden = true; message.hidden = false; message.textContent = "图片加载失败"; };
-  image.src = item.preview_url;
-  image.alt = item.name;
-  dialog.showModal();
-}
-
-async function addPosterAttachments(files) {
-  const detail = state.posterContentDetail;
-  if (!detail || state.posterContentBusy) return;
-  state.posterContentBusy = true;
-  try {
-    for (const file of [...files]) {
-      document.querySelector("#posterContentStatus").textContent = `正在上传 ${file.name}`;
-      const query = new URLSearchParams({ filename: file.name });
-      const request = rawImageRequest(`/api/posters/${encodeURIComponent(detail.id)}/attachments?${query}`, file, (progress) => {
-        document.querySelector("#posterContentStatus").textContent = `正在上传 ${file.name} · ${progress}%`;
-      });
-      detail.attachments.push(await request.promise);
-      renderPosterAttachments();
-    }
-    document.querySelector("#posterContentStatus").textContent = "相关图片上传完成";
-  } catch (error) {
-    document.querySelector("#posterContentStatus").textContent = `图片上传失败：${error.message}`;
-  } finally { state.posterContentBusy = false; }
-}
-
-async function replacePosterAttachment(file) {
-  const detail = state.posterContentDetail;
-  const attachmentId = state.posterAttachmentReplaceId;
-  if (!detail || !attachmentId || !file || state.posterContentBusy) return;
-  state.posterContentBusy = true;
-  try {
-    const query = new URLSearchParams({ filename: file.name });
-    const request = rawImageRequest(`/api/posters/${encodeURIComponent(detail.id)}/attachments/${encodeURIComponent(attachmentId)}/replace?${query}`, file, (progress) => {
-      document.querySelector("#posterContentStatus").textContent = `正在替换图片 · ${progress}%`;
+    const result = await api(`/api/originals/${encodeURIComponent(posterId)}/download`, {
+      method: "POST",
+      headers: { "X-Request-ID": posterRequestId("download", posterId) },
+      body: JSON.stringify({ actor: localStorage.getItem("jaguartvOperatorName") || "dashboard" }),
     });
-    const replacement = await request.promise;
-    const index = detail.attachments.findIndex((item) => item.id === attachmentId);
-    detail.attachments[index] = replacement;
-    renderPosterAttachments();
-    document.querySelector("#posterContentStatus").textContent = "图片替换成功";
+    const link = document.createElement("a");
+    link.href = result.download_url;
+    link.download = result.filename || "";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    toast("已登记并开始下载原创视频");
+    await loadPosters();
   } catch (error) {
-    document.querySelector("#posterContentStatus").textContent = `替换失败：${error.message}`;
+    toast(`登记下载失败：${error.message}`, "error");
   } finally {
-    state.posterContentBusy = false;
-    state.posterAttachmentReplaceId = "";
-    document.querySelector("#posterAttachmentReplaceFile").value = "";
+    state.posterPendingActions.delete(pendingKey);
+    if (!state.posterLoading) renderPosterInventory();
   }
-}
-
-async function deletePosterAttachment(attachmentId) {
-  const detail = state.posterContentDetail;
-  const item = detail?.attachments?.find((attachment) => attachment.id === attachmentId);
-  if (!item || state.posterContentBusy || !confirm(`确认删除相关图片“${item.name}”？`)) return;
-  state.posterContentBusy = true;
-  try {
-    await api(`/api/posters/${encodeURIComponent(detail.id)}/attachments/${encodeURIComponent(attachmentId)}/delete`, {
-      method: "POST", body: JSON.stringify({ actor: localStorage.getItem("jaguartvOperatorName") || "dashboard" }),
-    });
-    detail.attachments = detail.attachments.filter((attachment) => attachment.id !== attachmentId);
-    renderPosterAttachments();
-    document.querySelector("#posterContentStatus").textContent = "相关图片已删除";
-  } catch (error) {
-    document.querySelector("#posterContentStatus").textContent = `删除失败：${error.message}`;
-  } finally { state.posterContentBusy = false; }
 }
 
 function publicationStateText(state) {
@@ -1601,8 +1503,10 @@ async function generatePublishCopy() {
         asset_id: asset.id,
         filename: asset.filename,
         variant: asset.variant || "",
+        source_kind: asset.source_kind || "candidate",
         platform: document.querySelector("#publishPlatform").value,
         hint: document.querySelector("#publishHint")?.value.trim() || "",
+        actor: localStorage.getItem("jaguartvOperatorName") || "dashboard",
       }),
     });
     document.querySelector("#publishTitle").value = result.title || "";
@@ -1623,11 +1527,13 @@ async function openPublishDialog(rawAsset, candidateId = "") {
   } catch {
     state.pendingPublishAsset = null;
   }
-  state.pendingPublishItem = state.candidates.find((item) => item.id === candidateId) || null;
-  if (state.pendingPublishItem?.status !== "APPROVED") return toast("只有审核通过的视频才能发布", "error");
+  state.pendingPublishItem = state.pendingPublishAsset?.source_kind === "original_factory"
+    ? state.posters.find((item) => item.id === candidateId) || null
+    : state.candidates.find((item) => item.id === candidateId) || null;
+  if ((state.pendingPublishItem?.status || state.pendingPublishItem?.status_id) !== "APPROVED") return toast("只有审核通过的视频才能发布", "error");
   if (!state.pendingPublishAsset?.download_url) return toast("这个成片没有可下载链接", "error");
   const asset = state.pendingPublishAsset;
-  document.querySelector("#publishAssetSummary").textContent = `${state.pendingPublishItem.display_title || state.pendingPublishItem.title || candidateId} · ${asset.label || asset.filename || "成片"} · ${asset.variant || "版本"}`;
+  document.querySelector("#publishAssetSummary").textContent = `${state.pendingPublishItem.display_title || state.pendingPublishItem.title || state.pendingPublishItem.name || candidateId} · ${asset.label || asset.filename || "成片"} · ${asset.variant || "版本"}`;
   document.querySelector("#publishPlatform").value = "youtube";
   document.querySelector("#publishScheduleMode").value = "now";
   document.querySelector("#publishScheduledLocal").value = saoPauloNowForInput();
@@ -2465,9 +2371,16 @@ document.querySelectorAll("#posterStatusFilters button").forEach((button) => but
   if (state.posterLoading || state.posterStatus === (button.dataset.posterStatus || "")) return;
   document.querySelectorAll("#posterStatusFilters button").forEach((item) => item.classList.toggle("active", item === button));
   state.posterStatus = button.dataset.posterStatus || "";
+  state.posterSelected.clear();
   state.posterPagination.page = 1;
   loadPosters();
 }));
+document.querySelector("#posterSelectAll").addEventListener("change", (event) => {
+  state.posters.forEach((item) => event.target.checked ? state.posterSelected.add(item.id) : state.posterSelected.delete(item.id));
+  renderPosterInventory();
+});
+document.querySelector("#posterBulkApprove").addEventListener("click", () => runPosterBulkAction("approve", [...state.posterSelected]));
+document.querySelector("#posterBulkDelete").addEventListener("click", () => runPosterBulkAction("delete", [...state.posterSelected]));
 document.querySelector("#posterPreviousPage").addEventListener("click", () => {
   if (state.posterLoading || state.posterPagination.page <= 1) return;
   state.posterPagination.page -= 1;
@@ -2504,15 +2417,35 @@ document.querySelector("#posterImportDialog").addEventListener("close", () => {
   if (state.posterImportRunning) return;
   state.posterImportItems.forEach((item) => URL.revokeObjectURL(item.url));
   state.posterImportItems = [];
-  document.querySelector("#posterImportCategory").value = "";
   renderPosterImportList();
 });
 document.querySelector("#posterImportForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   if (state.posterImportRunning) return;
-  const category = document.querySelector("#posterImportCategory").value;
   const ready = state.posterImportItems.filter((item) => item.status === "ready" && !item.error);
-  if (!category || !ready.length) return toast("请选择分类并添加可上传图片", "error");
+  if (!ready.length) return toast("请添加可上传的 MP4 视频", "error");
+  let matchInfo;
+  let socialSources;
+  try {
+    matchInfo = JSON.parse(document.querySelector("#posterImportMatchInfo").value.trim() || "{}");
+    socialSources = JSON.parse(document.querySelector("#posterImportSocialSources").value.trim() || "[]");
+    if (!matchInfo || Array.isArray(matchInfo) || typeof matchInfo !== "object") throw new Error("筛选后比赛信息必须是 JSON 对象");
+    if (!Array.isArray(socialSources)) throw new Error("社媒来源必须是 JSON 数组");
+  } catch (error) {
+    return toast(`元数据格式错误：${error.message}`, "error");
+  }
+  const metadata = {
+    category: document.querySelector("#posterImportCategory").value,
+    match_name: document.querySelector("#posterImportMatchName").value.trim(),
+    match_date: document.querySelector("#posterImportMatchDate").value,
+    match_time_sao_paulo: document.querySelector("#posterImportMatchTime").value,
+    channels: document.querySelector("#posterImportChannels").value.split(/[，,]/).map((value) => value.trim()).filter(Boolean),
+    match_info: matchInfo,
+    social_sources: socialSources,
+    generated_at: new Date().toISOString(),
+    actor: localStorage.getItem("jaguartvOperatorName") || "dashboard",
+  };
+  if (!metadata.match_name || !metadata.match_date || !metadata.match_time_sao_paulo || !metadata.channels.length) return toast("请完整填写比赛、时间和频道", "error");
   state.posterImportRunning = true;
   renderPosterImportList();
   for (const item of ready) {
@@ -2520,7 +2453,7 @@ document.querySelector("#posterImportForm").addEventListener("submit", async (ev
     item.status = "uploading";
     item.progress = 0;
     renderPosterImportList();
-    const request = uploadPosterFile(item.file, category, ready.length, (progress) => { item.progress = progress; renderPosterImportList(); });
+    const request = uploadPosterFile(item.file, metadata, ready.length, (progress) => { item.progress = progress; renderPosterImportList(); });
     item.abort = request.abort;
     try {
       item.result = await request.promise;
@@ -2544,63 +2477,14 @@ document.querySelector("#posterImportForm").addEventListener("submit", async (ev
     document.querySelectorAll("#posterStatusFilters button").forEach((button) => button.classList.toggle("active", button.dataset.posterStatus === "PENDING_REVIEW"));
     await loadPosters();
   }
-  toast(failedCount ? `导入完成：成功 ${successCount} 张，失败 ${failedCount} 张` : `已导入 ${successCount} 张，均进入待审核`, failedCount ? "error" : "");
+  toast(failedCount ? `导入完成：成功 ${successCount} 个，失败 ${failedCount} 个` : `已导入 ${successCount} 个，均进入待审核`, failedCount ? "error" : "");
 });
-document.querySelector("#closePosterContent").addEventListener("click", () => document.querySelector("#posterContentDialog").close());
-document.querySelector("#cancelPosterContent").addEventListener("click", () => document.querySelector("#posterContentDialog").close());
-document.querySelector("#posterAttachmentFiles").addEventListener("change", (event) => {
-  addPosterAttachments(event.target.files);
-  event.target.value = "";
+document.querySelector("#closePosterPreview").addEventListener("click", () => {
+  document.querySelector("#posterPreviewVideo").pause();
+  document.querySelector("#posterPreviewDialog").close();
 });
-document.querySelector("#posterAttachmentReplaceFile").addEventListener("change", (event) => replacePosterAttachment(event.target.files[0]));
-document.querySelector("#closePosterAsset").addEventListener("click", () => document.querySelector("#posterAssetDialog").close());
-document.querySelector("#posterContentForm").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const detail = state.posterContentDetail;
-  if (!detail || state.posterContentBusy) return;
-  state.posterContentBusy = true;
-  const button = document.querySelector("#submitPosterContent");
-  button.disabled = true;
-  button.textContent = "保存中";
-  document.querySelector("#posterContentStatus").textContent = "正在保存文案与图片顺序";
-  try {
-    const tags = document.querySelector("#posterContentTags").value.split(/[，,]/).map((value) => value.trim()).filter(Boolean);
-    const saved = await api(`/api/posters/${encodeURIComponent(detail.id)}/content`, {
-      method: "POST",
-      body: JSON.stringify({
-        title: document.querySelector("#posterContentTitleInput").value,
-        copy: document.querySelector("#posterContentCopy").value,
-        tags,
-        actor: localStorage.getItem("jaguartvOperatorName") || "dashboard",
-      }),
-    });
-    const reordered = await api(`/api/posters/${encodeURIComponent(detail.id)}/attachments/reorder`, {
-      method: "POST",
-      body: JSON.stringify({ attachment_ids: detail.attachments.map((item) => item.id), actor: localStorage.getItem("jaguartvOperatorName") || "dashboard" }),
-    });
-    state.posterContentDetail = { ...saved, attachments: reordered.attachments };
-    renderPosterAttachments();
-    document.querySelector("#posterContentStatus").textContent = "保存成功，刷新后仍会保留";
-    toast("海报文案与相关图片已保存");
-  } catch (error) {
-    document.querySelector("#posterContentStatus").textContent = `保存失败：${error.message}`;
-    toast(`保存失败：${error.message}`, "error");
-  } finally {
-    state.posterContentBusy = false;
-    button.disabled = false;
-    button.textContent = "保存文案与顺序";
-  }
-});
-document.querySelector("#closePosterPreview").addEventListener("click", () => document.querySelector("#posterPreviewDialog").close());
 document.querySelector("#posterPreviewPrevious").addEventListener("click", () => showPosterPreview(state.posterPreviewIndex - 1));
 document.querySelector("#posterPreviewNext").addEventListener("click", () => showPosterPreview(state.posterPreviewIndex + 1));
-document.querySelector("#posterZoomOut").addEventListener("click", () => applyPosterZoom(state.posterZoom - 0.25));
-document.querySelector("#posterZoomIn").addEventListener("click", () => applyPosterZoom(state.posterZoom + 0.25));
-document.querySelector("#posterZoomReset").addEventListener("click", () => applyPosterZoom(1));
-document.querySelector("#posterPreviewStage").addEventListener("wheel", (event) => {
-  event.preventDefault();
-  applyPosterZoom(state.posterZoom + (event.deltaY < 0 ? 0.15 : -0.15));
-}, { passive: false });
 document.querySelector("#closePosterDelete").addEventListener("click", () => document.querySelector("#posterDeleteDialog").close());
 document.querySelector("#cancelPosterDelete").addEventListener("click", () => document.querySelector("#posterDeleteDialog").close());
 document.querySelector("#posterDeleteForm").addEventListener("submit", async (event) => {
@@ -2614,14 +2498,14 @@ document.querySelector("#posterDeleteForm").addEventListener("submit", async (ev
   button.disabled = true;
   button.textContent = "删除中";
   try {
-    await api(`/api/posters/${encodeURIComponent(item.id)}/delete`, {
+    await api(`/api/originals/${encodeURIComponent(item.id)}/delete`, {
       method: "POST",
       headers: { "X-Request-ID": posterRequestId("delete", item.id) },
       body: JSON.stringify({ actor: localStorage.getItem("jaguartvOperatorName") || "dashboard" }),
     });
     document.querySelector("#posterDeleteDialog").close();
     state.pendingPosterDelete = null;
-    toast(`已删除海报“${item.name}”`);
+    toast(`已删除原创视频“${item.name}”`);
     const remainingOnPage = Math.max(0, state.posters.length - 1);
     if (!remainingOnPage && state.posterPagination.page > 1) state.posterPagination.page -= 1;
     await loadPosters();
@@ -2672,6 +2556,7 @@ document.querySelector("#publishForm").addEventListener("submit", async (event) 
       asset_id: asset.id,
       filename: asset.filename,
       variant: asset.variant || "",
+      source_kind: asset.source_kind || "candidate",
       platform,
       account,
       schedule_mode: document.querySelector("#publishScheduleMode").value,

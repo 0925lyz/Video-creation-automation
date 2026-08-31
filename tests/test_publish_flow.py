@@ -12,7 +12,9 @@ from jaguartv_factory.publish_flow import (
     platform_capabilities,
     validate_publish_copy,
 )
+from jaguartv_factory.youtube_publisher import publication_video_path
 from jaguartv_factory.dashboard import publication_rows
+from jaguartv_factory.publish_worker import publish_due_once
 
 
 def config_for(tmp_path: Path) -> dict:
@@ -132,6 +134,43 @@ def authorize_x(
     connection.commit()
 
 
+def insert_original_factory_item(config: dict, item_id: str = "a" * 32) -> Path:
+    connection = connect_db(config)
+    timestamp = now_iso()
+    video = Path(config["_root"]) / "workspace/server_media/original_factory/videos" / f"{item_id}.mp4"
+    video.parent.mkdir(parents=True, exist_ok=True)
+    video.write_bytes(b"original-video-fixture")
+    connection.execute(
+        """INSERT INTO original_factory_items(
+             id,name,file_key,thumbnail_key,original_name,mime_type,size_bytes,sha256,
+             duration_sec,width,height,video_codec,generated_at,match_name,match_date,
+             match_time_sao_paulo,channels_json,category,status,match_info_json,metadata_json,
+             uploaded_by,approved_by,created_at,updated_at,approved_at
+           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'APPROVED',?,?,?,?,?,?,?)""",
+        (
+            item_id, "Palmeiras x Santos", f"videos/{item_id}.mp4", "", "match.mp4",
+            "video/mp4", video.stat().st_size, "fixture-sha", 20, 1080, 1920, "h264",
+            "2026-09-03T10:00:00-03:00", "Palmeiras x Santos", "2026-09-03",
+            "2026-09-03T21:30:00-03:00", json.dumps(["Globo", "Premiere"]),
+            "pre_match_prediction", json.dumps({"competition": "Brasileirao"}), "{}",
+            "worker", "reviewer", timestamp, timestamp, timestamp,
+        ),
+    )
+    connection.execute(
+        """INSERT INTO original_factory_social_sources(
+             id,item_id,source_url,platform,fetched_at,summary,confidence,uncertain,
+             image_source_url,image_license_status,metadata_json,created_at
+           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            "b" * 32, item_id, "https://www.youtube.com/watch?v=fixture", "youtube",
+            "2026-09-03T09:00:00-03:00", "Treino confirmado pelo clube.", 0.9, 0,
+            "", "not_collected", "{}", timestamp,
+        ),
+    )
+    connection.commit()
+    return video
+
+
 def publish_payload(**overrides):
     tags = [f"#Conteudo{i}" for i in range(15)] + [
         "#JAGUARTV", "#JaguarTV", "#RecargaJAGUARTV", "#testeJAGUARTV", "#instalarJAGUARTV",
@@ -239,6 +278,82 @@ def test_create_youtube_publish_operation_records_utc_and_is_idempotent(tmp_path
     assert row["title"] == "Esse lance mudou tudo"
     title = connection.execute("SELECT title FROM publications").fetchone()["title"]
     assert "#" not in title
+
+
+def test_original_factory_reuses_copy_accounts_publication_table_and_worker_asset_path(
+    tmp_path: Path, monkeypatch
+):
+    config = config_for(tmp_path)
+    config["storage"] = {
+        "root": "workspace/server_media",
+        "original_factory_subdir": "original_factory",
+    }
+    item_id = "a" * 32
+    video = insert_original_factory_item(config, item_id)
+    authorize_youtube(config)
+    monkeypatch.delenv("JAGUARTV_DEEPSEEK_API_KEY", raising=False)
+
+    preview = generate_publish_copy_preview(
+        config,
+        {
+            "source_kind": "original_factory",
+            "candidate_id": item_id,
+            "asset_id": item_id,
+            "filename": "palmeiras-santos.mp4",
+            "variant": "赛前预测",
+            "platform": "youtube",
+            "actor": "reviewer",
+        },
+    )
+    assert "Palmeiras x Santos" in preview["title"]
+    assert "03/09" in preview["title"]
+    result = create_publish_operation(
+        config,
+        publish_payload(
+            source_kind="original_factory",
+            candidate_id=item_id,
+            asset_id=item_id,
+            filename="palmeiras-santos.mp4",
+            variant="赛前预测",
+            title=preview["title"],
+            description=" ".join(preview["tags"]),
+            tags=preview["tags"],
+        ),
+        now=datetime.fromisoformat("2026-08-19T10:00:00-03:00"),
+    )
+
+    row = dict(connect_db(config).execute(
+        "SELECT * FROM publications WHERE id=?", (result["publication_id"],)
+    ).fetchone())
+    assert row["publication_origin"] == "ORIGINAL_FACTORY"
+    assert row["source_category"] == "pre_match_prediction"
+    assert row["source_keyword"] == "Palmeiras x Santos"
+    assert publication_video_path(config, row) == video.resolve()
+    item = connect_db(config).execute(
+        "SELECT publish_status,last_publication_id FROM original_factory_items WHERE id=?", (item_id,)
+    ).fetchone()
+    assert tuple(item) == ("SCHEDULED", result["publication_id"])
+    generation = connect_db(config).execute(
+        "SELECT platform,model,source_snapshot_json FROM original_factory_copy_generations WHERE item_id=?",
+        (item_id,),
+    ).fetchone()
+    assert generation["platform"] == "youtube"
+    assert "Palmeiras x Santos" in generation["source_snapshot_json"]
+
+    worker = publish_due_once(
+        config,
+        uploader=lambda _config, _publication_id: {
+            "youtube_video_id": "qa-original-video",
+            "youtube_url": "https://www.youtube.com/watch?v=qa-original-video",
+            "published_at": "2026-08-19T16:00:00-03:00",
+        },
+        now=datetime.fromisoformat("2026-08-19T16:00:00-03:00"),
+    )
+    assert worker["published"] == 1
+    item = connect_db(config).execute(
+        "SELECT publish_status,last_publication_id FROM original_factory_items WHERE id=?", (item_id,)
+    ).fetchone()
+    assert tuple(item) == ("PUBLISHED", result["publication_id"])
 
 
 def test_create_publish_operation_rejects_unapproved_candidate(tmp_path: Path):
@@ -732,7 +847,8 @@ def test_publish_dialog_uses_final_field_names_and_platform_switching():
     assert "publishHint" in javascript
     assert "hint: document.querySelector(\"#publishHint\")?.value.trim() || \"\"" in javascript
     assert "item.account_label || item.account || \"未指定\"" in javascript
-    assert 'app.js?v=20260830-upload-select-approved-v1' in html
+    assert 'app.js?v=20260831-original-factory-v1' in html
+    assert 'source_kind: asset.source_kind || "candidate"' in javascript
     styles = Path("src/jaguartv_factory/web/styles.css").read_text(encoding="utf-8")
 
     assert "AI 标题" not in html

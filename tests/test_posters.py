@@ -652,7 +652,7 @@ def test_approved_download_has_safe_headers_and_pending_download_is_forbidden(tm
     assert "approved" in forbidden_payload["error"]
 
 
-def test_poster_frontend_contract_contains_inventory_view_and_preview_controls():
+def test_original_factory_frontend_replaces_poster_inventory_and_reuses_publish_dialog():
     web_root = Path(__file__).parents[1] / "src/jaguartv_factory/web"
     html = (web_root / "index.html").read_text(encoding="utf-8")
     script = (web_root / "app.js").read_text(encoding="utf-8")
@@ -660,12 +660,15 @@ def test_poster_frontend_contract_contains_inventory_view_and_preview_controls()
 
     assert 'data-view="posters"' in html
     assert 'data-view="posters" hidden' not in html
-    assert '海报库存（已停用）' not in html
+    assert "海报库存" not in html
+    assert "原创工厂" in html
     assert 'id="view-posters"' in html
     assert 'id="view-posters" hidden' not in html
     assert 'id="posterPreviewDialog"' in html
-    assert all(label in html for label in ("全部", "待筛选", "待审核", "审核通过"))
-    assert all(label in script for label in ("时间地点", "因素分析", "预测比赛", "多赛程", "球星球迷"))
+    assert all(label in html for label in ("待审核", "审核通过"))
+    poster_section = html.split('id="view-posters"', 1)[1].split("</section>", 1)[0]
+    assert "待筛选" not in poster_section
+    assert all(label in script for label in ("赛前预测", "赛前讨论", "赛后比分"))
     assert "posterActionButtons" in script
     assert "posterPendingActions" in script
     assert 'classList.toggle("poster-table-empty"' in script
@@ -675,9 +678,15 @@ def test_poster_frontend_contract_contains_inventory_view_and_preview_controls()
     assert ".poster-table-wrap.poster-table-empty .poster-table thead" in styles
     assert 'id="openPosterImport"' in html
     assert 'id="posterImportDialog"' in html
-    assert 'id="posterContentDialog"' in html
+    assert 'id="posterBulkApprove"' in html
+    assert 'id="posterBulkDelete"' in html
+    assert 'id="posterPreviewVideo"' in html
     assert "uploadPosterFile" in script
-    assert "openPosterContentDialog" in script
+    assert "/api/originals/import" in script
+    assert '/api/originals/bulk-${action === "approve" ? "approve" : "delete"}' in script
+    assert "data-original-publish" in script
+    assert "登记下载" in script
+    assert 'source_kind: asset.source_kind || "candidate"' in script
     assert "object-fit: contain" in styles
 
 

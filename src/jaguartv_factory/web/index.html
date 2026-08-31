@@ -17,7 +17,7 @@
       <button class="nav-item active" data-view="overview"><span>总览</span><small>01</small></button>
       <button class="nav-item" data-view="inventory"><span>内容库存</span><small id="navInventory">0</small></button>
       <button class="nav-item" data-view="cta"><span>CTA</span><small id="navCta">0</small></button>
-      <button class="nav-item" data-view="posters"><span>海报库存</span><small id="navPosters">0</small></button>
+      <button class="nav-item" data-view="posters"><span>原创工厂</span><small id="navPosters">0</small></button>
       <button class="nav-item" data-view="publishing"><span>发布队列</span><small id="navQueue">0</small></button>
       <button class="nav-item" data-view="analytics"><span>增长分析</span><small>04</small></button>
       <button class="nav-item" data-view="nodes"><span>运行节点</span><small id="navNodes">0</small></button>
@@ -118,19 +118,23 @@
 
     <section class="view" id="view-posters">
       <div class="toolbar poster-toolbar">
-        <div class="segmented" id="posterStatusFilters" aria-label="海报状态筛选">
-          <button class="active" data-poster-status="">全部 <span data-poster-count="ALL">0</span></button>
-          <button data-poster-status="PENDING_SCREENING">待筛选 <span data-poster-count="PENDING_SCREENING">0</span></button>
-          <button data-poster-status="PENDING_REVIEW">待审核 <span data-poster-count="PENDING_REVIEW">0</span></button>
+        <div class="segmented" id="posterStatusFilters" aria-label="原创视频状态筛选">
+          <button class="active" data-poster-status="PENDING_REVIEW">待审核 <span data-poster-count="PENDING_REVIEW">0</span></button>
           <button data-poster-status="APPROVED">审核通过 <span data-poster-count="APPROVED">0</span></button>
         </div>
-        <div class="poster-toolbar-actions"><span class="muted" id="posterInventoryCount">0 张海报</span><button class="primary-button" id="openPosterImport" type="button">＋ 导入海报</button></div>
+        <div class="poster-toolbar-actions"><span class="muted" id="posterInventoryCount">0 条原创视频</span><button class="primary-button" id="openPosterImport" type="button">＋ 导入原创视频</button></div>
       </div>
-      <div class="category-filter-bar" id="posterCategoryFilters" aria-label="海报分类筛选"></div>
+      <div class="category-filter-bar" id="posterCategoryFilters" aria-label="原创视频标签筛选"></div>
+      <div class="original-bulk-bar">
+        <label class="original-select-all"><input id="posterSelectAll" type="checkbox"> 全选当前页</label>
+        <span class="muted" id="posterSelectionSummary">已选择 0 条</span>
+        <button class="secondary-button" id="posterBulkApprove" type="button">统一通过</button>
+        <button class="secondary-button danger-action" id="posterBulkDelete" type="button">统一删除</button>
+      </div>
       <div class="table-wrap poster-table-wrap">
         <table class="poster-table">
-          <thead><tr><th>海报</th><th>分类</th><th>状态</th><th>创建时间</th><th>审核时间</th><th>操作</th></tr></thead>
-          <tbody id="posterInventoryTable"><tr><td colspan="6"><div class="empty-state">正在加载海报</div></td></tr></tbody>
+          <thead><tr><th class="original-check-column"></th><th>原创视频</th><th>比赛与频道</th><th>类型</th><th>状态</th><th>时间</th><th>操作</th></tr></thead>
+          <tbody id="posterInventoryTable"><tr><td colspan="7"><div class="empty-state">正在加载原创视频</div></td></tr></tbody>
         </table>
       </div>
       <div class="poster-pagination" id="posterPagination" hidden>
@@ -527,21 +531,16 @@
   <dialog id="posterPreviewDialog" aria-labelledby="posterPreviewTitle">
     <div class="poster-preview-dialog">
       <div class="dialog-heading poster-preview-heading">
-        <div><p class="eyebrow">POSTER PREVIEW</p><h2 id="posterPreviewTitle">海报预览</h2><p class="poster-preview-meta" id="posterPreviewMeta"></p></div>
+        <div><p class="eyebrow">ORIGINAL PREVIEW</p><h2 id="posterPreviewTitle">原创视频预览</h2><p class="poster-preview-meta" id="posterPreviewMeta"></p></div>
         <button class="icon-button" id="closePosterPreview" type="button" title="关闭" aria-label="关闭">×</button>
       </div>
       <div class="poster-preview-stage" id="posterPreviewStage">
-        <div class="poster-preview-message" id="posterPreviewMessage">正在加载图片</div>
-        <img id="posterPreviewImage" alt="" draggable="false">
+        <div class="poster-preview-message" id="posterPreviewMessage">正在加载视频</div>
+        <video id="posterPreviewVideo" controls playsinline preload="metadata"></video>
       </div>
       <div class="poster-preview-controls" aria-label="预览控制">
         <button class="icon-button" id="posterPreviewPrevious" type="button" title="上一张" aria-label="上一张">‹</button>
-        <div class="poster-zoom-controls">
-          <button class="icon-button" id="posterZoomOut" type="button" title="缩小" aria-label="缩小">−</button>
-          <output id="posterZoomValue">100%</output>
-          <button class="icon-button" id="posterZoomIn" type="button" title="放大" aria-label="放大">＋</button>
-          <button class="icon-button" id="posterZoomReset" type="button" title="恢复尺寸" aria-label="恢复尺寸">↺</button>
-        </div>
+        <span class="muted">完整视频 · 保持原始比例</span>
         <button class="icon-button" id="posterPreviewNext" type="button" title="下一张" aria-label="下一张">›</button>
       </div>
     </div>
@@ -549,51 +548,36 @@
 
   <dialog id="posterImportDialog" aria-labelledby="posterImportTitle">
     <form id="posterImportForm">
-      <div class="dialog-heading"><div><p class="eyebrow">POSTER IMPORT</p><h2 id="posterImportTitle">导入海报</h2><p class="dialog-note">导入成功后固定进入待审核，可逐张查看处理结果。</p></div><button class="icon-button" id="closePosterImport" type="button" title="关闭" aria-label="关闭">×</button></div>
-      <label>海报分类<select id="posterImportCategory" required><option value="">请选择分类</option><option value="time_location">时间地点</option><option value="factor_analysis">因素分析</option><option value="match_prediction">预测比赛</option><option value="multi_schedule">多赛程</option><option value="star_fans">球星球迷</option></select></label>
-      <div class="poster-dropzone" id="posterDropzone" tabindex="0" role="button" aria-label="选择或拖入海报图片">
-        <strong>点击选择或拖入图片</strong><span>JPEG、PNG、WebP · 支持批量导入</span>
-        <input id="posterImportFiles" type="file" accept="image/jpeg,image/png,image/webp" multiple hidden>
+      <div class="dialog-heading"><div><p class="eyebrow">ORIGINAL IMPORT</p><h2 id="posterImportTitle">导入原创视频</h2><p class="dialog-note">导入成功后固定进入待审核。</p></div><button class="icon-button" id="closePosterImport" type="button" title="关闭" aria-label="关闭">×</button></div>
+      <div class="settings-grid three original-import-fields">
+        <label>比赛名称<input id="posterImportMatchName" maxlength="240" required></label>
+        <label>比赛日期<input id="posterImportMatchDate" type="date" required></label>
+        <label>圣保罗开赛时间<input id="posterImportMatchTime" type="datetime-local" required></label>
+        <label>视频类型<select id="posterImportCategory" required><option value="pre_match_prediction">赛前预测</option><option value="pre_match_discussion">赛前讨论</option><option value="post_match_score">赛后比分</option></select></label>
+        <label class="wide-field">播放频道<input id="posterImportChannels" placeholder="Globo, Premiere" required></label>
+        <label class="wide-field">筛选后比赛信息 JSON<textarea id="posterImportMatchInfo" rows="3" placeholder="{}"></textarea></label>
+        <label class="wide-field">agent-reach 社媒来源 JSON<textarea id="posterImportSocialSources" rows="4" placeholder="[]"></textarea></label>
+      </div>
+      <div class="poster-dropzone" id="posterDropzone" tabindex="0" role="button" aria-label="选择或拖入原创 MP4 视频">
+        <strong>点击选择或拖入视频</strong><span>MP4 · 支持批量导入</span>
+        <input id="posterImportFiles" type="file" accept="video/mp4" multiple hidden>
       </div>
       <div class="poster-import-limits muted" id="posterImportLimits">正在读取上传限制</div>
-      <div class="poster-import-list" id="posterImportList"><div class="design-empty-list">尚未选择图片</div></div>
+      <div class="poster-import-list" id="posterImportList"><div class="design-empty-list">尚未选择视频</div></div>
       <div class="poster-import-summary" id="posterImportSummary" aria-live="polite"></div>
       <div class="dialog-actions"><button class="secondary-button" id="cancelPosterImport" type="button">关闭</button><button class="primary-button" id="submitPosterImport" type="submit" disabled>开始导入</button></div>
     </form>
   </dialog>
 
-  <dialog id="posterContentDialog" aria-labelledby="posterContentTitle">
-    <form id="posterContentForm">
-      <div class="dialog-heading"><div><p class="eyebrow">COPY DESIGN</p><h2 id="posterContentTitle">海报文案设计</h2><p class="dialog-note" id="posterContentMeta"></p></div><button class="icon-button" id="closePosterContent" type="button" title="关闭" aria-label="关闭">×</button></div>
-      <div class="poster-content-workspace">
-        <div class="poster-content-main poster-media-frame"><span class="poster-image-loading">正在加载主海报</span><img id="posterContentMainImage" alt=""></div>
-        <div class="poster-content-fields">
-          <label>标题<input id="posterContentTitleInput" maxlength="200" placeholder="输入海报标题"></label>
-          <label>文案<textarea id="posterContentCopy" maxlength="10000" rows="7" placeholder="输入配套文案"></textarea></label>
-          <label>标签<input id="posterContentTags" placeholder="多个标签用逗号分隔"></label>
-        </div>
-      </div>
-      <div class="poster-attachment-heading"><div><strong>相关图片</strong><span class="muted">支持预览、替换、删除和调整顺序</span></div><label class="design-file-button">添加图片<input id="posterAttachmentFiles" type="file" accept="image/jpeg,image/png,image/webp" multiple></label></div>
-      <div class="poster-attachment-list" id="posterAttachmentList"><div class="design-empty-list">尚未添加相关图片</div></div>
-      <div class="poster-content-status muted" id="posterContentStatus" aria-live="polite"></div>
-      <input id="posterAttachmentReplaceFile" type="file" accept="image/jpeg,image/png,image/webp" hidden>
-      <div class="dialog-actions"><button class="secondary-button" id="cancelPosterContent" type="button">关闭</button><button class="primary-button" id="submitPosterContent" type="submit">保存文案与顺序</button></div>
-    </form>
-  </dialog>
-
-  <dialog id="posterAssetDialog" aria-label="附加图片预览">
-    <div class="poster-asset-preview"><button class="icon-button" id="closePosterAsset" type="button" title="关闭" aria-label="关闭">×</button><div class="poster-media-frame"><span id="posterAssetMessage">正在加载图片</span><img id="posterAssetImage" alt=""></div></div>
-  </dialog>
-
   <dialog id="posterDeleteDialog">
     <form method="dialog" id="posterDeleteForm">
-      <div class="dialog-heading"><div><p class="eyebrow">DELETE POSTER</p><h2>确认删除海报</h2></div><button class="icon-button" id="closePosterDelete" type="button" title="关闭" aria-label="关闭">×</button></div>
-      <div class="poster-delete-summary"><img id="posterDeleteThumbnail" alt=""><div><strong id="posterDeleteName"></strong><small>删除后将从海报库存隐藏，并按受控媒体清理策略处理文件。</small></div></div>
+      <div class="dialog-heading"><div><p class="eyebrow">DELETE ORIGINAL</p><h2>确认删除原创视频</h2></div><button class="icon-button" id="closePosterDelete" type="button" title="关闭" aria-label="关闭">×</button></div>
+      <div class="poster-delete-summary"><img id="posterDeleteThumbnail" alt=""><div><strong id="posterDeleteName"></strong><small>删除仅作用于原创工厂记录及其专属媒体。</small></div></div>
       <div class="dialog-actions"><button class="secondary-button" id="cancelPosterDelete" type="button">取消</button><button class="primary-button poster-delete-confirm" id="confirmPosterDelete" type="submit">确认删除</button></div>
     </form>
   </dialog>
 
   <div class="toast" id="toast" role="status"></div>
-  <script src="/app.js?v=20260830-upload-select-approved-v1"></script>
+  <script src="/app.js?v=20260831-original-factory-v1"></script>
 </body>
 </html>

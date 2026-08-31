@@ -137,6 +137,12 @@ storage:
   provider: factory_server
   root: workspace/server_media
   poster_subdir: posters            # relative to storage.root; absolute/traversal paths are rejected
+  original_factory_subdir: original_factory
+  original_max_upload_bytes: 524288000
+  original_max_duration_sec: 900
+  original_max_pixels: 16000000
+  original_max_dimension: 7680
+  original_max_batch: 20
   public_base_url: https://factory.jarg.top/media
   max_upload_bytes: 2147483648
   upload_chunk_bytes: 8388608

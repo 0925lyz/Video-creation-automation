@@ -214,6 +214,12 @@ storage:
   provider: factory_server
   root: workspace/server_media
   poster_subdir: posters
+  original_factory_subdir: original_factory
+  original_max_upload_bytes: 524288000
+  original_max_duration_sec: 900
+  original_max_pixels: 16000000
+  original_max_dimension: 7680
+  original_max_batch: 20
   public_base_url: https://factory.jarg.top/media
   remote_review_host: 43.134.128.197
   remote_review_user: ubuntu

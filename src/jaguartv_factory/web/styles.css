@@ -167,9 +167,13 @@ tbody tr:hover { background: #fafcfb; }
 .poster-toolbar { gap: 14px; }
 .poster-toolbar-actions { display: flex; align-items: center; gap: 12px; }
 #posterStatusFilters button span { margin-left: 5px; font-size: 10px; opacity: .72; }
-.poster-table { min-width: 900px; }
-.poster-table th:first-child, .poster-table td:first-child { width: 38%; min-width: 310px; }
+.poster-table { min-width: 1080px; }
+.poster-table .original-check-column { width: 36px; min-width: 36px; text-align: center; }
+.poster-table th:nth-child(2), .poster-table td:nth-child(2) { width: 31%; min-width: 280px; }
 .poster-table th:last-child, .poster-table td:last-child { min-width: 220px; }
+.original-bulk-bar { min-height: 48px; margin-top: 10px; padding: 8px 12px; display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); border-bottom: 0; background: #f7faf8; }
+.original-select-all { margin: 0; display: inline-flex; align-items: center; gap: 7px; color: var(--ink); }
+.original-match-meta { max-width: 250px; margin-top: 5px; display: block; color: var(--muted); font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }
 .poster-content-cell { min-width: 0; }
 .poster-content-cell > div:last-child { min-width: 0; }
 .poster-content-cell strong { max-width: min(32vw, 430px); }
@@ -185,7 +189,7 @@ tbody tr:hover { background: #fafcfb; }
 .poster-error-state span { color: #a13b21; }
 .loading-spinner { width: 20px; height: 20px; border: 2px solid #cdd8d3; border-top-color: var(--green); border-radius: 50%; animation: poster-spin .75s linear infinite; }
 .poster-media-frame { min-width: 0; display: grid; place-items: center; overflow: hidden; border: 1px solid #c6cfcb; border-radius: 6px; background: #f1f3f2; box-shadow: inset 0 0 0 1px rgba(255,255,255,.7); }
-.poster-media-frame img { width: 100%; height: 100%; display: block; object-fit: contain; }
+.poster-media-frame img, .poster-media-frame video { width: 100%; height: 100%; display: block; object-fit: contain; }
 .poster-media-frame span { padding: 8px; color: var(--muted); font-size: 10px; text-align: center; }
 #posterImportDialog { width: min(820px, calc(100vw - 24px)); max-height: calc(100vh - 24px); }
 #posterImportDialog form { max-height: calc(100vh - 26px); overflow: auto; }
@@ -445,7 +449,7 @@ dialog { width: min(470px, calc(100vw - 32px)); padding: 0; border: 1px solid va
 .poster-preview-heading h2 { max-width: min(70vw, 760px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .poster-preview-meta { max-width: min(72vw, 780px); margin: 6px 0 0; overflow-wrap: anywhere; color: var(--muted); font-size: 11px; line-height: 1.45; }
 .poster-preview-stage { position: relative; width: 100%; height: min(68vh, 720px); min-height: 280px; display: grid; place-items: center; overflow: auto; background: #111514; overscroll-behavior: contain; }
-.poster-preview-stage img { max-width: 92%; max-height: 92%; display: block; object-fit: contain; transform-origin: center; transition: transform .12s ease; user-select: none; }
+.poster-preview-stage video { width: 100%; height: 100%; max-width: 100%; max-height: 100%; display: block; object-fit: contain; background: #050706; }
 .poster-preview-message { padding: 18px; color: #d3dbd8; text-align: center; }
 .poster-preview-message.error { color: #ffb5a2; }
 .poster-preview-controls { min-height: 42px; display: grid; grid-template-columns: 42px 1fr 42px; align-items: center; gap: 12px; }
@@ -541,9 +545,11 @@ dialog .target-segmented label { min-width: 0; min-height: 42px; margin: 0; disp
   .poster-toolbar { align-items: flex-start; flex-direction: column; }
   .poster-toolbar-actions { width: 100%; justify-content: space-between; }
   .poster-table-wrap { margin-inline: -2px; width: calc(100% + 4px); }
-  .poster-table { min-width: 800px; }
+  .poster-table { min-width: 960px; }
   .poster-content-cell strong { max-width: 240px; }
   .poster-pagination { justify-content: space-between; }
+  .original-bulk-bar { align-items: flex-start; flex-wrap: wrap; }
+  .original-bulk-bar .muted { margin-right: auto; }
   #posterPreviewDialog { width: calc(100vw - 8px); max-height: calc(100vh - 8px); }
   .poster-preview-dialog { max-height: calc(100vh - 10px); padding: 10px; grid-template-rows: auto minmax(220px, 1fr) auto; }
   .poster-preview-heading h2 { max-width: calc(100vw - 84px); font-size: 16px; }

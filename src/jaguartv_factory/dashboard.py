@@ -67,6 +67,19 @@ from .posters import (
     resolve_poster_file,
     save_poster_content,
 )
+from .original_factory import (
+    OriginalFactoryError,
+    approve_originals,
+    delete_originals,
+    import_original_video,
+    list_original_items,
+    original_counts,
+    original_detail,
+    original_download_name,
+    original_upload_limits,
+    register_original_download,
+    resolve_original_file,
+)
 from .publish_flow import (
     create_publish_operation,
     generate_publish_copy_preview,
@@ -3971,6 +3984,33 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "allow_upload_approved": True,
                     "can_direct_approve": self.authorized_for_admin(parsed),
                 })
+            if parsed.path == "/api/originals":
+                return self.send_json(list_original_items(
+                    self.server.config,
+                    status=(query.get("status") or ["PENDING_REVIEW"])[0],
+                    category=(query.get("category") or [""])[0],
+                    page=(query.get("page") or [1])[0],
+                    page_size=(query.get("page_size") or [24])[0],
+                ))
+            if parsed.path == "/api/originals/counts":
+                return self.send_json(original_counts(self.server.config))
+            if parsed.path == "/api/originals/import/limits":
+                return self.send_json({
+                    **original_upload_limits(self.server.config),
+                    "formats": ["MP4"],
+                    "mime_types": ["video/mp4"],
+                })
+            original_parts = parsed.path.strip("/").split("/")
+            if len(original_parts) == 3 and original_parts[:2] == ["api", "originals"]:
+                return self.send_json(original_detail(self.server.config, unquote(original_parts[2])))
+            if len(original_parts) == 4 and original_parts[:2] == ["api", "originals"]:
+                item_id = unquote(original_parts[2])
+                if original_parts[3] == "preview":
+                    return self.send_original_asset(item_id, download=False)
+                if original_parts[3] == "thumbnail":
+                    return self.send_original_asset(item_id, download=False, thumbnail=True)
+                if original_parts[3] == "file":
+                    return self.send_original_asset(item_id, download=True)
             if parsed.path == "/api/posters":
                 return self.send_json(list_posters(
                     self.server.config,
@@ -4123,7 +4163,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 download = str((query.get("download") or [""])[0]).lower() in {"1", "true", "yes"}
                 return self.send_media(parsed.path.removeprefix("/media/"), download=download)
             return self.send_static(parsed.path)
-        except PosterError as error:
+        except (PosterError, OriginalFactoryError) as error:
             self.send_json({"error": str(error)}, HTTPStatus(error.status))
         except PermissionError as error:
             self.send_json({"error": str(error)}, HTTPStatus.FORBIDDEN)
@@ -4158,6 +4198,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     return self.send_poster_asset(poster_id, download=True, head_only=True)
             except PosterError as error:
                 return self.send_json({"error": str(error)}, HTTPStatus(error.status))
+        original_parts = parsed.path.strip("/").split("/")
+        if len(original_parts) == 4 and original_parts[:2] == ["api", "originals"]:
+            item_id = unquote(original_parts[2])
+            try:
+                if original_parts[3] == "preview":
+                    return self.send_original_asset(item_id, download=False, head_only=True)
+                if original_parts[3] == "thumbnail":
+                    return self.send_original_asset(
+                        item_id, download=False, thumbnail=True, head_only=True
+                    )
+                if original_parts[3] == "file":
+                    return self.send_original_asset(item_id, download=True, head_only=True)
+            except OriginalFactoryError as error:
+                return self.send_json({"error": str(error)}, HTTPStatus(error.status))
         if parsed.path.startswith("/media/"):
             download = str((query.get("download") or [""])[0]).lower() in {"1", "true", "yes"}
             return self.send_media(parsed.path.removeprefix("/media/"), download=download)
@@ -4175,6 +4229,44 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 )
             if not bool((self.server.config.get("features") or {}).get("posters", True)) and parsed.path.startswith("/api/posters"):
                 return self.send_json({"error": "poster workflow is retired"}, HTTPStatus.GONE)
+            if parsed.path == "/api/originals/import":
+                if not self.authorized_for_uploads():
+                    return self.send_json(
+                        {"error": "missing or invalid upload token"}, HTTPStatus.UNAUTHORIZED
+                    )
+                encoded = self.headers.get("X-Original-Metadata", "").strip()
+                if not encoded or len(encoded) > 128_000:
+                    raise ValueError("X-Original-Metadata is required or too large")
+                try:
+                    padding = "=" * (-len(encoded) % 4)
+                    metadata = json.loads(base64.urlsafe_b64decode(encoded + padding).decode("utf-8"))
+                except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
+                    raise ValueError("X-Original-Metadata must be URL-safe base64 JSON") from error
+                if not isinstance(metadata, dict):
+                    raise ValueError("X-Original-Metadata must contain a JSON object")
+                query = parse_qs(parsed.query)
+                return self.send_json(
+                    import_original_video(
+                        self.server.config,
+                        self.rfile,
+                        filename=str((query.get("filename") or [""])[0]),
+                        mime_type=self.headers.get("Content-Type", ""),
+                        content_length=int(self.headers.get("Content-Length") or 0),
+                        category=metadata.get("category"),
+                        match_name=metadata.get("match_name"),
+                        match_date=metadata.get("match_date"),
+                        match_time_sao_paulo=metadata.get("match_time_sao_paulo"),
+                        channels=metadata.get("channels"),
+                        match_info=metadata.get("match_info"),
+                        social_sources=metadata.get("social_sources"),
+                        generated_at=metadata.get("generated_at"),
+                        metadata=metadata.get("metadata"),
+                        actor=self.headers.get("X-Operator", "") or metadata.get("actor") or "original-worker",
+                        request_id=self.headers.get("X-Request-ID", "") or metadata.get("request_id") or "",
+                        batch_size=self.headers.get("X-Original-Batch-Size", "1"),
+                    ),
+                    HTTPStatus.CREATED,
+                )
             analytics_mutation = (
                 parsed.path == "/api/youtube-analytics/backfill"
                 or parsed.path == "/api/youtube-analytics/channel-import"
@@ -4363,6 +4455,54 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 result["download_url"] = signed_upload_url(result["id"])
                 return self.send_json(result, HTTPStatus.CREATED)
             payload = self.read_json()
+            if parsed.path == "/api/originals/bulk-approve":
+                return self.send_json(
+                    approve_originals(
+                        self.server.config,
+                        payload.get("item_ids"),
+                        actor=payload.get("actor") or self.headers.get("X-Operator", ""),
+                        request_id=payload.get("request_id") or self.headers.get("X-Request-ID", ""),
+                    )
+                )
+            if parsed.path == "/api/originals/bulk-delete":
+                return self.send_json(
+                    delete_originals(
+                        self.server.config,
+                        payload.get("item_ids"),
+                        actor=payload.get("actor") or self.headers.get("X-Operator", ""),
+                        request_id=payload.get("request_id") or self.headers.get("X-Request-ID", ""),
+                    )
+                )
+            original_parts = parsed.path.strip("/").split("/")
+            if len(original_parts) == 4 and original_parts[:2] == ["api", "originals"]:
+                item_id = unquote(original_parts[2])
+                if original_parts[3] == "approve":
+                    return self.send_json(
+                        approve_originals(
+                            self.server.config,
+                            [item_id],
+                            actor=payload.get("actor") or self.headers.get("X-Operator", ""),
+                            request_id=payload.get("request_id") or self.headers.get("X-Request-ID", ""),
+                        )
+                    )
+                if original_parts[3] == "delete":
+                    return self.send_json(
+                        delete_originals(
+                            self.server.config,
+                            [item_id],
+                            actor=payload.get("actor") or self.headers.get("X-Operator", ""),
+                            request_id=payload.get("request_id") or self.headers.get("X-Request-ID", ""),
+                        )
+                    )
+                if original_parts[3] == "download":
+                    return self.send_json(
+                        register_original_download(
+                            self.server.config,
+                            item_id,
+                            actor=payload.get("actor") or self.headers.get("X-Operator", ""),
+                            request_id=payload.get("request_id") or self.headers.get("X-Request-ID", ""),
+                        )
+                    )
             publication_parts = parsed.path.strip("/").split("/")
             if (
                 len(publication_parts) == 4
@@ -4622,7 +4762,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     )
                 return self.send_json(save_events(self.server.config, payload), HTTPStatus.CREATED)
             self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
-        except PosterError as error:
+        except (PosterError, OriginalFactoryError) as error:
             self.send_json({"error": str(error)}, HTTPStatus(error.status))
         except PermissionError as error:
             self.send_json({"error": str(error)}, HTTPStatus.FORBIDDEN)
@@ -4859,6 +4999,31 @@ class DashboardHandler(BaseHTTPRequestHandler):
             filename = poster_download_name(self.server.config, poster_id)
             fallback = f"poster{path.suffix.lower()}"
             disposition = f"attachment; filename={fallback}; filename*=UTF-8''{quote(filename)}"
+        self.send_file(
+            path,
+            cache="private, no-store",
+            disposition=disposition,
+            head_only=head_only,
+        )
+
+    def send_original_asset(
+        self,
+        item_id: str,
+        *,
+        download: bool,
+        thumbnail: bool = False,
+        head_only: bool = False,
+    ) -> None:
+        path = resolve_original_file(
+            self.server.config,
+            item_id,
+            require_approved=download,
+            thumbnail=thumbnail,
+        )
+        disposition = "inline"
+        if download:
+            filename = original_download_name(self.server.config, item_id)
+            disposition = f"attachment; filename=original-video.mp4; filename*=UTF-8''{quote(filename)}"
         self.send_file(
             path,
             cache="private, no-store",

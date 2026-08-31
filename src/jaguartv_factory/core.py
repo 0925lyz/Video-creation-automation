@@ -660,6 +660,76 @@ def _connect_db_unlocked(config: dict[str, Any]) -> sqlite3.Connection:
           updated_at TEXT NOT NULL,
           deleted_at TEXT
         );
+        CREATE TABLE IF NOT EXISTS original_factory_items (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          file_key TEXT NOT NULL,
+          thumbnail_key TEXT NOT NULL DEFAULT '',
+          original_name TEXT NOT NULL DEFAULT '',
+          mime_type TEXT NOT NULL DEFAULT 'video/mp4',
+          size_bytes INTEGER NOT NULL DEFAULT 0,
+          sha256 TEXT NOT NULL DEFAULT '',
+          duration_sec REAL NOT NULL DEFAULT 0,
+          width INTEGER NOT NULL DEFAULT 0,
+          height INTEGER NOT NULL DEFAULT 0,
+          video_codec TEXT NOT NULL DEFAULT '',
+          generated_at TEXT NOT NULL,
+          match_name TEXT NOT NULL,
+          match_date TEXT NOT NULL,
+          match_time_sao_paulo TEXT NOT NULL,
+          channels_json TEXT NOT NULL DEFAULT '[]',
+          category TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'PENDING_REVIEW',
+          match_info_json TEXT NOT NULL DEFAULT '{}',
+          metadata_json TEXT NOT NULL DEFAULT '{}',
+          publish_status TEXT NOT NULL DEFAULT 'NOT_PUBLISHED',
+          download_status TEXT NOT NULL DEFAULT 'NOT_DOWNLOADED',
+          last_downloaded_at TEXT,
+          last_publication_id INTEGER,
+          uploaded_by TEXT NOT NULL DEFAULT '',
+          approved_by TEXT NOT NULL DEFAULT '',
+          deleted_by TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          approved_at TEXT,
+          deleted_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS original_factory_social_sources (
+          id TEXT PRIMARY KEY,
+          item_id TEXT NOT NULL,
+          source_url TEXT NOT NULL,
+          platform TEXT NOT NULL,
+          fetched_at TEXT NOT NULL,
+          summary TEXT NOT NULL DEFAULT '',
+          confidence REAL NOT NULL DEFAULT 0,
+          uncertain INTEGER NOT NULL DEFAULT 0,
+          image_source_url TEXT NOT NULL DEFAULT '',
+          image_license_status TEXT NOT NULL DEFAULT '',
+          metadata_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS original_factory_audit_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          item_id TEXT NOT NULL,
+          action TEXT NOT NULL,
+          from_status TEXT NOT NULL DEFAULT '',
+          to_status TEXT NOT NULL DEFAULT '',
+          actor TEXT NOT NULL DEFAULT '',
+          request_id TEXT NOT NULL DEFAULT '',
+          metadata_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS original_factory_copy_generations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          item_id TEXT NOT NULL,
+          platform TEXT NOT NULL,
+          source_snapshot_json TEXT NOT NULL DEFAULT '{}',
+          output_json TEXT NOT NULL DEFAULT '{}',
+          model TEXT NOT NULL DEFAULT '',
+          fallback_reason TEXT NOT NULL DEFAULT '',
+          actor TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL
+        );
         """
     )
     candidate_columns = {
@@ -853,6 +923,30 @@ def _connect_db_unlocked(config: dict[str, Any]) -> sqlite3.Connection:
     connection.execute(
         "CREATE INDEX IF NOT EXISTS posters_active_sha256 "
         "ON posters(sha256) WHERE deleted_at IS NULL AND sha256 != ''"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS original_factory_status_category_created "
+        "ON original_factory_items(status,category,created_at DESC) WHERE deleted_at IS NULL"
+    )
+    connection.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS original_factory_active_sha256 "
+        "ON original_factory_items(sha256) WHERE deleted_at IS NULL AND sha256 != ''"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS original_factory_social_item "
+        "ON original_factory_social_sources(item_id,created_at,id)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS original_factory_audit_item_created "
+        "ON original_factory_audit_events(item_id,created_at DESC,id DESC)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS original_factory_audit_request "
+        "ON original_factory_audit_events(request_id) WHERE request_id != ''"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS original_factory_copy_item_created "
+        "ON original_factory_copy_generations(item_id,created_at DESC,id DESC)"
     )
     connection.execute(
         "CREATE INDEX IF NOT EXISTS publications_account_status ON publications(account,status,scheduled_at)"
