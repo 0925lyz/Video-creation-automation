@@ -1431,10 +1431,11 @@ function configurePublishCopyFields(platform) {
   const descriptionField = document.querySelector("#publishDescriptionField");
   titleField.hidden = combined;
   tagsField.hidden = combined;
-  descriptionField.hidden = youtube;
+  descriptionField.hidden = combined;
+  descriptionField.firstChild.textContent = youtube ? "发布文案" : "文案";
   document.querySelector("#publishTitle").required = !combined;
   document.querySelector("#publishTags").required = !combined;
-  document.querySelector("#publishDescription").required = !youtube;
+  document.querySelector("#publishDescription").required = !youtube && !combined;
   document.querySelector("#publishTitle").maxLength = youtube ? 90 : 100;
   document.querySelector("#publishDescription").maxLength = combined ? 250 : 5000;
 }
@@ -1459,6 +1460,7 @@ function renderPublishPreview() {
     ${combinedCopyPlatforms.has(document.querySelector("#publishPlatform").value)
       ? `<div><strong>文案标签</strong><span>${escapeHtml(document.querySelector("#publishDescription").value)}</span></div>`
       : `<div><strong>标题文案</strong><span>${escapeHtml(document.querySelector("#publishTitle").value)}</span></div>
+         <div><strong>发布文案</strong><span>${escapeHtml(document.querySelector("#publishDescription").value)}</span></div>
          <div><strong>说明标签</strong><span>${escapeHtml(tagsFromInput(document.querySelector("#publishTags").value).join(" "))}</span></div>`}
   `;
 }
@@ -1511,9 +1513,12 @@ async function generatePublishCopy() {
     });
     document.querySelector("#publishTitle").value = result.title || "";
     const platform = document.querySelector("#publishPlatform").value;
-    document.querySelector("#publishDescription").value = platform === "youtube" ? "" : result.description || "";
+    document.querySelector("#publishDescription").value = result.description || "";
     document.querySelector("#publishTags").value = (result.tags || []).join(" ");
     renderPublishPreview();
+    if (result.fallback_reason) {
+      toast(`文案已用本地规则生成：${result.fallback_reason === "deepseek_not_configured" ? "模型未配置" : "模型调用失败"}`, "warning");
+    }
   } catch (error) {
     toast(`文案标签生成失败：${error.message}`, "error");
   } finally {
@@ -2545,9 +2550,10 @@ document.querySelector("#publishForm").addEventListener("submit", async (event) 
   const title = document.querySelector("#publishTitle").value.trim();
   const combined = combinedCopyPlatforms.has(platform);
   const tagText = document.querySelector("#publishTags").value.trim();
-  const description = platform === "youtube" ? tagText : document.querySelector("#publishDescription").value.trim();
+  const copyTextValue = document.querySelector("#publishDescription").value.trim();
+  const description = platform === "youtube" ? [copyTextValue, tagText].filter(Boolean).join("\n\n") : copyTextValue;
   const tags = tagsFromInput(document.querySelector("#publishTags").value);
-  if (platform === "youtube" && (!title || !tags.length)) return toast("请先生成或填写标题文案和说明标签", "error");
+  if (platform === "youtube" && (!title || !copyTextValue || !tags.length)) return toast("请先生成或填写标题、发布文案和说明标签", "error");
   if (combined && !description) return toast("请先生成或填写文案标签", "error");
   if (!combined && platform !== "youtube" && (!title || !description || !tags.length)) return toast("请先生成或填写标题、文案和标签", "error");
   try {

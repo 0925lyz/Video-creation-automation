@@ -518,7 +518,7 @@ def test_generate_publish_copy_preview_uses_deepseek_and_platform_limits(
         calls.append((url, headers, json.loads(data.decode("utf-8"))))
         return FakeResponse()
 
-    monkeypatch.setattr("jaguartv_factory.publish_flow.requests.post", fake_post)
+    monkeypatch.setattr("jaguartv_factory.publishing_copywriter.requests.post", fake_post)
 
     result = generate_publish_copy_preview(
         config,
@@ -531,11 +531,12 @@ def test_generate_publish_copy_preview_uses_deepseek_and_platform_limits(
     )
 
     assert result["title"] == "Esse lance virou assunto"
+    assert "Um momento perfeito para assistir e comentar." in result["description"]
     assert "#" not in result["title"]
     assert len(result["tags"]) >= 25
     assert all(tag.startswith("#") for tag in result["tags"])
     assert len([tag for tag in result["tags"] if "jaguar" in tag.lower() or "unitv" in tag.lower() or "tv" in tag.lower()]) >= 10
-    assert result["description"] == " ".join(result["tags"])
+    assert result["description"].endswith(" ".join(result["tags"]))
     assert calls[0][0] == "https://ds.example.test/v1/chat/completions"
     assert calls[0][2]["model"] == "deepseek-v4-flash"
     assert calls[0][1]["Authorization"] == "Bearer ds-test"
@@ -607,7 +608,7 @@ def test_generate_publish_copy_accepts_custom_hint_without_provenance(
         captured["body"] = json.loads(data.decode("utf-8"))
         return FakeResponse()
 
-    monkeypatch.setattr("jaguartv_factory.publish_flow.requests.post", fake_post)
+    monkeypatch.setattr("jaguartv_factory.publishing_copywriter.requests.post", fake_post)
 
     result = generate_publish_copy_preview(
         config,
@@ -697,7 +698,7 @@ def test_generate_publish_copy_uses_deepseek_primary_without_openai(
             }
 
     monkeypatch.setattr(
-        "jaguartv_factory.publish_flow.requests.post",
+        "jaguartv_factory.publishing_copywriter.requests.post",
         lambda *args, **kwargs: DeepSeekResponse(),
     )
 
@@ -750,12 +751,12 @@ def test_generate_publish_copy_without_ai_key_uses_provenance_fallback(tmp_path:
 
     assert result["model"] == "deterministic-provenance"
     assert result["title"]
-    assert result["title"] == "Esse lance de futebol merece ser visto até o fim"
+    assert result["title"] == "Esse lance deixou todo mundo sem reação"
     assert "Demo source title" not in result["title"]
     assert len(result["title"]) <= 90
     assert "#" not in result["title"]
     assert len(result["tags"]) >= 25
-    assert result["description"] == " ".join(result["tags"])
+    assert result["description"].endswith(" ".join(result["tags"]))
 
 
 def test_generate_publish_copy_accepts_legacy_package_with_approved_review_file(
@@ -847,7 +848,7 @@ def test_publish_dialog_uses_final_field_names_and_platform_switching():
     assert "publishHint" in javascript
     assert "hint: document.querySelector(\"#publishHint\")?.value.trim() || \"\"" in javascript
     assert "item.account_label || item.account || \"未指定\"" in javascript
-    assert 'app.js?v=20260831-original-factory-v1' in html
+    assert '<script src="/app.js?v=' in html
     assert 'source_kind: asset.source_kind || "candidate"' in javascript
     styles = Path("src/jaguartv_factory/web/styles.css").read_text(encoding="utf-8")
 
@@ -859,7 +860,8 @@ def test_publish_dialog_uses_final_field_names_and_platform_switching():
     assert 'new Set(["x", "facebook", "tiktok", "instagram", "kwai"])' in javascript
     assert "configurePublishCopyFields" in javascript
     assert 'candidate_id: String(asset.id).split(":", 1)[0]' in javascript
-    assert 'document.querySelector("#publishDescription").value = platform === "youtube" ? ""' in javascript
+    assert 'document.querySelector("#publishDescription").value = result.description || ""' in javascript
+    assert '[copyTextValue, tagText].filter(Boolean).join("\\n\\n")' in javascript
     assert "[hidden] { display: none !important; }" in styles
 
 

@@ -16,7 +16,7 @@ import requests
 
 from .core import connect_db, now_iso, review_output_video_path_by_id, workspace_dir
 from .publisher import parse_datetime, publication_source_context
-from .publishing_copywriter import source_material_from
+from .publishing_copywriter import generate_publishing_copy, source_material_from
 from .server_store import storage_root
 
 
@@ -247,9 +247,12 @@ def youtube_copy_from_provenance(
     title = youtube_title_with_hashtags(str(raw.get("title") or _fallback_title(source_material)), [])
     if not title:
         title = _fallback_title(source_material)
+    caption = re.sub(r"\s+", " ", str(raw.get("caption") or raw.get("description") or "")).strip()
     raw_tags = raw.get("tags") if isinstance(raw.get("tags"), list) else []
     tags = [*_content_hashtags(raw_tags, source_material), *_brand_hashtags(seed)]
-    return {"title": title[:90], "description": " ".join(tags), "tags": tags}
+    tag_line = " ".join(tags)
+    description = f"{caption}\n\n{tag_line}".strip() if caption else tag_line
+    return {"title": title[:90], "description": description[:5000], "tags": tags}
 
 
 def combined_social_copy_from_provenance(
@@ -258,10 +261,11 @@ def combined_social_copy_from_provenance(
     hook = youtube_title_with_hashtags(str(raw.get("title") or _fallback_title(source_material)), [])[:90]
     raw_tags = raw.get("tags") if isinstance(raw.get("tags"), list) else []
     tags = _content_hashtags(raw_tags, source_material, limit=8)
-    text = f"{hook} {' '.join(tags)}".strip()
+    caption = re.sub(r"\s+", " ", str(raw.get("caption") or raw.get("description") or "")).strip()
+    text = f"{caption or hook} {' '.join(tags)}".strip()
     while len(text) > 250 and tags:
         tags.pop()
-        text = f"{hook} {' '.join(tags)}".strip()
+        text = f"{caption or hook} {' '.join(tags)}".strip()
     return {"title": "", "description": text[:250].rstrip(), "tags": []}
 
 
@@ -527,35 +531,30 @@ def generate_publish_copy_preview(config: dict[str, Any], payload: dict[str, Any
         for field in ("keywords", "category_tags", "source_title", "source_description")
     ):
         raise ValueError("source provenance is missing; copy generation is blocked")
-    settings = ((config.get("publishing") or {}).get("copywriter") or {})
-    timeout_sec = max(10, min(float(settings.get("timeout_sec") or 60), 120))
+    generated = generate_publishing_copy(
+        config,
+        source_material,
+        platform=platform,
+        variant=variant,
+        hint=hint,
+    )
     raw: dict[str, Any] = {
-        "title": (
+        "title": generated.get("title") or (
             _original_fallback_title(source_material)
             if source_kind == "original_factory"
             else _fallback_title(source_material)
         ),
-        "description": "",
-        "tags": _content_hashtags([], source_material),
+        "caption": generated.get("caption") or generated.get("description") or "",
+        "description": generated.get("caption") or generated.get("description") or "",
+        "tags": generated.get("tags") if isinstance(generated.get("tags"), list) else [],
     }
-    generation_model = "deterministic-provenance"
+    generation_model = str(generated.get("model") or "deterministic-provenance")
     fallback_reason = ""
     reasoning_effort = "not_applicable"
-    if deepseek_api_key():
-        try:
-            raw = generate_copy_with_deepseek(
-                config,
-                source_material,
-                platform=platform,
-                variant=variant,
-                hint=hint,
-            )
-            generation_model = deepseek_model(config)
-            reasoning_effort = "not_applicable"
-        except (requests.RequestException, RuntimeError, ValueError, json.JSONDecodeError):
-            fallback_reason = "deepseek_unavailable"
-    else:
-        fallback_reason = "deepseek_not_configured"
+    if generated.get("source") == "fallback":
+        generation_model = "deterministic-provenance"
+        error_text = str(generated.get("error") or "")
+        fallback_reason = "deepseek_not_configured" if "not configured" in error_text else "deepseek_unavailable"
     if platform == "youtube":
         result = youtube_copy_from_provenance(raw, source_material, seed=f"{candidate['id']}:{asset_id}")
     elif platform in COMBINED_COPY_PLATFORMS:
@@ -645,7 +644,7 @@ def validate_publish_copy(platform: str, payload: dict[str, Any]) -> dict[str, A
     minimum_tags = 25 if platform == "youtube" else 1
     if len(tags) < minimum_tags or len(tags) > limits["tags"]:
         raise ValueError("tags are required and must fit platform limits")
-    if platform == "youtube":
+    if platform == "youtube" and not description:
         description = " ".join(tags)
     return {"title": title, "description": description, "tags": tags}
 

@@ -242,6 +242,9 @@ def test_auto_publication_generates_doubao_style_copy_and_description_tags(tmp_p
     monkeypatch.delenv("JAGUARTV_DOUBAO_API_KEY", raising=False)
     monkeypatch.delenv("JAGUARTV_DOUBAO_ENDPOINT", raising=False)
     monkeypatch.delenv("JAGUARTV_DOUBAO_MODEL", raising=False)
+    monkeypatch.delenv("JAGUARTV_DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.delenv("JAGUARTV_DEEPSEEK_BASE_URL", raising=False)
+    monkeypatch.delenv("JAGUARTV_DEEPSEEK_MODEL", raising=False)
     config = publishing_config(tmp_path)
     insert_candidate(
         config,
@@ -276,14 +279,16 @@ def test_auto_publication_generates_doubao_style_copy_and_description_tags(tmp_p
     assert len(result["tags"]) >= 25
     assert all(tag.startswith("#") for tag in result["tags"])
     assert "link proibido" not in result["title"].lower()
-    assert result["description"] == " ".join(result["tags"])
+    assert "O clima do futebol muda" in result["description"]
+    assert result["description"].endswith(" ".join(result["tags"]))
     row = connect_db(config).execute(
         "SELECT title,description,tags_json FROM publications WHERE id=?",
         (result["publication_id"],),
     ).fetchone()
     assert len(row["title"]) <= 90
     assert "#" not in row["title"]
-    assert row["description"] == " ".join(json.loads(row["tags_json"]))
+    assert "O clima do futebol muda" in row["description"]
+    assert row["description"].endswith(" ".join(json.loads(row["tags_json"])))
 
 
 def test_publish_success_updates_dashboard_candidate_row(tmp_path: Path):

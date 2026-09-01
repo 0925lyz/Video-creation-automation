@@ -387,7 +387,11 @@ def publication_text(
     from .publish_flow import youtube_copy_from_provenance
 
     return youtube_copy_from_provenance(
-        {"title": title, "tags": [str(item) for item in generated_tags]},
+        {
+            "title": title,
+            "description": str(generated.get("caption") or generated.get("description") or ""),
+            "tags": [str(item) for item in generated_tags],
+        },
         source_material,
         seed=str(candidate.get("id") or candidate.get("source_id") or title),
     )
