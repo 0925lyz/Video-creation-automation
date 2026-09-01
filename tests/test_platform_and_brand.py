@@ -30,6 +30,7 @@ from jaguartv_factory.core import (
 from jaguartv_factory.dashboard import (
     DashboardApplication,
     candidate_design_info,
+    candidate_page,
     candidate_rows,
     delete_candidates,
     download_claim_rows,
@@ -824,6 +825,34 @@ def test_inventory_scans_server_review_packages_without_db_row(tmp_path: Path):
     assert rows[0]["output_count"] == 1
 
 
+def test_inventory_can_sort_by_crawl_time_instead_of_update_time(tmp_path: Path):
+    config = make_config(tmp_path)
+    insert_candidate(config, candidate_id="older-crawl", status="DISCOVERED")
+    connection = connect_db(config)
+    connection.execute(
+        "UPDATE candidates SET source_id=? WHERE id=?",
+        ("older-source", "older-crawl"),
+    )
+    connection.commit()
+    insert_candidate(config, candidate_id="newer-crawl", status="DISCOVERED")
+    connection = connect_db(config)
+    connection.execute(
+        "UPDATE candidates SET source_id=?,created_at=?,updated_at=? WHERE id=?",
+        ("newer-source", "2026-02-01T00:00:00+00:00", "2026-02-01T00:00:00+00:00", "newer-crawl"),
+    )
+    connection.execute(
+        "UPDATE candidates SET created_at=?,updated_at=? WHERE id=?",
+        ("2026-01-01T00:00:00+00:00", "2026-03-01T00:00:00+00:00", "older-crawl"),
+    )
+    connection.commit()
+
+    time_sorted = candidate_page(config, sort="time", page_size=10)["items"]
+    updated_sorted = candidate_page(config, sort="updated", page_size=10)["items"]
+
+    assert [item["id"] for item in time_sorted[:2]] == ["newer-crawl", "older-crawl"]
+    assert [item["id"] for item in updated_sorted[:2]] == ["older-crawl", "newer-crawl"]
+
+
 def test_inventory_parent_candidate_exposes_all_segment_outputs(tmp_path: Path):
     config = {
         "_root": str(tmp_path),
@@ -1089,6 +1118,31 @@ def test_delete_candidate_clears_db_review_job_and_inventory_files(tmp_path: Pat
     ).fetchone()["count"] == 1
     for table in ("events", "publications", "performance_snapshots", "conversion_events", "feedback_actions", "render_jobs"):
         assert connection.execute(f"SELECT COUNT(*) count FROM {table} WHERE candidate_id='c-delete'").fetchone()["count"] == 0
+
+
+def test_delete_candidate_removes_server_review_package_linked_by_metadata(tmp_path: Path):
+    config = make_config(tmp_path)
+    insert_candidate(config, candidate_id="source-delete", status="APPROVED")
+    review_dir = tmp_path / "workspace" / "server_media" / "review" / "rendered-package"
+    inventory_file = tmp_path / "workspace" / "server_media" / "inventory" / "通用版" / "youtube" / "metadata-linked.mp4"
+    review_dir.mkdir(parents=True)
+    inventory_file.parent.mkdir(parents=True)
+    (review_dir / "video.mp4").write_bytes(b"server-review")
+    inventory_file.write_bytes(b"inventory-video")
+    (review_dir / "metadata.json").write_text(
+        json.dumps({
+            "job_id": "rendered-package",
+            "source_job_id": "source-delete",
+            "output_variants": [{"inventory_path": str(inventory_file)}],
+        }),
+        encoding="utf-8",
+    )
+
+    result = delete_candidates(config, {"candidate_ids": ["source-delete"]})
+
+    assert result["deleted"] == 1
+    assert not review_dir.exists()
+    assert not inventory_file.exists()
 
 
 def test_delete_100_candidates_keeps_seen_history(tmp_path: Path):

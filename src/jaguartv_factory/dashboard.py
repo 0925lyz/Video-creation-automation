@@ -1482,6 +1482,24 @@ def collect_package_ids_for_candidate(config: dict[str, Any], candidate: str) ->
         for path in root.iterdir():
             if path.is_dir() and (path.name == candidate or path.name.startswith(f"{candidate}_part")):
                 ids.add(path.name)
+                continue
+            metadata_path = path / "metadata.json"
+            if not path.is_dir() or not metadata_path.is_file():
+                continue
+            try:
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            metadata_ids = {
+                str(metadata.get("job_id") or ""),
+                str(metadata.get("source_job_id") or ""),
+                str(metadata.get("source_candidate_id") or ""),
+            }
+            source = metadata.get("source") or {}
+            if isinstance(source, dict):
+                metadata_ids.add(str(source.get("candidate_id") or ""))
+            if candidate in metadata_ids:
+                ids.add(path.name)
     return ids
 
 
@@ -2670,6 +2688,7 @@ def candidate_page(
     platform: str = "",
     category: str = "",
     search: str = "",
+    sort: str = "time",
     page: int = 1,
     page_size: int = 50,
 ) -> dict[str, Any]:
@@ -2681,6 +2700,9 @@ def candidate_page(
     platform = str(platform or "").strip().lower()
     category = str(category or "").strip()
     query = str(search or "").strip().lower()
+    sort = str(sort or "time").strip().lower()
+    if sort not in {"time", "updated"}:
+        raise ValueError("unsupported inventory sort")
     rows = candidate_rows(config, status, None)
 
     def matches(item: dict[str, Any], *, include_source: bool = True) -> bool:
@@ -2705,7 +2727,17 @@ def candidate_page(
 
     base_rows = [item for item in rows if matches(item, include_source=False)]
     filtered = [item for item in base_rows if matches(item)]
-    filtered.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    if sort == "updated":
+        filtered.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    else:
+        filtered.sort(
+            key=lambda item: (
+                str(item.get("created_at") or ""),
+                str(item.get("updated_at") or ""),
+                str(item.get("id") or ""),
+            ),
+            reverse=True,
+        )
     total = len(filtered)
     pages = (total + page_size - 1) // page_size
     if pages and page > pages:
@@ -2728,6 +2760,7 @@ def candidate_page(
             "platform": platform,
             "category": category,
             "search": query,
+            "sort": sort,
         },
     }
 
@@ -3970,6 +4003,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         platform=str((query.get("platform") or [""])[0]),
                         category=str((query.get("category") or [""])[0]),
                         search=str((query.get("search") or [""])[0]),
+                        sort=str((query.get("sort") or ["time"])[0]),
                         page=validated_positive_int((query.get("page") or [1])[0], "page", 1),
                         page_size=validated_positive_int(
                             (query.get("page_size") or [50])[0], "page_size", 50

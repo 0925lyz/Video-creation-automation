@@ -101,6 +101,12 @@
             <option value="server_upload">本地上传</option>
           </select>
         </label>
+        <label class="compact-select">排序方式
+          <select id="inventorySort">
+            <option value="time">按时间排序</option>
+            <option value="updated">按处理更新排序</option>
+          </select>
+        </label>
       </div>
       <div class="category-filter-bar" id="categoryFilters" aria-label="初步分类筛选"></div>
       <div class="batch-toolbar">
@@ -108,7 +114,7 @@
         <span id="selectionCount">已选 0 条</span>
         <div class="batch-actions"><button class="secondary-button" id="batchDownload" type="button" disabled>批量下载</button><button class="secondary-button" id="batchProduce" type="button" disabled>批量制作</button><button class="secondary-button danger-button" id="batchDelete" type="button" disabled>删除所选</button></div>
       </div>
-      <div class="table-wrap inventory-table"><table><thead><tr><th class="check-column"></th><th>内容</th><th>平台</th><th>类型 / 策略</th><th>导入 / 目标</th><th>精彩度</th><th>评分</th><th>实际状态</th><th>更新时间</th><th></th></tr></thead><tbody id="inventoryTable"></tbody></table></div>
+      <div class="table-wrap inventory-table"><table><thead><tr><th class="check-column"></th><th>内容</th><th>平台</th><th>类型 / 策略</th><th>导入 / 目标</th><th>精彩度</th><th>评分</th><th>实际状态</th><th>爬取日期</th><th></th></tr></thead><tbody id="inventoryTable"></tbody></table></div>
       <div class="inventory-pagination" id="inventoryPagination" hidden>
         <button class="secondary-button" id="inventoryPreviousPage" type="button">上一页</button>
         <span class="muted" id="inventoryPageSummary"></span>
@@ -578,6 +584,6 @@
   </dialog>
 
   <div class="toast" id="toast" role="status"></div>
-  <script src="/app.js?v=20260831-original-factory-v1"></script>
+  <script src="/app.js?v=20260901-inventory-time-v1"></script>
 </body>
 </html>

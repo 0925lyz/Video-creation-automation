@@ -21,6 +21,7 @@ const state = {
   sourceFilter: "factory",
   platformFilter: "",
   categoryFilter: "",
+  inventorySort: "time",
   search: "",
   inventoryLoading: false,
   inventoryError: "",
@@ -137,6 +138,7 @@ function scoreTooltip(breakdown) {
 const number = (value) => new Intl.NumberFormat("zh-CN", { notation: Number(value) > 999999 ? "compact" : "standard", maximumFractionDigits: 1 }).format(Number(value || 0));
 const percent = (value) => `${(Number(value || 0) * 100).toFixed(2)}%`;
 const dateText = (value) => value ? new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value)) : "未设置";
+const dateOnlyText = (value) => value ? new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(value)) : "未设置";
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[character]));
 
 async function api(path, options = {}) {
@@ -206,6 +208,7 @@ function inventoryApiPath() {
   if (state.sourceFilter) params.set("source_type", state.sourceFilter);
   if (state.platformFilter) params.set("platform", state.platformFilter);
   if (state.categoryFilter) params.set("category", state.categoryFilter);
+  if (state.inventorySort) params.set("sort", state.inventorySort);
   if (state.search) params.set("search", state.search);
   return `/api/candidates?${params}`;
 }
@@ -336,6 +339,10 @@ function filteredCandidates() {
       return statusMatch && categoryMatch && (!query || haystack.includes(query));
     })
     .sort((a, b) => {
+      if (state.inventorySort === "time") {
+        const timeDelta = new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime();
+        if (timeDelta) return timeDelta;
+      }
       const aPart = Number(a.part_number || (a.output_assets || [])[0]?.part_number || 0);
       const bPart = Number(b.part_number || (b.output_assets || [])[0]?.part_number || 0);
       const aParent = aPart ? String(a.id || "").replace(/_part\d+$/, "") : "";
@@ -350,7 +357,8 @@ function filteredCandidates() {
       }
       const sourceDelta = String(a.platform || "").localeCompare(String(b.platform || ""), "zh-CN");
       if (sourceDelta) return sourceDelta;
-      return new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime();
+      const dateField = state.inventorySort === "updated" ? "updated_at" : "created_at";
+      return new Date(b[dateField] || 0).getTime() - new Date(a[dateField] || 0).getTime();
     });
 }
 
@@ -409,6 +417,7 @@ function renderInventory() {
     button.classList.toggle("active", (button.dataset.sourceType || "") === state.sourceFilter);
   });
   document.querySelector("#inventoryPlatformFilter").value = state.platformFilter;
+  document.querySelector("#inventorySort").value = state.inventorySort;
   const pagination = document.querySelector("#inventoryPagination");
   pagination.hidden = state.inventoryLoading || !!state.inventoryError || state.inventoryPagination.pages <= 1;
   document.querySelector("#inventoryPageSummary").textContent = state.inventoryPagination.pages
@@ -450,7 +459,7 @@ function renderInventory() {
       <td class="import-info-cell">${importInfo}</td>
       <td>${Number(item.highlight_score || 0).toFixed(1)}</td>
       <td><span title="${escapeHtml(scoreTooltip(item.score_breakdown))}">${Number(item.score || 0).toFixed(1)}</span></td>
-      <td><span class="status-pill ${task ? "running" : statusClass(item.status)}">${status}</span>${publicationNote}${failure}</td><td>${dateText(item.updated_at)}</td>
+      <td><span class="status-pill ${task ? "running" : statusClass(item.status)}">${status}</span>${publicationNote}${failure}</td><td>${dateOnlyText(item.created_at)}</td>
       <td>${task ? `<span class="row-progress">${task.progress || 0}%</span>` : candidateAction(item)}</td>
     </tr>`;
   }).join("") : `<tr><td colspan="10"><div class="empty-state">${state.sourceFilter === "source_import" ? "还没有导入视频" : "没有符合条件的内容"}</div></td></tr>`;
@@ -2359,6 +2368,11 @@ document.querySelectorAll("#sourceFilters [data-source-type]").forEach((button) 
 }));
 document.querySelector("#inventoryPlatformFilter").addEventListener("change", (event) => {
   state.platformFilter = event.target.value || "";
+  state.selectedCandidates.clear();
+  loadInventory({ resetPage: true });
+});
+document.querySelector("#inventorySort").addEventListener("change", (event) => {
+  state.inventorySort = event.target.value || "time";
   state.selectedCandidates.clear();
   loadInventory({ resetPage: true });
 });
