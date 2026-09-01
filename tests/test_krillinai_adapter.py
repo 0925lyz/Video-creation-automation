@@ -12,6 +12,7 @@ from jaguartv_factory.krillinai_adapter import (
     krillinai_available,
     krillinai_subtitle,
     krillinai_tts,
+    normalize_subtitle_gap_timeline,
     select_krillinai_voice,
 )
 
@@ -48,6 +49,40 @@ def test_availability_requires_binary_and_runtime_config(tmp_path: Path):
     (tmp_path / "workspace/external_tools/KrillinAI/config/config.toml").unlink()
     assert krillinai_available(config) == (False, "config_not_found")
     assert krillinai_available(config, require_config=False)[0] is True
+
+
+def test_normalize_subtitle_gap_timeline_adds_boundary_gaps(tmp_path: Path):
+    from jaguartv_factory.core import parse_srt_blocks
+
+    path = tmp_path / "subs.srt"
+    path.write_text(
+        "1\n00:00:01,000 --> 00:00:03,000\nFala um\n\n"
+        "2\n00:00:03,000 --> 00:00:06,000\nFala dois\n\n"
+        "3\n00:00:06,500 --> 00:00:08,000\nFala tres\n",
+        encoding="utf-8",
+    )
+    normalize_subtitle_gap_timeline(path)
+    blocks = parse_srt_blocks(path)
+    assert len(blocks) == 3
+    assert blocks[0][1] == 2.95
+    assert blocks[1][0] == 3.0
+    assert blocks[1][1] == 6.0
+    assert blocks[2][0] == 6.5
+
+
+def test_normalize_subtitle_gap_timeline_clamps_overlapping_cues(tmp_path: Path):
+    from jaguartv_factory.core import parse_srt_blocks
+
+    path = tmp_path / "subs.srt"
+    path.write_text(
+        "1\n00:00:01,000 --> 00:00:03,500\nFala um\n\n"
+        "2\n00:00:03,200 --> 00:00:06,000\nFala dois\n",
+        encoding="utf-8",
+    )
+    normalize_subtitle_gap_timeline(path)
+    blocks = parse_srt_blocks(path)
+    assert blocks[0][1] == 3.15
+    assert blocks[1][0] == 3.2
 
 
 def test_subtitle_and_tts_use_structured_outputs_and_optional_voice(tmp_path: Path):

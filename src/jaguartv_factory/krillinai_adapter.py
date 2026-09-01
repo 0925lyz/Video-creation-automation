@@ -103,7 +103,7 @@ def run_krillinai(
     runner = run_command or subprocess.run
     use_bridge = bool(krillinai_settings(config).get("responses_bridge"))
     try:
-        runtime = bridge_runtime(project, log_dir, timeout=min(timeout, 120.0)) if use_bridge else None
+        runtime = bridge_runtime(project, log_dir, timeout=min(timeout, 600.0)) if use_bridge else None
         if runtime is None:
             result = runner(
                 [str(krillinai_binary(config)), *[str(value) for value in args]],
@@ -171,7 +171,45 @@ def krillinai_subtitle(
         raise KrillinAIError("KrillinAI transcription produced no source SRT")
     if not target.is_file() or target.stat().st_size <= 0:
         raise KrillinAIError("KrillinAI translation produced no target SRT")
+    normalize_subtitle_gap_timeline(target)
     return {"origin_srt": origin.resolve(), "target_srt": target.resolve()}
+
+
+def normalize_subtitle_gap_timeline(path: Path, gap: float = 0.05) -> None:
+    """Ensure every subtitle cue leaves a small gap before the next cue.
+
+    KrillinAI's dubbing planner groups adjacent cues into chunks and fits the
+    generated speech into the original cue windows. When one cue ends exactly
+    where the next begins, the fitted chunk can land on the exact boundary and
+    its floating-point comparison reports an overlap, failing the whole
+    production. Clamping the end of each cue to leave a tiny gap makes the
+    chunk boundaries unambiguous.
+    """
+    from .core import format_srt_time, parse_srt_blocks
+
+    blocks = parse_srt_blocks(path)
+    if not blocks:
+        return
+    normalized: list[tuple[float, float, str]] = []
+    for index, (start, end, text) in enumerate(blocks):
+        start = float(start)
+        end = float(end)
+        if index < len(blocks) - 1:
+            next_start = float(blocks[index + 1][0])
+            end = min(end, next_start - gap)
+        end = max(end, start + 0.1)
+        normalized.append((start, end, text))
+    rendered = []
+    for start, end, text in normalized:
+        cleaned = str(text).strip()
+        if not cleaned:
+            continue
+        rendered.append(
+            f"{len(rendered) + 1}\n"
+            f"{format_srt_time(float(start))} --> {format_srt_time(float(end))}\n"
+            f"{cleaned}\n"
+        )
+    path.write_text("\n".join(rendered), encoding="utf-8")
 
 
 def krillinai_tts(
