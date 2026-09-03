@@ -6,6 +6,11 @@ RUNTIME="$ROOT/src/jaguartv_factory/remotion_template"
 OUT_DIR="$ROOT/workspace/remotion_smoke"
 PUBLIC_SMOKE="$RUNTIME/public/smoke"
 
+cleanup() {
+  unlink "$PUBLIC_SMOKE/brand-banner.jpg" 2>/dev/null || true
+}
+trap cleanup EXIT
+
 if [[ -n "${PYTHON:-}" ]]; then
   PYTHON_BIN="$PYTHON"
 elif [[ -x "$ROOT/.venv/bin/python" ]]; then
