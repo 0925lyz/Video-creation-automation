@@ -19,7 +19,7 @@ from .core import (
 from .source_imports import sync_source_import_workflow_status
 
 
-PRODUCTION_CONTRACT = "candidate-production-v3-cta"
+PRODUCTION_CONTRACT = "candidate-production-v4-brand-audio"
 REQUIRED_VARIANTS = ("通用版",)
 LEGACY_REQUIRED_VARIANTS = ("通用版", "FB版")
 ALLOWED_TRIGGER_SOURCES = {
@@ -116,7 +116,7 @@ def normalize_production_options(options: dict[str, Any] | None = None) -> dict[
         if key in public_options:
             public_options[key] = int(public_options[key])
     if "max_duration" in public_options:
-        public_options["max_duration"] = float(public_options["max_duration"])
+        public_options["max_duration"] = max(12.0, min(30.0, float(public_options["max_duration"])))
     for key in ("reaction_source", "batch_label", "krillinai_voice"):
         if key in public_options:
             value = str(public_options[key] or "").strip()
@@ -203,6 +203,11 @@ def validate_generic_output(
         raise ProductionGateError(f"slice {slice_id} 通用版 must contain exactly one CTA")
     generic_layout = generic.get("layout") if isinstance(generic.get("layout"), dict) else {}
     cta = generic_layout.get("cta") if isinstance(generic_layout.get("cta"), dict) else {}
+    brand_banner = (
+        generic_layout.get("brand_banner")
+        if isinstance(generic_layout.get("brand_banner"), dict)
+        else {}
+    )
     if generic_layout.get("mode") != "content_then_cta":
         raise ProductionGateError(f"slice {slice_id} 通用版 layout gate failed")
     if (
@@ -213,6 +218,8 @@ def validate_generic_output(
         or float(cta.get("duration_sec") or 0) <= 0
     ):
         raise ProductionGateError(f"slice {slice_id} 通用版 CTA gate failed")
+    if not str(brand_banner.get("asset") or "").strip() or brand_banner.get("scope") != "content_only":
+        raise ProductionGateError(f"slice {slice_id} 通用版 brand banner gate failed")
     return {
         "passed": True,
         "slice_id": slice_id,
@@ -289,6 +296,7 @@ def assert_candidate_ready_for_review(
             layout = json.loads(output["layout_json"] or "{}")
             if output["variant"] == "通用版" and str(run["contract_version"] or "") == PRODUCTION_CONTRACT:
                 cta = layout.get("cta") if isinstance(layout.get("cta"), dict) else {}
+                brand_banner = layout.get("brand_banner") if isinstance(layout.get("brand_banner"), dict) else {}
                 if (
                     output["endcard_count"] != 1
                     or layout.get("mode") != "content_then_cta"
@@ -297,6 +305,8 @@ def assert_candidate_ready_for_review(
                     or output["cta_orientation"] != layout.get("source_orientation")
                     or output["cta_media_type"] not in {"image", "video"}
                     or output["cta_duration_sec"] <= 0
+                    or not str(brand_banner.get("asset") or "").strip()
+                    or brand_banner.get("scope") != "content_only"
                 ):
                     raise ProductionGateError(f"generic layout gate failed: {path}")
             elif output["variant"] == "FB版" and (

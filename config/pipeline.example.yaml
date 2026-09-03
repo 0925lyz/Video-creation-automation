@@ -61,7 +61,7 @@ selection:
 
 edit:
   render_engine: remotion
-  output_duration_sec: [12, 60]
+  output_duration_sec: [12, 30]
   max_segments_per_source: 3
   segment_overlap_sec: 3
   layout_mode: original
@@ -70,6 +70,17 @@ edit:
 
 remotion:
   render_runner: cli
+  brand_banner_image: assets/brand/jaguartv_download_banner.jpg
+
+audio:
+  source_mode: localize
+  source_music_volume: 1.0
+  voice_volume: 1.0
+  bgm_volume: 0.0
+  caption_scan_samples: 8
+  caption_scan_confidence: 40
+  demucs_model: htdemucs
+  demucs_timeout_sec: 900
 
 quality:
   visual:

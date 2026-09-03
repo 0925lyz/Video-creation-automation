@@ -80,7 +80,7 @@ if ! command -v deno >/dev/null 2>&1 || ! deno --version 2>/dev/null | head -n 1
 fi
 
 echo "==> Verifying install"
-"$PYTHON_BIN" -m pytest tests/test_core.py tests/test_platform_and_brand.py tests/test_krillinai_adapter.py
+"$PYTHON_BIN" -m pytest tests/test_core.py tests/test_platform_and_brand.py tests/test_krillinai_adapter.py tests/test_source_media.py tests/test_strategy_and_highlight.py
 "$APP_DIR/.agents/skills/jaguartv-content-factory/scripts/factory.sh" doctor
 npm --prefix "$APP_DIR" run build
 "$APP_DIR/scripts/remotion-smoke.sh"

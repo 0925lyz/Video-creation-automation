@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import shutil
 import sys
@@ -63,6 +64,13 @@ def doctor(config_path: Path = Path("config/pipeline.yaml")) -> int:
         "yt-dlp": binary_check("yt-dlp"),
         "ffmpeg": binary_check("ffmpeg"),
         "ffprobe": binary_check("ffprobe"),
+        "tesseract": binary_check("tesseract"),
+        "demucs": {
+            "name": "demucs",
+            "path": "python:demucs" if importlib.util.find_spec("demucs") else None,
+            "required": True,
+            "ok": importlib.util.find_spec("demucs") is not None,
+        },
     }
     optional_checks = {
         "deno": binary_check("deno", required=False),

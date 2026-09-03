@@ -39,6 +39,12 @@ from .krillinai_adapter import (
 from .reaction import compose_reaction, reaction_spec
 from .scoring import score_candidate_v2
 from .server_store import archive_review_package, storage_root
+from .source_media import (
+    contains_chinese,
+    demucs_backing_track,
+    detect_source_caption_regions,
+    localized_backing_required,
+)
 from .strategy import render_audio_mode, resolve_production_strategy
 
 
@@ -2859,15 +2865,28 @@ def enforce_generic_remotion(config: dict[str, Any]) -> None:
     """Require the single generic Remotion output and both CTA orientations."""
     if str(config.get("edit", {}).get("render_engine", "ffmpeg")).strip().lower() != "remotion":
         raise RuntimeError("standard production requires edit.render_engine=remotion")
+    remotion_brand_banner_path(config)
     from .cta import select_random_cta
 
     for orientation in ("portrait", "landscape"):
         select_random_cta(config, orientation)
 
 
+def remotion_brand_banner_path(config: dict[str, Any]) -> Path:
+    configured = str(
+        (config.get("remotion", {}) or {}).get("brand_banner_image")
+        or "assets/brand/jaguartv_download_banner.jpg"
+    ).strip()
+    path = resolve_config_path(config, configured).expanduser().resolve()
+    if not path.is_file() or path.suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp"}:
+        raise RuntimeError(f"required Remotion brand banner is missing: {path}")
+    return path
+
+
 def render_clean_segment(
     config: dict[str, Any], media: Path, voice: Path | None, bgm: Path | None,
     output: Path, duration: float, audio_mode: str, start_time: float,
+    *, source_backing: bool = False,
 ) -> None:
     """Render only the clean video/audio segment, with no logo/endcard overlays."""
     render_target = output.with_name(
@@ -2893,8 +2912,8 @@ def render_clean_segment(
     args = ["ffmpeg", "-y", "-ss", f"{max(0.0, start_time):.3f}", "-t", f"{duration:.3f}", "-i", str(media)]
     audio_chains: list[str] = []
     voice_volume = float(config.get("audio", {}).get("voice_volume", 1.0))
-    bgm_volume = float(config.get("audio", {}).get("bgm_volume", 0.62))
     source_volume = float(config.get("audio", {}).get("source_music_volume", 1.0))
+    bgm_volume = source_volume if source_backing else float(config.get("audio", {}).get("bgm_volume", 0.62))
     fade_out_start = max(0.0, duration - 1.0)
     if audio_mode == "localized":
         if not voice:
@@ -3108,6 +3127,7 @@ def render_video_remotion_generic(
     job_id: str | None = None,
     candidate_id: str | None = None,
     content_duration_override: float | None = None,
+    caption_avoid_regions: Sequence[Sequence[float]] = (),
 ) -> dict[str, Any]:
     from .cta import select_random_cta
 
@@ -3139,6 +3159,9 @@ def render_video_remotion_generic(
     custom_design = remotion_settings.get("custom_design", {}) or {}
     custom_design_enabled = bool(custom_design.get("enabled"))
     source_orientation = "landscape" if source_width >= source_height else "portrait"
+    brand_banner = remotion_brand_banner_path(config)
+    with Image.open(brand_banner) as banner_image:
+        banner_aspect_ratio = banner_image.width / max(1, banner_image.height)
     cta = select_random_cta(config, source_orientation)
     cta_path = Path(str(cta["file_path"])).resolve()
     cta_seconds = float(cta["duration_sec"]) if cta["media_type"] == "video" else 2.0
@@ -3167,6 +3190,11 @@ def render_video_remotion_generic(
         "overlayPlacement": str(canvas["overlay_placement"]),
         "sourceAspectRatio": source_width / max(1, source_height),
         "customDesign": custom_design_enabled,
+        "brandBannerSrc": copy_remotion_public_asset(
+            brand_banner, public_dir, f"brand-banner{brand_banner.suffix.lower()}"
+        ),
+        "brandBannerAspectRatio": banner_aspect_ratio,
+        "captionAvoidRegions": [list(region) for region in caption_avoid_regions],
     }
     if remotion_captions_enabled(config):
         caption_cues = remotion_caption_cues(subtitles, max_end=content_duration)
@@ -3245,6 +3273,10 @@ def render_video_remotion_generic(
             "media_type": str(cta["media_type"]),
             "orientation": str(cta["orientation"]),
             "duration_sec": cta_seconds,
+        },
+        "brand_banner": {
+            "asset": str((config.get("remotion", {}) or {}).get("brand_banner_image") or "assets/brand/jaguartv_download_banner.jpg"),
+            "scope": "content_only",
         },
         "design_scope": "content_only",
     }
@@ -3427,14 +3459,16 @@ def qa_video(
 
 
 def short_duration_bounds(config: dict[str, Any]) -> tuple[float, float]:
-    configured = config.get("edit", {}).get("output_duration_sec", [20, 60])
+    configured = config.get("edit", {}).get("output_duration_sec", [12, 30])
     if isinstance(configured, (list, tuple)) and len(configured) >= 2:
         minimum = float(configured[0])
         maximum = float(configured[1])
     else:
         minimum = 20.0
         maximum = float(configured)
-    return max(12.0, minimum), min(60.0, max(minimum, maximum))
+    bounded_minimum = min(30.0, max(12.0, minimum))
+    bounded_maximum = min(30.0, max(bounded_minimum, maximum))
+    return bounded_minimum, bounded_maximum
 
 
 def source_duration_limit(config: dict[str, Any]) -> float:
@@ -3676,8 +3710,12 @@ def produce_candidate(
         segment_voice_name = ""
         segment_subtitles: Path | None = None
         segment_publishing_text = publishing_text
+        segment_bgm = bgm
+        segment_bgm_source = bgm_source
+        source_caption_scan: dict[str, Any] = {"regions": [], "has_chinese_text": False, "samples": 0}
+        source_transcript = ""
         if audio_mode == "localized":
-            if subtitles is None:
+            if subtitles is None or transcript_file is None:
                 raise RuntimeError("KrillinAI target subtitles are missing")
             segment_subtitles = slice_srt_file(
                 subtitles,
@@ -3687,6 +3725,45 @@ def produce_candidate(
             )
             segment_script = parse_srt(segment_subtitles).strip()
             assert_script_is_portuguese(segment_script)
+            segment_source_subtitles = slice_srt_file(
+                transcript_file,
+                work / f"subtitles_source_part{segment_index:02d}.srt",
+                start=float(segment["start"]),
+                duration=float(segment["duration"]),
+            )
+            source_transcript = parse_srt(segment_source_subtitles).strip()
+            try:
+                source_caption_scan = detect_source_caption_regions(
+                    media,
+                    start=float(segment["start"]),
+                    duration=float(segment["duration"]),
+                    sample_count=int((config.get("audio", {}) or {}).get("caption_scan_samples", 8)),
+                    confidence=float((config.get("audio", {}) or {}).get("caption_scan_confidence", 40)),
+                )
+            except RuntimeError as error:
+                if contains_chinese(source_transcript):
+                    raise RuntimeError(
+                        "Chinese speech was detected but source-caption detection failed; "
+                        "refusing to discard the original backing track"
+                    ) from error
+                source_caption_scan["error"] = str(error)
+            if localized_backing_required(
+                source_transcript, bool(source_caption_scan.get("has_chinese_text"))
+            ):
+                audio_settings = config.get("audio", {}) or {}
+                segment_bgm = demucs_backing_track(
+                    media,
+                    work / f"source_audio_part{segment_index:02d}",
+                    start=float(segment["start"]),
+                    duration=float(segment["duration"]),
+                    model=str(audio_settings.get("demucs_model") or "htdemucs"),
+                    timeout=float(audio_settings.get("demucs_timeout_sec") or 900),
+                )
+                segment_bgm_source = "demucs_no_vocals"
+                progress(
+                    62 + int((segment_index - 1) * 24 / max(1, segment_total)),
+                    f"第 {segment_index}/{segment_total} 段已移除中文人声并保留原伴奏",
+                )
             tts_video = extract_krillinai_tts_video(
                 media,
                 work / f"krillinai_tts_input_part{segment_index:02d}.mp4",
@@ -3715,8 +3792,9 @@ def produce_candidate(
         if render_engine == "remotion":
             clean = work / f"{filename_stem}_clean_input.mp4"
             render_clean_segment(
-                config, render_media, segment_voice, bgm, clean, float(segment["duration"]),
+                config, render_media, segment_voice, segment_bgm, clean, float(segment["duration"]),
                 audio_mode=audio_mode, start_time=render_start,
+                source_backing=segment_bgm_source == "demucs_no_vocals",
             )
             variant_output = work / f"{filename_stem}-通用版.mp4"
             info = render_video_remotion_generic(
@@ -3724,6 +3802,7 @@ def produce_candidate(
                 clean,
                 variant_output,
                 subtitles=segment_subtitles,
+                caption_avoid_regions=source_caption_scan.get("regions") or [],
                 job_id=package_id,
                 candidate_id=row["id"],
             )
@@ -3763,7 +3842,7 @@ def produce_candidate(
             output = variant_output
         else:
             render_video(
-                config, render_media, segment_voice, bgm, segment_subtitles, output, float(segment["duration"]),
+                config, render_media, segment_voice, segment_bgm, segment_subtitles, output, float(segment["duration"]),
                 audio_mode=audio_mode, start_time=render_start,
             )
             if reaction.mode != "none":
@@ -3890,8 +3969,10 @@ def produce_candidate(
                 "source_audio_removed": audio_mode == "localized",
                 "source_audio_preserved": audio_mode == "preserve_source",
                 "voice": segment_voice_name if segment_voice else "",
-                "bgm": str(bgm) if bgm else "",
-                "bgm_source": bgm_source,
+                "bgm": str(segment_bgm) if segment_bgm else "",
+                "bgm_source": segment_bgm_source,
+                "source_music_preserved": segment_bgm_source == "demucs_no_vocals",
+                "chinese_voice_detected": contains_chinese(source_transcript),
             },
             "localization": {
                 "provider": "krillinai" if audio_mode == "localized" else "none",
@@ -3901,6 +3982,10 @@ def produce_candidate(
             "visual_cleanup": {
                 "layout_mode": str(config.get("edit", {}).get("layout_mode", "vertical")),
                 "source_subtitle_mode": "preserve",
+                "source_caption_regions": source_caption_scan.get("regions") or [],
+                "chinese_on_screen": bool(source_caption_scan.get("has_chinese_text")),
+                "caption_scan_samples": int(source_caption_scan.get("samples") or 0),
+                "caption_scan_error": str(source_caption_scan.get("error") or ""),
             },
             "qa": qa,
         }

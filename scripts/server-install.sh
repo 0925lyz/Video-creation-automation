@@ -52,7 +52,7 @@ echo "==> Installing system dependencies"
 sudo apt-get update
 sudo apt-get install -y \
   ca-certificates curl git gnupg lsb-release software-properties-common \
-  ffmpeg \
+  ffmpeg tesseract-ocr tesseract-ocr-chi-sim tesseract-ocr-chi-tra \
   build-essential pkg-config
 
 if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
@@ -199,7 +199,7 @@ echo "==> Installing keyword maintenance timers"
 bash scripts/install-keyword-maintenance.sh
 
 echo "==> Verifying install"
-.venv/bin/python -m pytest tests/test_core.py tests/test_platform_and_brand.py tests/test_localization.py
+.venv/bin/python -m pytest tests/test_core.py tests/test_platform_and_brand.py tests/test_localization.py tests/test_source_media.py tests/test_strategy_and_highlight.py
 ./.agents/skills/jaguartv-content-factory/scripts/factory.sh doctor
 npm --prefix "$APP_DIR" run build
 ./scripts/remotion-smoke.sh

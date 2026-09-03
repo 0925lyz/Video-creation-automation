@@ -229,7 +229,7 @@ def rank_highlight_windows(
     strategy: str = "sports_highlight",
 ) -> list[dict[str, Any]]:
     max_segments = max(1, min(10, int(max_segments)))
-    segment_duration = min(max(12.0, float(max_duration)), max(1.0, source_duration))
+    segment_duration = min(max(12.0, min(30.0, float(max_duration))), max(1.0, source_duration))
     if source_duration <= segment_duration + 1.0:
         segment = HighlightSegment(
             start=0.0,
@@ -319,7 +319,7 @@ def analyze_video(
 def uniform_segments(
     source_duration: float, *, max_segments: int = 3, max_duration: float = 30.0, strategy: str = "uniform"
 ) -> list[dict[str, Any]]:
-    duration = min(max(12.0, max_duration), source_duration)
+    duration = min(max(12.0, min(30.0, max_duration)), source_duration)
     count = 1 if source_duration <= duration + 1 else min(max_segments, max(1, int(source_duration // duration)))
     starts = [0.0] if count == 1 else [index * (source_duration - duration) / (count - 1) for index in range(count)]
     segments = [

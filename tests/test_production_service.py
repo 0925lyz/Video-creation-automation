@@ -224,7 +224,7 @@ def test_imported_pending_video_uses_standard_production_and_syncs_workflow_stat
     saved = connect_db(config).execute(
         "SELECT actual_workflow_status FROM source_imports WHERE id='import-task-1'"
     ).fetchone()
-    assert calls == [("source-import-1", "candidate-production-v3-cta")]
+    assert calls == [("source-import-1", "candidate-production-v4-brand-audio")]
     assert saved["actual_workflow_status"] == "READY_FOR_REVIEW"
 
 
@@ -318,6 +318,7 @@ def test_generic_output_passes_single_version_gate(tmp_path: Path):
         "layout": {
             "mode": "content_then_cta", "source_orientation": "portrait",
             "cta": {"asset_id": "cta-1", "media_type": "image", "orientation": "portrait", "duration_sec": 2},
+            "brand_banner": {"asset": "assets/brand/jaguartv_download_banner.jpg", "scope": "content_only"},
         },
     }])
     assert result["variants"] == ["通用版"]
@@ -375,6 +376,7 @@ def install_fake_persisted_outputs(
         layout = {
             "mode": "content_then_cta", "source_orientation": "portrait",
             "cta": {"asset_id": "cta-1", "media_type": "image", "orientation": "portrait", "duration_sec": 2},
+            "brand_banner": {"asset": "assets/brand/jaguartv_download_banner.jpg", "scope": "content_only"},
         } if variant == "通用版" else {"mode": "existing_fb_layout"}
         connection.execute(
             "INSERT INTO render_jobs(id,candidate_id,variant,engine,status,output_path,metadata_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",

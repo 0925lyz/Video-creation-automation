@@ -14,6 +14,8 @@ type BrandProps = {
   sourceVideo: string;
   ctaSrc?: string;
   ctaType?: "image" | "video";
+  brandBannerSrc?: string;
+  brandBannerAspectRatio?: number;
   topBadge?: string;
   bottomHeadline?: string;
   bottomSubline?: string;
@@ -22,6 +24,7 @@ type BrandProps = {
   designLayers?: DesignLayer[];
   captions?: CaptionCue[];
   captionStyle?: CaptionStyle;
+  captionAvoidRegions?: number[][];
   width: number;
   height: number;
   fps: number;
@@ -74,6 +77,8 @@ const fallbackProps: BrandProps = {
   sourceVideo: "",
   ctaSrc: "",
   ctaType: "image",
+  brandBannerSrc: "",
+  brandBannerAspectRatio: 928 / 129,
   topBadge: "",
   bottomHeadline: "",
   bottomSubline: "",
@@ -95,6 +100,7 @@ const fallbackProps: BrandProps = {
   overlayPlacement: "video_corners",
   sourceAspectRatio: 16 / 9,
   captions: [],
+  captionAvoidRegions: [],
   captionStyle: {
     position: "bottom",
     maxWidthRatio: 0.90,
@@ -129,12 +135,15 @@ function JaguarTVGeneric(props: BrandProps) {
       <Sequence durationInFrames={contentFrames}>
         <GenericContentLayout {...p} />
         {p.customDesign ? <FreeformDesignOverlay layers={p.designLayers || []} /> : null}
+        <BrandBannerOverlay {...p} />
         <CaptionOverlays
           captions={p.captions || []}
           style={p.captionStyle || fallbackProps.captionStyle}
           sourceFit={p.sourceFit || "cover"}
           sourceAspectRatio={p.sourceAspectRatio || width / height}
           frameRect={genericContentRects(p, width, height).video}
+          brandBannerRect={brandBannerRect(p, width, height)}
+          avoidRegions={p.captionAvoidRegions || []}
         />
       </Sequence>
       {p.ctaSrc ? (
@@ -180,6 +189,40 @@ function GenericContentLayout(p: BrandProps) {
         objectFit: "contain",
       }} muted={false} /> : null}
     </AbsoluteFill>
+  );
+}
+
+function brandBannerRect(p: BrandProps, width: number, height: number): ContentRect {
+  const video = genericContentRects(p, width, height).video;
+  const bannerWidth = Math.min(width, video.width);
+  const bannerHeight = Math.min(
+    bannerWidth / Math.max(1, p.brandBannerAspectRatio || fallbackProps.brandBannerAspectRatio || 1),
+    height * 0.12,
+  );
+  return {
+    x: Math.max(0, (width - bannerWidth) / 2),
+    y: Math.max(0, video.y - bannerHeight),
+    width: bannerWidth,
+    height: bannerHeight,
+  };
+}
+
+function BrandBannerOverlay(p: BrandProps) {
+  const {width, height} = useVideoConfig();
+  if (!p.brandBannerSrc) {
+    return null;
+  }
+  const rect = brandBannerRect(p, width, height);
+  return (
+    <Img src={assetSrc(p.brandBannerSrc)} style={{
+      position: "absolute",
+      left: rect.x,
+      top: rect.y,
+      width: rect.width,
+      height: rect.height,
+      objectFit: "contain",
+      backgroundColor: "#000",
+    }} />
   );
 }
 
@@ -256,12 +299,16 @@ function CaptionOverlays({
   sourceFit,
   sourceAspectRatio,
   frameRect,
+  brandBannerRect: bannerRect,
+  avoidRegions,
 }: {
   captions: CaptionCue[];
   style?: CaptionStyle;
   sourceFit: "cover" | "contain";
   sourceAspectRatio: number;
   frameRect?: ContentRect;
+  brandBannerRect?: ContentRect;
+  avoidRegions: number[][];
 }) {
   const {width, height, fps} = useVideoConfig();
   if (!captions.length) {
@@ -275,11 +322,21 @@ function CaptionOverlays({
   const background = hexToRgba(style?.backgroundColor || "#050505", style?.backgroundOpacity ?? 0);
   const rect = frameRect || sourceVideoRect(width, height, sourceAspectRatio || width / height, sourceFit || "cover");
   const safeInset = Math.max(Math.round(height * 0.01), Math.round(rect.height * (style?.safeInsetRatio || 0.05)));
-  const placement: React.CSSProperties = style?.position === "top" ? {
-    top: rect.y + safeInset,
-  } : {
-    bottom: height - (rect.y + rect.height) + safeInset,
-  };
+  const captionHeight = lineHeight * maxLines;
+  const topY = Math.max(rect.y + safeInset, (bannerRect?.y || 0) + (bannerRect?.height || 0) + safeInset);
+  const bottomY = rect.y + rect.height - safeInset - captionHeight;
+  const overlap = (top: number) => avoidRegions.reduce((total, region) => {
+    if (!Array.isArray(region) || region.length < 4) return total;
+    const regionTop = rect.y + Number(region[1]) * rect.height;
+    const regionBottom = rect.y + Number(region[3]) * rect.height;
+    return total + Math.max(0, Math.min(top + captionHeight, regionBottom) - Math.max(top, regionTop));
+  }, 0);
+  const preferredTop = style?.position === "top";
+  const topOverlap = overlap(topY);
+  const bottomOverlap = overlap(bottomY);
+  const captionTop = preferredTop
+    ? (topOverlap <= bottomOverlap ? topY : bottomY)
+    : (bottomOverlap <= topOverlap ? bottomY : topY);
 
   return (
     <AbsoluteFill style={{pointerEvents: "none"}}>
@@ -292,7 +349,7 @@ function CaptionOverlays({
               <div
                 style={{
                   position: "absolute",
-                  ...placement,
+                  top: captionTop,
                   maxWidth: Math.min(maxWidth, rect.width * 0.90),
                   background,
                   color: style?.textColor || "#ffffff",

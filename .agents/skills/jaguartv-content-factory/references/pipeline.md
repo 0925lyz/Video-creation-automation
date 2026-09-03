@@ -4,11 +4,12 @@
 
 - Candidate discovery requires a known duration at or below 900 seconds.
 - Download refuses unknown or longer metadata and removes a downloaded file if `ffprobe` reports more than 900 seconds.
-- The original frame is preserved. There is no promotional-tail trim, OCR pass, caption crop, or subtitle blur.
+- The original frame is preserved. There is no promotional-tail trim, caption crop, or subtitle blur. Tesseract OCR only reports existing caption regions and whether Chinese screen captions are present.
 - KrillinAI performs transcription, pt-BR translation, line timing, and TTS. Its configured providers may be changed without modifying factory code.
 - A task can override the TTS voice with `--krillinai-voice`; an empty Edge voice uses `KRILLIN_EDGE_TTS_DEFAULT_VOICE`, while other providers use their configured default.
 - Any transcription, translation, Portuguese language-gate, or TTS failure stops production. There is no generic script or system-voice fallback.
-- Remotion places at most two compact subtitle lines inside the source-frame safe area and produces one generic review video. The content is followed by one randomly selected, orientation-matched CTA from the import-only CTA inventory. CTA videos keep their full duration; CTA images display for two seconds. Subtitle positions do not follow OCR detections.
+- Every smart slice is at most 30 seconds. Remotion places at most two compact subtitle lines in the less-obstructed top or bottom source-frame area, always places the fixed JaguarTV download banner at the source video's top edge, and produces one generic review video. The content is followed by one randomly selected, orientation-matched CTA from the import-only CTA inventory. CTA videos keep their full duration; CTA images display for two seconds. The fixed banner and captions are absent from the CTA sequence.
+- Chinese transcript text plus detected Chinese screen captions triggers Demucs vocal separation; only the `no_vocals` backing track is mixed under the pt-BR voice. A separation failure blocks production.
 - Media QA rejects sustained black or green frames, conservative glitch/decode signals, and frozen content. The still-image CTA interval is excluded from freeze analysis.
 - Pending-review operators may remove one middle interval and concatenate the before/after sections. Freeform text/image design uses normalized coordinates on the exact output canvas and replaces the generic output; neither edit may place layers over the CTA.
 

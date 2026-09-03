@@ -348,8 +348,8 @@
           <div><p class="eyebrow">PRODUCTION</p><h2>剪辑参数</h2></div>
           <div class="settings-grid three">
             <label>渲染引擎<select id="settingRenderEngine"><option value="ffmpeg">FFmpeg 快速模式</option><option value="remotion">Remotion 品牌模式</option></select></label>
-            <label>最短秒数<input id="settingMinDuration" type="number" min="5" max="30"></label>
-            <label>最长秒数<input id="settingMaxDuration" type="number" min="5" max="60"></label>
+            <label>最短秒数<input id="settingMinDuration" type="number" min="12" max="30"></label>
+            <label>最长秒数<input id="settingMaxDuration" type="number" min="12" max="30"></label>
             <label>每个源最多切几条<input id="settingMaxSegments" type="number" min="1" max="10"></label>
             <label>画幅模式<select id="settingLayout"><option value="original">保留原视频画幅</option><option value="vertical">强制竖屏 9:16</option></select></label>
           </div>
@@ -398,7 +398,7 @@
         <label>音频策略<select id="productionAudioPolicy"><option value="auto">KrillinAI 自动本地化</option><option value="localize_ptbr">KrillinAI 葡语配音字幕</option><option value="source_plus_funk">保留源音</option><option value="funk_only">静音</option></select></label>
         <label>KrillinAI 音色<input id="productionKrillinVoice" placeholder="留空使用当前供应商默认音色"></label>
         <label>最大切片数<input id="productionMaxSegments" type="number" min="1" max="10" value="3"></label>
-        <label>单片最长秒数<input id="productionMaxDuration" type="number" min="12" max="60" value="30"></label>
+        <label>单片最长秒数<input id="productionMaxDuration" type="number" min="12" max="30" value="30"></label>
         <label>Reaction 布局<select id="productionReactionMode"><option value="none">不使用</option><option value="picture_in_picture">画中画</option><option value="split_vertical">上下分屏</option><option value="side_by_side">左右分屏</option></select></label>
         <label>服务器 Reaction 路径<input id="productionReactionSource" placeholder="/path/on/server/reaction.mp4"></label>
         <label>或上传 Reaction 文件<input id="productionReactionFile" type="file" accept="video/mp4,video/quicktime,video/webm,.mkv"></label>

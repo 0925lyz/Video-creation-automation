@@ -24,7 +24,7 @@ def test_require_binary_finds_static_ffprobe(tmp_path: Path, monkeypatch):
 
 def test_doctor_ready_with_optional_degraded_tools(tmp_path: Path, monkeypatch, capsys):
     def fake_require_binary(name: str) -> str:
-        if name in {"yt-dlp", "ffmpeg", "ffprobe"}:
+        if name in {"yt-dlp", "ffmpeg", "ffprobe", "tesseract"}:
             return f"/opt/jaguartv/bin/{name}"
         raise RuntimeError(f"Missing required binary: {name}")
 

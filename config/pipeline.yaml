@@ -79,7 +79,7 @@ selection:
 
 edit:
   render_engine: remotion           # the single generic output and imported CTA sequence require Remotion
-  output_duration_sec: [12, 60]
+  output_duration_sec: [12, 30]
   max_segments_per_source: 3
   segment_overlap_sec: 3
   layout_mode: original            # original | vertical
@@ -116,9 +116,14 @@ audio:
   bgm_volume: 0.0                  # fixed BGM is disabled; pt-BR localization uses generated voice only
   bgm_dir: assets/bgm
   bgm_path: ""
+  caption_scan_samples: 8
+  caption_scan_confidence: 40
+  demucs_model: htdemucs
+  demucs_timeout_sec: 900
 
 remotion:
   render_runner: cli
+  brand_banner_image: assets/brand/jaguartv_download_banner.jpg
   overlay_max_width_ratio: 0.18
   mobile_overlay_left_width_ratio: 0.22
   mobile_overlay_right_width_ratio: 0.36
@@ -129,7 +134,7 @@ remotion:
     position: bottom
     max_width_ratio: 0.90
     font_size_ratio: 0.028
-    safe_inset_ratio: 0.05
+    safe_inset_ratio: 0.04
     background_opacity: 0.0
     max_lines: 2
     text_color: "#ffffff"

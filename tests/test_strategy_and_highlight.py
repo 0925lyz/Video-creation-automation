@@ -36,6 +36,22 @@ def test_operator_can_override_every_strategy_dimension():
     assert render_audio_mode(strategy.audio_policy) == "localized"
 
 
+def test_segment_duration_is_hard_capped_at_30_seconds():
+    strategy = resolve_production_strategy(
+        {"title": "football goal"},
+        {"max_duration": 90},
+        default_max_duration=60,
+    )
+    assert strategy.max_duration == 30
+
+    segments = rank_highlight_windows(
+        source_duration=180,
+        audio_points=[SignalPoint(90, 1.0)],
+        max_duration=90,
+    )
+    assert all(segment["duration"] <= 30 for segment in segments)
+
+
 def test_highlight_ranking_uses_audio_motion_scene_keyword_and_replay():
     segments = rank_highlight_windows(
         source_duration=180,

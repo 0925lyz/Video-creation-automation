@@ -3503,8 +3503,8 @@ def save_system_settings(config: dict[str, Any], payload: dict[str, Any]) -> dic
         values = edit_payload.get("output_duration_sec") or [12, 30]
         if not isinstance(values, list) or len(values) < 2:
             raise ValueError("output_duration_sec must be [min,max]")
-        minimum = max(5, int(values[0]))
-        maximum = min(60, max(minimum, int(values[1])))
+        minimum = min(30, max(12, int(values[0])))
+        maximum = min(30, max(minimum, int(values[1])))
         data["edit"]["output_duration_sec"] = [minimum, maximum]
     if "max_segments_per_source" in edit_payload:
         data["edit"]["max_segments_per_source"] = max(1, min(10, int(edit_payload.get("max_segments_per_source") or 3)))

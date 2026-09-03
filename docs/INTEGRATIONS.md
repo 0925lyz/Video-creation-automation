@@ -30,6 +30,8 @@
 | f2 | Apache-2.0 | 独立 editable 环境安装完整 CLI；抖音候选唯一下载器，登录态仅通过权限为 0600 的临时配置传入 |
 | yt-dlp | Unlicense | YouTube、TikTok、Facebook、X、Instagram 的统一下载器；Kwai 先解析官方页面 CDN，再交给 yt-dlp 下载 |
 | KrillinAI | GPL-3.0 | 必需的独立 CLI；执行转录、pt-BR 逐句翻译和逐段 TTS，固定提交后由 `scripts/install-krillinai.sh` 构建 |
+| Demucs | MIT | 仅当中文语音转录和画面中文字幕同时命中时，由生产进程分离并保留 `no_vocals` 伴奏轨 |
+| Tesseract OCR | Apache-2.0 | 抽样检测原字幕位置和中文字幕存在性；不裁剪、不遮挡、不模糊原画面 |
 
 GPL 项目保持独立进程或独立检出，不与本仓库源码打包。KrillinAI 的私密 `config/config.toml` 不进入 Git；它可以切换转录、翻译模型和 TTS 供应商。使用和再分发前应复核对应固定提交中的上游许可证；`NOASSERTION` 项目不应在未确认许可时重新分发。
 
@@ -41,7 +43,7 @@ GPL 项目保持独立进程或独立检出，不与本仓库源码打包。Kril
 
 - 发现和下载结果必须进入 `ingest`、`ingest-mediacrawler` 或 `upload`，不能建立第二套候选数据库。
 - KrillinAI 的转录、翻译、字幕和 TTS 结果必须回到候选 ID 对应的工作目录，再由 `produce` 生成审核包。
-- 工厂保留原视频画面，不执行 OCR、烧录字幕模糊或宣传尾卡裁剪。
+- 工厂保留原视频画面；OCR 只输出字幕位置，不执行烧录字幕模糊或宣传尾卡裁剪。
 - Skill 不负责自动发布；`workspace/ready_for_review/` 和服务器审核页仍是人工审核边界。
 
 这些 skill 是给 Agent 阅读的操作方法，不是 Python 库，也不会被 worker 自动调用。仓库只把已选规则固化进 Python/Remotion 流程；实际执行证据仍以 CLI、API、数据库记录和 worker 日志为准。

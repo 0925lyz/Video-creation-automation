@@ -4,9 +4,11 @@ from pathlib import Path
 TEMPLATE = Path("src/jaguartv_factory/remotion_template/src/index.tsx")
 
 
-def test_generic_uses_full_canvas_content_without_fixed_banner():
+def test_generic_uses_top_brand_banner_without_legacy_bottom_banner():
     source = TEMPLATE.read_text(encoding="utf-8")
     assert "GenericContentLayout" in source
+    assert "BrandBannerOverlay" in source
+    assert "brandBannerRect" in source
     assert "imgBottomBanner" not in source
     assert "bottomBannerAspectRatio" not in source
     assert "CornerOverlays" not in source

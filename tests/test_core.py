@@ -37,11 +37,17 @@ from jaguartv_factory.core import (
     remotion_captions_enabled,
     render_endcard,
     render_clean_segment,
+    short_duration_bounds,
     update_render_job,
     source_filename_label,
     upsert_render_job,
     write_srt_blocks,
 )
+
+
+def test_short_duration_bounds_never_exceed_or_invert_thirty_seconds():
+    assert short_duration_bounds({"edit": {"output_duration_sec": [5, 8]}}) == (12.0, 12.0)
+    assert short_duration_bounds({"edit": {"output_duration_sec": [50, 90]}}) == (30.0, 30.0)
 
 
 def test_visual_quality_rejects_sustained_black_frames(tmp_path: Path, monkeypatch):
@@ -247,11 +253,13 @@ def test_pipeline_does_not_auto_add_remotion_promo_copy():
     assert remotion.get("endcard_cta", "") == ""
 
 
-def test_remotion_generic_appends_matching_cta_without_fixed_banner(tmp_path: Path, monkeypatch):
+def test_remotion_generic_adds_top_banner_and_matching_cta(tmp_path: Path, monkeypatch):
     clean = tmp_path / "clean.mp4"
     clean.write_bytes(b"video")
     cta = tmp_path / "cta-portrait.jpg"
     Image.new("RGB", (720, 1280), "white").save(cta)
+    brand_banner = tmp_path / "brand-banner.jpg"
+    Image.new("RGB", (928, 129), "black").save(brand_banner)
     runtime = tmp_path / "runtime"
     runtime.mkdir()
     captured: dict[str, dict] = {}
@@ -277,7 +285,7 @@ def test_remotion_generic_appends_matching_cta_without_fixed_banner(tmp_path: Pa
         "edit": {"layout_mode": "original"},
         "mobile_review_format": {"enabled": False},
         "aspect_thresholds": {"vertical_min": 0.5, "vertical_max": 0.75, "horizontal_min": 1.6, "horizontal_max": 1.9},
-        "remotion": {"render_runner": "renderer_api"},
+        "remotion": {"render_runner": "renderer_api", "brand_banner_image": str(brand_banner)},
     }
 
     render_video_remotion_generic(config, clean, tmp_path / "generic.mp4")
@@ -286,6 +294,8 @@ def test_remotion_generic_appends_matching_cta_without_fixed_banner(tmp_path: Pa
     assert captured["通用版"]["ctaType"] == "image"
     assert captured["通用版"]["ctaSeconds"] == 2.0
     assert captured["通用版"]["durationSeconds"] == 22.0
+    assert captured["通用版"]["brandBannerSrc"].endswith("brand-banner.jpg")
+    assert captured["通用版"]["brandBannerAspectRatio"] == pytest.approx(928 / 129)
     assert "imgBottomBanner" not in captured["通用版"]
 
 
@@ -560,6 +570,44 @@ def test_localized_clean_render_uses_ptbr_voice_without_fixed_bgm(tmp_path: Path
     assert "asplit" not in filter_complex
     assert "[1:a]volume" in filter_complex
     assert output.read_bytes() == b"rendered"
+
+
+def test_localized_clean_render_keeps_demucs_backing_at_source_volume(tmp_path: Path, monkeypatch):
+    media = tmp_path / "source.mp4"
+    voice = tmp_path / "voice.wav"
+    backing = tmp_path / "no_vocals.wav"
+    output = tmp_path / "out.mp4"
+    for path in (media, voice, backing):
+        path.write_bytes(b"data")
+    captured: dict[str, list[str]] = {}
+
+    class Result:
+        returncode = 0
+        stderr = ""
+        stdout = ""
+
+    def fake_run_command(args, **kwargs):
+        captured["args"] = [str(part) for part in args]
+        Path(args[-1]).write_bytes(b"rendered")
+        return Result()
+
+    monkeypatch.setattr("jaguartv_factory.core.media_dimensions", lambda path: (1080, 1920))
+    monkeypatch.setattr("jaguartv_factory.core.run_command", fake_run_command)
+    render_clean_segment(
+        {
+            "edit": {"layout_mode": "original"},
+            "audio": {"bgm_volume": 0.0, "source_music_volume": 0.73},
+            "mobile_review_format": {"enabled": False},
+            "aspect_thresholds": {"vertical_min": 0.5, "vertical_max": 0.75},
+        },
+        media, voice, backing, output, 12.0, "localized", 0.0,
+        source_backing=True,
+    )
+
+    args = captured["args"]
+    filter_complex = args[args.index("-filter_complex") + 1]
+    assert "[2:a]volume=0.73" in filter_complex
+    assert "[2:a]volume=0.0" not in filter_complex
 
 
 def test_generated_endcard_is_fully_opaque(tmp_path: Path):

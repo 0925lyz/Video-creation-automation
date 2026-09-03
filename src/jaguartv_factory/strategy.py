@@ -186,7 +186,7 @@ def resolve_production_strategy(
         raise ValueError(f"unsupported audio_policy: {audio_policy}")
 
     max_segments = max(1, min(10, int(overrides.get("max_segments") or default_max_segments)))
-    max_duration = max(12.0, min(60.0, float(overrides.get("max_duration") or default_max_duration)))
+    max_duration = max(12.0, min(30.0, float(overrides.get("max_duration") or default_max_duration)))
     operator_override = any(
         str(overrides.get(field) or "auto").strip().lower() != "auto"
         for field in ("content_type", "segment_strategy", "audio_policy")
