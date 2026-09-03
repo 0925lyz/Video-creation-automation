@@ -116,6 +116,18 @@ def detect_source_caption_regions(
             )
             regions.extend(frame_regions)
             chinese = chinese or frame_chinese
+            if index == (sample_count + 1) // 2 and not chinese:
+                chinese_probe = subprocess.run(
+                    [
+                        tesseract, str(frame), "stdout", "-l", "chi_sim+chi_tra",
+                        "--psm", "6", "--oem", "1",
+                    ],
+                    check=False,
+                    text=True,
+                    capture_output=True,
+                )
+                if chinese_probe.returncode == 0:
+                    chinese = contains_chinese(chinese_probe.stdout)
     if successful_samples == 0:
         raise RuntimeError("source-caption detection could not read any sampled frame")
     unique = sorted({tuple(region) for region in regions}, key=lambda item: (item[1], item[0]))
