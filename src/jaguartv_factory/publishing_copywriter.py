@@ -9,9 +9,11 @@ from typing import Any
 
 import requests
 
+from .openai_responses_bridge import responses_output_text
 
-DOUBAO_CROSS_BORDER_GROWTH_PROMPT = r"""
-/doubao-cross-border-growth-content
+
+CROSS_BORDER_GROWTH_PROMPT = r"""
+/jaguartv-cross-border-growth-content
 
 你是一个面向巴西市场的短视频发布文案生成器。
 
@@ -248,10 +250,6 @@ def source_material_from(
     }
 
 
-def build_doubao_copywriter_prompt(source_material: dict[str, Any]) -> str:
-    return build_publishing_copy_prompt(source_material)
-
-
 def build_publishing_copy_prompt(
     source_material: dict[str, Any],
     *,
@@ -269,7 +267,7 @@ def build_publishing_copy_prompt(
         payload["operator_directive"] = clean_hint
     safe_json = json.dumps(payload, ensure_ascii=False, indent=2)
     return (
-        f"{DOUBAO_CROSS_BORDER_GROWTH_PROMPT}\n\n"
+        f"{CROSS_BORDER_GROWTH_PROMPT}\n\n"
         "本次必须创作一套新的发布标题、文案和标签，不能直接复制视频文件名、源标题或比赛名。"
         "如果素材是原创工厂赛事视频，优先使用比赛名称、开赛日期、圣保罗时间、播放频道、"
         "视频类型标签、已确认比赛信息和已确认社媒事实；不要把 uncertain_* 字段写成确定事实。"
@@ -294,13 +292,13 @@ def trim_title(value: str) -> str:
     return title[:69].rstrip() + "…"
 
 
-def parse_doubao_copywriter_output(text: str) -> dict[str, Any]:
+def parse_section_copywriter_output(text: str) -> dict[str, Any]:
     clean = text.strip()
     title_match = re.search(r"\*\*标题钩子\*\*\s*(.*?)(?=\n\s*\*\*文案\*\*)", clean, re.DOTALL)
     caption_match = re.search(r"\*\*文案\*\*\s*(.*?)(?=\n\s*\*\*标签\*\*)", clean, re.DOTALL)
     tags_match = re.search(r"\*\*标签\*\*\s*(.*)$", clean, re.DOTALL)
     if not title_match or not caption_match or not tags_match:
-        raise ValueError("Doubao copywriter response did not match the required sections")
+        raise ValueError("copywriter response did not match the required sections")
     title = trim_title(title_match.group(1))
     caption = "\n".join(line.strip() for line in caption_match.group(1).splitlines() if line.strip())
     raw_tags = [line.strip().lstrip("#").strip() for line in tags_match.group(1).splitlines() if line.strip()]
@@ -438,13 +436,49 @@ def fallback_copywriter_result(source_material: dict[str, Any]) -> dict[str, Any
     return normalize_copywriter_result(title, caption, tags)
 
 
-def doubao_settings(config: dict[str, Any]) -> dict[str, Any]:
+def copywriter_settings(config: dict[str, Any]) -> dict[str, Any]:
     settings = ((config.get("publishing") or {}).get("copywriter") or {}) if isinstance(config, dict) else {}
     return settings if isinstance(settings, dict) else {}
 
 
-def copywriter_model(config: dict[str, Any]) -> str:
-    settings = doubao_settings(config)
+def openai_copywriter_model(config: dict[str, Any]) -> str:
+    settings = copywriter_settings(config)
+    return str(
+        os.environ.get("JAGUARTV_OPENAI_MODEL")
+        or settings.get("openai_model")
+        or "gpt-5.2"
+    ).strip()
+
+
+def openai_copywriter_endpoint(config: dict[str, Any]) -> str:
+    settings = copywriter_settings(config)
+    endpoint = str(
+        os.environ.get("JAGUARTV_OPENAI_RESPONSES_URL")
+        or settings.get("openai_responses_url")
+        or ""
+    ).strip()
+    if endpoint:
+        return endpoint
+    base_url = str(
+        os.environ.get("JAGUARTV_OPENAI_BASE_URL")
+        or settings.get("openai_base_url")
+        or "https://api.openai.com/v1"
+    ).strip().rstrip("/")
+    return base_url if base_url.endswith("/responses") else f"{base_url}/responses"
+
+
+def openai_copywriter_api_key(config: dict[str, Any]) -> str:
+    settings = copywriter_settings(config)
+    return str(
+        settings.get("openai_api_key")
+        or os.environ.get("JAGUARTV_OPENAI_API_KEY")
+        or os.environ.get("OPENAI_API_KEY")
+        or ""
+    ).strip()
+
+
+def deepseek_copywriter_model(config: dict[str, Any]) -> str:
+    settings = copywriter_settings(config)
     return str(
         os.environ.get("JAGUARTV_DEEPSEEK_MODEL")
         or settings.get("deepseek_model")
@@ -453,8 +487,12 @@ def copywriter_model(config: dict[str, Any]) -> str:
     ).strip()
 
 
-def copywriter_endpoint(config: dict[str, Any]) -> str:
-    settings = doubao_settings(config)
+def copywriter_model(config: dict[str, Any]) -> str:
+    return deepseek_copywriter_model(config)
+
+
+def deepseek_copywriter_endpoint(config: dict[str, Any]) -> str:
+    settings = copywriter_settings(config)
     base_url = str(
         os.environ.get("JAGUARTV_DEEPSEEK_BASE_URL")
         or settings.get("deepseek_base_url")
@@ -472,8 +510,12 @@ def copywriter_endpoint(config: dict[str, Any]) -> str:
     return base_url if base_url.endswith("/chat/completions") else f"{base_url}/chat/completions"
 
 
-def copywriter_api_key(config: dict[str, Any]) -> str:
-    settings = doubao_settings(config)
+def copywriter_endpoint(config: dict[str, Any]) -> str:
+    return deepseek_copywriter_endpoint(config)
+
+
+def deepseek_copywriter_api_key(config: dict[str, Any]) -> str:
+    settings = copywriter_settings(config)
     return str(
         settings.get("deepseek_api_key")
         or settings.get("api_key")
@@ -482,41 +524,50 @@ def copywriter_api_key(config: dict[str, Any]) -> str:
     ).strip()
 
 
-def call_doubao_copywriter(config: dict[str, Any], prompt: str) -> dict[str, Any]:
-    settings = doubao_settings(config)
+def copywriter_api_key(config: dict[str, Any]) -> str:
+    return deepseek_copywriter_api_key(config)
+
+
+def _copywriter_timeout(config: dict[str, Any]) -> int:
+    settings = copywriter_settings(config)
+    return max(5, min(120, int(
+        settings.get("timeout_sec")
+        or os.environ.get("JAGUARTV_COPYWRITER_TIMEOUT_SEC")
+        or os.environ.get("JAGUARTV_DEEPSEEK_TIMEOUT_SEC")
+        or 60
+    )))
+
+
+def _copywriter_max_tokens(config: dict[str, Any]) -> int:
+    settings = copywriter_settings(config)
+    return max(256, min(4096, int(settings.get("max_tokens") or 1200)))
+
+
+def call_openai_copywriter_text(config: dict[str, Any], prompt: str) -> tuple[str, str]:
+    settings = copywriter_settings(config)
     if settings.get("enabled", True) is False:
-        raise RuntimeError("Doubao publishing copywriter is disabled")
-    api_key = str(settings.get("api_key") or os.environ.get("JAGUARTV_DOUBAO_API_KEY") or "").strip()
-    endpoint = str(
-        settings.get("endpoint")
-        or os.environ.get("JAGUARTV_DOUBAO_ENDPOINT")
-        or ""
-    ).strip()
-    model = str(settings.get("model") or os.environ.get("JAGUARTV_DOUBAO_MODEL") or "").strip()
-    if not api_key or not endpoint or not model:
-        raise RuntimeError("Doubao publishing copywriter is not configured")
-    timeout = max(5, min(90, int(settings.get("timeout_sec") or os.environ.get("JAGUARTV_DOUBAO_TIMEOUT_SEC") or 30)))
+        raise RuntimeError("publishing copywriter is disabled")
+    api_key = openai_copywriter_api_key(config)
+    if not api_key:
+        raise RuntimeError("openai_not_configured")
+    model = openai_copywriter_model(config)
     response = requests.post(
-        endpoint,
+        openai_copywriter_endpoint(config),
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         data=json.dumps({
             "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": float(settings.get("temperature") or 0.65),
+            "input": prompt,
+            "store": False,
+            "max_output_tokens": _copywriter_max_tokens(config),
         }, ensure_ascii=False).encode("utf-8"),
-        timeout=timeout,
+        timeout=_copywriter_timeout(config),
     )
     if response.status_code >= 400:
-        raise RuntimeError(f"Doubao copywriter failed: HTTP {response.status_code}")
-    payload = response.json()
-    choices = payload.get("choices") if isinstance(payload, dict) else None
-    if not isinstance(choices, list) or not choices:
-        raise ValueError("Doubao copywriter response did not include choices")
-    message = choices[0].get("message") if isinstance(choices[0], dict) else {}
-    content = str((message or {}).get("content") or choices[0].get("text") or "").strip()
+        raise RuntimeError(f"OpenAI copywriter failed: HTTP {response.status_code}")
+    content = responses_output_text(response.json())
     if not content:
-        raise ValueError("Doubao copywriter response was empty")
-    return parse_doubao_copywriter_output(content)
+        raise ValueError("OpenAI copywriter response was empty")
+    return content, model
 
 
 def parse_json_copywriter_output(text: str) -> dict[str, Any]:
@@ -526,7 +577,7 @@ def parse_json_copywriter_output(text: str) -> dict[str, Any]:
     try:
         payload = json.loads(clean)
     except json.JSONDecodeError:
-        return parse_doubao_copywriter_output(text)
+        return parse_section_copywriter_output(text)
     if not isinstance(payload, dict):
         raise ValueError("copywriter response must be a JSON object")
     tags = payload.get("tags") if isinstance(payload.get("tags"), list) else []
@@ -537,24 +588,24 @@ def parse_json_copywriter_output(text: str) -> dict[str, Any]:
     )
 
 
-def call_compatible_copywriter(config: dict[str, Any], prompt: str) -> dict[str, Any]:
-    settings = doubao_settings(config)
+def call_deepseek_copywriter_text(config: dict[str, Any], prompt: str) -> tuple[str, str]:
+    settings = copywriter_settings(config)
     if settings.get("enabled", True) is False:
         raise RuntimeError("publishing copywriter is disabled")
-    api_key = copywriter_api_key(config)
+    api_key = deepseek_copywriter_api_key(config)
     if not api_key:
-        raise RuntimeError("DeepSeek publishing copywriter is not configured")
-    timeout = max(5, min(120, int(settings.get("timeout_sec") or os.environ.get("JAGUARTV_DEEPSEEK_TIMEOUT_SEC") or 60)))
+        raise RuntimeError("deepseek_not_configured")
+    model = deepseek_copywriter_model(config)
     response = requests.post(
-        copywriter_endpoint(config),
+        deepseek_copywriter_endpoint(config),
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         data=json.dumps({
-            "model": copywriter_model(config),
+            "model": model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": float(settings.get("temperature") or 0.65),
-            "max_tokens": int(settings.get("max_tokens") or 900),
+            "max_tokens": _copywriter_max_tokens(config),
         }, ensure_ascii=False).encode("utf-8"),
-        timeout=timeout,
+        timeout=_copywriter_timeout(config),
     )
     if response.status_code >= 400:
         raise RuntimeError(f"DeepSeek copywriter failed: HTTP {response.status_code}")
@@ -566,7 +617,37 @@ def call_compatible_copywriter(config: dict[str, Any], prompt: str) -> dict[str,
     content = str((message or {}).get("content") or choices[0].get("text") or "").strip()
     if not content:
         raise ValueError("DeepSeek copywriter response was empty")
-    return parse_json_copywriter_output(content)
+    return content, model
+
+
+def call_copywriter_model(
+    config: dict[str, Any],
+    prompt: str,
+    parser,
+) -> tuple[dict[str, Any], str, str, list[str]]:
+    errors: list[str] = []
+    for source, caller in (("openai", call_openai_copywriter_text), ("deepseek", call_deepseek_copywriter_text)):
+        try:
+            content, model = caller(config, prompt)
+            return parser(content), source, model, errors
+        except Exception as error:
+            errors.append(f"{source}: {error}")
+    raise RuntimeError("AI copywriter unavailable after retries: " + " | ".join(errors)[-700:])
+
+
+def copywriter_fallback_reason(error: Any) -> str:
+    text = str(error)
+    if "openai_not_configured" in text and "deepseek_not_configured" in text:
+        return "ai_not_configured"
+    return "ai_unavailable"
+
+
+def copywriter_ai_status(config: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "enabled": bool(openai_copywriter_api_key(config) or deepseek_copywriter_api_key(config)),
+        "primary_model": openai_copywriter_model(config),
+        "fallback_model": deepseek_copywriter_model(config),
+    }
 
 
 def generate_publishing_copy(
@@ -579,11 +660,27 @@ def generate_publishing_copy(
 ) -> dict[str, Any]:
     prompt = build_publishing_copy_prompt(source_material, platform=platform, variant=variant, hint=hint)
     try:
-        result = call_compatible_copywriter(config, prompt)
-        return {**result, "source": "deepseek", "model": copywriter_model(config), "prompt": prompt}
+        result, source, model, errors = call_copywriter_model(config, prompt, parse_json_copywriter_output)
+        return {
+            **result,
+            "source": source,
+            "model": model,
+            "primary_model": openai_copywriter_model(config),
+            "fallback_model": deepseek_copywriter_model(config),
+            "provider_errors": errors,
+            "prompt": prompt,
+        }
     except Exception as error:
         result = fallback_copywriter_result(source_material)
-        return {**result, "source": "fallback", "error": str(error), "prompt": prompt}
+        return {
+            **result,
+            "source": "fallback",
+            "error": str(error),
+            "fallback_reason": copywriter_fallback_reason(error),
+            "primary_model": openai_copywriter_model(config),
+            "fallback_model": deepseek_copywriter_model(config),
+            "prompt": prompt,
+        }
 
 
 def youtube_description(caption: str) -> str:

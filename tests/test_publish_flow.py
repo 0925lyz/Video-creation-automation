@@ -21,6 +21,21 @@ def config_for(tmp_path: Path) -> dict:
     return {"_root": str(tmp_path), "run": {"workspace": "workspace", "timezone": "America/Sao_Paulo"}}
 
 
+@pytest.fixture(autouse=True)
+def clear_copywriter_ai_env(monkeypatch):
+    for name in (
+        "JAGUARTV_OPENAI_API_KEY",
+        "OPENAI_API_KEY",
+        "JAGUARTV_OPENAI_MODEL",
+        "JAGUARTV_OPENAI_BASE_URL",
+        "JAGUARTV_OPENAI_RESPONSES_URL",
+        "JAGUARTV_DEEPSEEK_API_KEY",
+        "JAGUARTV_DEEPSEEK_BASE_URL",
+        "JAGUARTV_DEEPSEEK_MODEL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
 def insert_candidate(config: dict, candidate_id: str = "cand-1", status: str = "APPROVED") -> None:
     connection = connect_db(config)
     timestamp = now_iso()
@@ -482,17 +497,68 @@ def test_youtube_uses_tags_as_description_when_copy_field_is_blank():
     assert result["description"] == " ".join(tags)
 
 
-def test_generate_publish_copy_preview_uses_deepseek_and_platform_limits(
+def test_generate_publish_copy_preview_uses_gpt_52_first(tmp_path: Path, monkeypatch):
+    config = config_for(tmp_path)
+    insert_candidate(config)
+    write_review_asset(config)
+    monkeypatch.setenv("JAGUARTV_OPENAI_API_KEY", "openai-test")
+    calls = []
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "output_text": json.dumps(
+                    {
+                        "title": "Esse lance virou assunto",
+                        "description": "Um momento perfeito para assistir e comentar.",
+                        "tags": ["Jaguar TV", "Futebol", "Brasil"],
+                    }
+                )
+            }
+
+    def fake_post(url, *, headers, data, timeout):
+        calls.append((url, headers, json.loads(data.decode("utf-8"))))
+        return FakeResponse()
+
+    monkeypatch.setattr("jaguartv_factory.publishing_copywriter.requests.post", fake_post)
+
+    result = generate_publish_copy_preview(
+        config,
+        {
+            "candidate_id": "cand-1",
+            "asset_id": "cand-1:0803-YouTube-1-通用版",
+            "platform": "youtube",
+            "variant": "通用版",
+        },
+    )
+
+    assert result["model"] == "gpt-5.2"
+    assert result["title"] == "Esse lance virou assunto"
+    assert calls[0][0] == "https://api.openai.com/v1/responses"
+    assert calls[0][2]["model"] == "gpt-5.2"
+    assert calls[0][1]["Authorization"] == "Bearer openai-test"
+
+
+def test_generate_publish_copy_preview_falls_back_to_deepseek_and_platform_limits(
     tmp_path: Path, monkeypatch
 ):
     config = config_for(tmp_path)
     config["publishing"] = {"copywriter": {"deepseek_base_url": "https://ds.example.test/v1"}}
     insert_candidate(config)
     write_review_asset(config)
+    monkeypatch.setenv("JAGUARTV_OPENAI_API_KEY", "openai-test")
     monkeypatch.setenv("JAGUARTV_DEEPSEEK_API_KEY", "ds-test")
     monkeypatch.setenv("JAGUARTV_DEEPSEEK_MODEL", "deepseek-v4-flash")
 
     calls = []
+
+    class OpenAIFailure:
+        status_code = 503
+
+        def json(self):
+            return {}
 
     class FakeResponse:
         status_code = 200
@@ -516,6 +582,8 @@ def test_generate_publish_copy_preview_uses_deepseek_and_platform_limits(
 
     def fake_post(url, *, headers, data, timeout):
         calls.append((url, headers, json.loads(data.decode("utf-8"))))
+        if url.endswith("/responses"):
+            return OpenAIFailure()
         return FakeResponse()
 
     monkeypatch.setattr("jaguartv_factory.publishing_copywriter.requests.post", fake_post)
@@ -537,9 +605,10 @@ def test_generate_publish_copy_preview_uses_deepseek_and_platform_limits(
     assert all(tag.startswith("#") for tag in result["tags"])
     assert len([tag for tag in result["tags"] if "jaguar" in tag.lower() or "unitv" in tag.lower() or "tv" in tag.lower()]) >= 10
     assert result["description"].endswith(" ".join(result["tags"]))
-    assert calls[0][0] == "https://ds.example.test/v1/chat/completions"
-    assert calls[0][2]["model"] == "deepseek-v4-flash"
-    assert calls[0][1]["Authorization"] == "Bearer ds-test"
+    assert calls[0][0] == "https://api.openai.com/v1/responses"
+    assert calls[1][0] == "https://ds.example.test/v1/chat/completions"
+    assert calls[1][2]["model"] == "deepseek-v4-flash"
+    assert calls[1][1]["Authorization"] == "Bearer ds-test"
 
 
 def test_generate_publish_copy_accepts_custom_hint_without_provenance(
@@ -625,7 +694,7 @@ def test_generate_publish_copy_accepts_custom_hint_without_provenance(
     assert "巴西安装APP的教程短视频" in json.dumps(captured["body"]["messages"], ensure_ascii=False)
 
 
-def test_generate_publish_copy_falls_back_to_deterministic_when_deepseek_unavailable(
+def test_generate_publish_copy_falls_back_to_deterministic_when_ai_unavailable(
     tmp_path: Path, monkeypatch
 ):
     config = config_for(tmp_path)
@@ -649,7 +718,7 @@ def test_generate_publish_copy_falls_back_to_deterministic_when_deepseek_unavail
         calls.append(url)
         return DeepSeekFailure()
 
-    monkeypatch.setattr("jaguartv_factory.publish_flow.requests.post", fake_post)
+    monkeypatch.setattr("jaguartv_factory.publishing_copywriter.requests.post", fake_post)
 
     result = generate_publish_copy_preview(
         config,
@@ -662,7 +731,7 @@ def test_generate_publish_copy_falls_back_to_deterministic_when_deepseek_unavail
     )
 
     assert result["model"] == "deterministic-provenance"
-    assert result["fallback_reason"] == "deepseek_unavailable"
+    assert result["fallback_reason"] == "ai_unavailable"
     assert calls[0].endswith("/chat/completions")
 
 
@@ -716,7 +785,7 @@ def test_generate_publish_copy_uses_deepseek_primary_without_openai(
     assert "fallback_reason" not in result
 
 
-def test_generate_publish_copy_falls_back_when_deepseek_not_configured(
+def test_generate_publish_copy_falls_back_when_ai_not_configured(
     tmp_path: Path, monkeypatch
 ):
     config = config_for(tmp_path)
@@ -730,7 +799,7 @@ def test_generate_publish_copy_falls_back_when_deepseek_not_configured(
     )
 
     assert result["model"] == "deterministic-provenance"
-    assert result["fallback_reason"] == "deepseek_not_configured"
+    assert result["fallback_reason"] == "ai_not_configured"
 
 
 def test_generate_publish_copy_without_ai_key_uses_provenance_fallback(tmp_path: Path, monkeypatch):

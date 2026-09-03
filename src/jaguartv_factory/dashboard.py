@@ -86,6 +86,12 @@ from .publish_flow import (
     list_publish_accounts,
     platform_capabilities,
 )
+from .publishing_copywriter import (
+    call_copywriter_model,
+    copywriter_ai_status,
+    openai_copywriter_model,
+    deepseek_copywriter_model,
+)
 from .sessions import check_session, delete_session, list_sessions, save_session
 from .youtube_analytics import (
     analytics_accounts,
@@ -408,30 +414,12 @@ def validated_positive_int(value: Any, name: str, default: int) -> int:
     return parsed
 
 
-def gemini_model_name(value: str | None = None) -> str:
-    raw = (value if value is not None else os.environ.get("GEMINI_MODEL", "")).strip()
-    model = raw or "gemini-2.5-flash"
-    normalized = model.lower().replace("_", "-")
-    aliases = {
-        "gemini-3.1-pro": "gemini-3.1-pro-preview",
-        "gemini-3.1-pro-latest": "gemini-3.1-pro-preview",
-        "gemini-3.1-pro-preview": "gemini-3.1-pro-preview",
-        "gemini-3.1-flash": "gemini-3.1-flash-lite",
-        "gemini-3.1-flash-lite": "gemini-3.1-flash-lite",
-        "gemini-3.5-flash": "gemini-3.5-flash",
-        "gemini-3.6-flash": "gemini-3.6-flash",
-        "gemini-2.5-flash": "gemini-2.5-flash",
-        "gemini-2.5-pro": "gemini-2.5-pro",
-    }
-    return aliases.get(normalized, normalized)
+def copywriter_ai_model_name(value: str | None = None) -> str:
+    return str(value or os.environ.get("JAGUARTV_OPENAI_MODEL") or "gpt-5.2").strip()
 
 
-def gemini_model_candidates(primary: str) -> list[str]:
-    candidates = [primary]
-    if primary == "gemini-3.1-pro-preview":
-        candidates.append("gemini-3.1-flash-lite")
-    candidates.append("gemini-2.5-flash")
-    return list(dict.fromkeys(candidates))
+def copywriter_ai_model_candidates(primary: str | None = None) -> list[str]:
+    return [copywriter_ai_model_name(primary), deepseek_copywriter_model({})]
 
 
 def copywriter_request(payload: dict[str, Any]) -> dict[str, Any]:
@@ -541,40 +529,29 @@ def extract_json_object(text: str) -> dict[str, Any]:
         start = clean.find("{")
         end = clean.rfind("}")
         if start < 0 or end < start:
-            raise ValueError("Gemini response did not contain JSON")
+            raise ValueError("model response did not contain JSON")
         clean = clean[start:end + 1]
     try:
         data = json.loads(clean)
     except json.JSONDecodeError as error:
-        raise ValueError("Gemini response was not valid JSON") from error
+        raise ValueError("model response was not valid JSON") from error
     if not isinstance(data, dict):
-        raise ValueError("Gemini response JSON must be an object")
+        raise ValueError("model response JSON must be an object")
     return data
-
-
-def gemini_text(response: dict[str, Any]) -> str:
-    candidates = response.get("candidates")
-    if not isinstance(candidates, list) or not candidates:
-        raise ValueError("Gemini response did not include candidates")
-    parts = (candidates[0].get("content") or {}).get("parts") or []
-    text = "".join(str(part.get("text") or "") for part in parts if isinstance(part, dict))
-    if not text.strip():
-        raise ValueError("Gemini response text was empty")
-    return text
 
 
 def _string_list(value: Any, *, expected: int | None = None, field: str) -> list[str]:
     if not isinstance(value, list):
-        raise ValueError(f"Gemini field {field} must be a list")
+        raise ValueError(f"model field {field} must be a list")
     items = [str(item).strip() for item in value if str(item or "").strip()]
     if expected is not None and len(items) < expected:
-        raise ValueError(f"Gemini field {field} must contain at least {expected} items")
+        raise ValueError(f"model field {field} must contain at least {expected} items")
     return items[:expected] if expected else items
 
 
 def _email_list(value: Any, field: str) -> list[dict[str, str]]:
     if not isinstance(value, list):
-        raise ValueError(f"Gemini field {field} must be a list")
+        raise ValueError(f"model field {field} must be a list")
     emails: list[dict[str, str]] = []
     for item in value[:5]:
         if not isinstance(item, dict):
@@ -587,7 +564,7 @@ def _email_list(value: Any, field: str) -> list[dict[str, str]]:
             "cta": str(item.get("cta") or "").strip(),
         })
     if not emails:
-        raise ValueError(f"Gemini field {field} must contain at least one email")
+        raise ValueError(f"model field {field} must contain at least one email")
     return emails
 
 
@@ -611,22 +588,21 @@ def post_json(endpoint: str, headers: dict[str, str], body: dict[str, Any], time
     try:
         data = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise ValueError(f"non-JSON response from Gemini: {raw[:180]!r}") from error
+        raise ValueError(f"non-JSON model response: {raw[:180]!r}") from error
     return status, data
 
 
-def normalize_gemini_copywriter_result(
+def normalize_ai_copywriter_result(
     result: dict[str, Any],
     request: dict[str, Any],
-    model: str,
 ) -> dict[str, Any]:
     seo = result.get("seo") or {}
     zh_audit = result.get("zhAudit") or {}
     if not isinstance(seo, dict) or not isinstance(zh_audit, dict):
-        raise ValueError("Gemini response is missing seo or zhAudit objects")
+        raise ValueError("model response is missing seo or zhAudit objects")
     zh_seo = zh_audit.get("seo") or {}
     if not isinstance(zh_seo, dict):
-        raise ValueError("Gemini response is missing zhAudit.seo object")
+        raise ValueError("model response is missing zhAudit.seo object")
     normalized = {
         "mode": request["mode"],
         "strategy": str(result.get("strategy") or "").strip(),
@@ -654,60 +630,28 @@ def normalize_gemini_copywriter_result(
             },
         },
         "note": str(result.get("note") or "").strip(),
-        "source": "gemini",
-        "model": model,
     }
     for field in ("strategy", "cta", "hashtags", "note"):
         if not normalized[field]:
-            raise ValueError(f"Gemini field {field} is required")
+            raise ValueError(f"model field {field} is required")
     if not normalized["seo"]["title"] or not normalized["seo"]["description"]:
-        raise ValueError("Gemini seo.title and seo.description are required")
+        raise ValueError("model seo.title and seo.description are required")
     if not normalized["zhAudit"]["strategy"]:
-        raise ValueError("Gemini zhAudit.strategy is required")
+        raise ValueError("model zhAudit.strategy is required")
     return normalized
 
 
-def generate_copywriter_with_gemini(payload: dict[str, Any]) -> dict[str, Any]:
+def generate_copywriter_with_ai(payload: dict[str, Any], config: dict[str, Any] | None = None) -> dict[str, Any]:
     request = copywriter_request(payload)
-    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY is not configured")
-    primary_model = gemini_model_name()
-    timeout = max(5, min(90, int_value(os.environ.get("GEMINI_TIMEOUT_SECONDS"), 20)))
-    body = {
-        "contents": [{"parts": [{"text": copywriter_prompt(request)}]}],
-        "generationConfig": {
-            "temperature": 0.78 if request["tone"] in {"viral", "urgent"} else 0.55,
-            "topP": 0.9,
-            "maxOutputTokens": 4096,
-            "responseMimeType": "application/json",
-        },
-    }
-    errors: list[str] = []
-    for model in gemini_model_candidates(primary_model):
-        endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{quote(model, safe='-_.')}:generateContent"
-        try:
-            status, data = post_json(
-                endpoint,
-                {"x-goog-api-key": api_key, "Content-Type": "application/json"},
-                body,
-                timeout=timeout,
-            )
-            if status >= 400:
-                detail = str((data.get("error") or {}).get("message") or data)
-                errors.append(f"{model}: API {status}: {detail[:180]}")
-                continue
-            result = normalize_gemini_copywriter_result(extract_json_object(gemini_text(data)), request, model)
-            if model != primary_model:
-                result["primary_model"] = primary_model
-                result["note"] = (
-                    f"{result['note']}\nModelo principal {primary_model} nao respondeu a tempo; "
-                    f"foi usado {model}."
-                )
-            return result
-        except (RuntimeError, ValueError) as error:
-            errors.append(f"{model}: {error}")
-    raise RuntimeError("Gemini unavailable after retries: " + " | ".join(errors)[-700:])
+    active_config = config or {}
+    result, source, model, errors = call_copywriter_model(
+        active_config,
+        copywriter_prompt(request),
+        lambda text: normalize_ai_copywriter_result(extract_json_object(text), request),
+    )
+    if errors:
+        result["primary_model"] = openai_copywriter_model(active_config)
+    return {**result, "source": source, "model": model}
 
 
 def signed_upload_url(upload_id: str, lifetime_sec: int = 24 * 3600) -> str:
@@ -1012,10 +956,7 @@ def system_health(config: dict[str, Any]) -> dict[str, Any]:
             "chunk_bytes": int((config.get("storage", {}) or {}).get("upload_chunk_bytes", 8 * 1024 * 1024)),
             "max_bytes": int((config.get("storage", {}) or {}).get("max_upload_bytes", 2 * 1024 * 1024 * 1024)),
         },
-        "gemini": {
-            "enabled": bool(os.environ.get("GEMINI_API_KEY", "").strip()),
-            "model": gemini_model_name(),
-        },
+        "copywriter_ai": copywriter_ai_status(config),
     }
 
 
@@ -4621,9 +4562,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     HTTPStatus.OK if task_status == "COMPLETED" else HTTPStatus.ACCEPTED,
                 )
             if parsed.path == "/api/copywriter/generate":
+                payload = self.read_json()
                 try:
                     return self.send_json(
-                        {"result": generate_copywriter_with_gemini(payload)},
+                        {"result": generate_copywriter_with_ai(payload, self.server.config)},
                         HTTPStatus.OK,
                     )
                 except RuntimeError as error:

@@ -1526,7 +1526,7 @@ async function generatePublishCopy() {
     document.querySelector("#publishTags").value = (result.tags || []).join(" ");
     renderPublishPreview();
     if (result.fallback_reason) {
-      toast(`文案已用本地规则生成：${result.fallback_reason === "deepseek_not_configured" ? "模型未配置" : "模型调用失败"}`, "warning");
+      toast(`文案已用本地规则生成：${result.fallback_reason === "ai_not_configured" ? "AI 未配置" : "AI 调用失败"}`, "warning");
     }
   } catch (error) {
     toast(`文案标签生成失败：${error.message}`, "error");

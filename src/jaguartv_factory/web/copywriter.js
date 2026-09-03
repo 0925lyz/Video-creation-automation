@@ -678,7 +678,7 @@
     };
   }
 
-  async function generateCopyWithGemini(input, options) {
+  async function generateCopyWithAI(input, options) {
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 60000);
     try {
@@ -690,10 +690,10 @@
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(payload.error || `Gemini request failed (${response.status})`);
+        throw new Error(payload.error || `AI request failed (${response.status})`);
       }
       if (!payload.result || typeof payload.result !== "object") {
-        throw new Error("Gemini response is empty");
+        throw new Error("AI response is empty");
       }
       return payload.result;
     } finally {
@@ -804,7 +804,7 @@
     ].join("\n");
     const zhAuditText = formatZhAudit(result);
     const sourceText = result.source
-      ? `来源：${result.source === "gemini" ? "Gemini 大模型" : "本地模板"}${result.model ? ` (${result.model})` : ""}`
+      ? `来源：${result.source === "local" ? "本地模板" : "AI 大模型"}${result.model ? ` (${result.model})` : ""}`
       : "";
 
     resultStack.innerHTML = [
@@ -875,18 +875,18 @@
     const originalSubmitText = submitButton?.textContent || "";
     if (submitButton) {
       submitButton.disabled = true;
-      submitButton.textContent = "Gemini 生成中...";
+      submitButton.textContent = "AI 生成中...";
     }
     let result;
     try {
-      result = await generateCopyWithGemini(input, options);
-      toast("Gemini 已生成");
+      result = await generateCopyWithAI(input, options);
+      toast("AI 已生成");
     } catch (error) {
       result = generateCopy(input, options);
       result.source = "local";
       result.model = "fallback";
-      result.note = `${result.note}\nGemini 暂不可用，已使用本地模板：${error.message}`;
-      toast("Gemini 暂不可用，已使用本地模板", "error");
+      result.note = `${result.note}\nAI 暂不可用，已使用本地模板：${error.message}`;
+      toast("AI 暂不可用，已使用本地模板", "error");
     } finally {
       if (submitButton) {
         submitButton.disabled = false;

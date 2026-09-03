@@ -21,9 +21,9 @@ from jaguartv_factory.dashboard import (
     DashboardApplication,
     DashboardHandler,
     extract_json_object,
-    gemini_model_candidates,
-    gemini_model_name,
-    generate_copywriter_with_gemini,
+    copywriter_ai_model_candidates,
+    copywriter_ai_model_name,
+    generate_copywriter_with_ai,
     initial_category_for_text,
     public_brand_asset_path,
     render_job_rows,
@@ -142,15 +142,12 @@ def test_copywriter_request_validates_mode_and_count():
         copywriter_request({"input": "demo", "count": 4})
 
 
-def test_gemini_model_name_maps_31_pro_alias():
-    assert gemini_model_name("gemini-3.1-Pro") == "gemini-3.1-pro-preview"
+def test_copywriter_ai_model_name_defaults_to_gpt_52():
+    assert copywriter_ai_model_name("") == "gpt-5.2"
 
 
-def test_gemini_model_candidates_fallback_within_31_family():
-    assert gemini_model_candidates("gemini-3.1-pro-preview")[:2] == [
-        "gemini-3.1-pro-preview",
-        "gemini-3.1-flash-lite",
-    ]
+def test_copywriter_ai_model_candidates_fallback_to_deepseek():
+    assert copywriter_ai_model_candidates("gpt-5.2") == ["gpt-5.2", "deepseek-v4-flash"]
 
 
 def test_copywriter_prompt_keeps_generic_mode_off_tv_product():
@@ -164,85 +161,82 @@ def test_copywriter_prompt_keeps_generic_mode_off_tv_product():
     assert "Do not mention JaguarTV" in prompt
 
 
-def test_extract_json_object_accepts_gemini_fenced_json():
+def test_extract_json_object_accepts_fenced_json():
     result = extract_json_object('```json\n{"strategy":"ok","titles":["a"]}\n```')
 
     assert result["strategy"] == "ok"
 
 
-def test_generate_copywriter_with_gemini_normalizes_response(monkeypatch):
-    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+def test_generate_copywriter_with_ai_uses_gpt_52_first(monkeypatch):
+    monkeypatch.setenv("JAGUARTV_OPENAI_API_KEY", "test-key")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("JAGUARTV_DEEPSEEK_API_KEY", raising=False)
     response_payload = {
-        "candidates": [{
-            "content": {
-                "parts": [{
-                    "text": json.dumps({
-                        "strategy": "Tema principal em pt-BR: desafio de futebol de rua no Brasil",
-                        "titles": [
-                            "Desafio de futebol de rua no Brasil: quem ganha?",
-                            "O lance que merece replay",
-                            "Quando a rua vira campo",
-                        ],
-                        "captions": [
-                            "1. [TikTok] A rua vira campo e cada drible decide.",
-                            "2. [TikTok] Quem ficou com mais estilo nesse desafio?",
-                            "3. [TikTok] Tecnica ou ousadia?",
-                        ],
-                        "cta": "Saiba mais",
-                        "hashtags": "#FutebolDeRua #Desafio #Brasil",
-                        "emails": [{
-                            "name": "Abertura",
-                            "subject": "Olha esse desafio",
-                            "preview": "Rua, bola e disputa.",
-                            "body": "A cena mostra futebol de rua no Brasil.",
-                            "cta": "Ver o momento",
-                        }],
-                        "seo": {
-                            "title": "Desafio de futebol de rua no Brasil",
-                            "description": "Lances e reacoes de futebol de rua.",
-                            "keywords": ["futebol de rua", "desafio", "Brasil"],
-                        },
-                        "zhAudit": {
-                            "strategy": "围绕巴西街头足球挑战生成内容。",
-                            "titles": ["巴西街头足球挑战：谁赢？", "值得回放的动作", "街道变球场"],
-                            "captions": ["1. [TikTok] 街道变球场。", "2. [TikTok] 谁更有风格？", "3. [TikTok] 技术还是胆量？"],
-                            "cta": "引导查看更多。",
-                            "hashtags": "标签突出街头足球、挑战和巴西。",
-                            "emails": [{
-                                "name": "开场",
-                                "subject": "看这个挑战",
-                                "preview": "街头、足球和对决。",
-                                "body": "这段内容展示巴西街头足球。",
-                                "cta": "查看这个瞬间",
-                            }],
-                            "seo": {
-                                "title": "巴西街头足球挑战",
-                                "description": "街头足球动作和反应。",
-                                "keywords": ["街头足球", "挑战", "巴西"],
-                            },
-                        },
-                        "note": "Revise antes de publicar.",
-                    })
-                }]
-            }
-        }]
+        "strategy": "Tema principal em pt-BR: desafio de futebol de rua no Brasil",
+        "titles": [
+            "Desafio de futebol de rua no Brasil: quem ganha?",
+            "O lance que merece replay",
+            "Quando a rua vira campo",
+        ],
+        "captions": [
+            "1. [TikTok] A rua vira campo e cada drible decide.",
+            "2. [TikTok] Quem ficou com mais estilo nesse desafio?",
+            "3. [TikTok] Tecnica ou ousadia?",
+        ],
+        "cta": "Saiba mais",
+        "hashtags": "#FutebolDeRua #Desafio #Brasil",
+        "emails": [{
+            "name": "Abertura",
+            "subject": "Olha esse desafio",
+            "preview": "Rua, bola e disputa.",
+            "body": "A cena mostra futebol de rua no Brasil.",
+            "cta": "Ver o momento",
+        }],
+        "seo": {
+            "title": "Desafio de futebol de rua no Brasil",
+            "description": "Lances e reacoes de futebol de rua.",
+            "keywords": ["futebol de rua", "desafio", "Brasil"],
+        },
+        "zhAudit": {
+            "strategy": "围绕巴西街头足球挑战生成内容。",
+            "titles": ["巴西街头足球挑战：谁赢？", "值得回放的动作", "街道变球场"],
+            "captions": ["1. [TikTok] 街道变球场。", "2. [TikTok] 谁更有风格？", "3. [TikTok] 技术还是胆量？"],
+            "cta": "引导查看更多。",
+            "hashtags": "标签突出街头足球、挑战和巴西。",
+            "emails": [{
+                "name": "开场",
+                "subject": "看这个挑战",
+                "preview": "街头、足球和对决。",
+                "body": "这段内容展示巴西街头足球。",
+                "cta": "查看这个瞬间",
+            }],
+            "seo": {
+                "title": "巴西街头足球挑战",
+                "description": "街头足球动作和反应。",
+                "keywords": ["街头足球", "挑战", "巴西"],
+            },
+        },
+        "note": "Revise antes de publicar.",
     }
 
-    def fake_post_json(url, headers, body, timeout):
-        assert headers["x-goog-api-key"] == "test-key"
-        assert "generateContent" in url
-        assert "JaguarTV" in body["contents"][0]["parts"][0]["text"]
-        return 200, response_payload
+    def fake_post(url, *, headers, data, timeout):
+        body = json.loads(data.decode("utf-8"))
+        assert url == "https://api.openai.com/v1/responses"
+        assert headers["Authorization"] == "Bearer test-key"
+        assert body["model"] == "gpt-5.2"
+        assert "JaguarTV" in body["input"]
+        return type("Response", (), {"status_code": 200, "json": lambda _self: {"output_text": json.dumps(response_payload)}})()
 
-    monkeypatch.setattr("jaguartv_factory.dashboard.post_json", fake_post_json)
-    result = generate_copywriter_with_gemini({
+    monkeypatch.setattr("jaguartv_factory.publishing_copywriter.requests.post", fake_post)
+    result = generate_copywriter_with_ai({
         "input": "足球，巴西街头足球挑战",
         "mode": "generic",
         "platform": "tiktok",
         "count": 3,
     })
 
-    assert result["source"] == "gemini"
+    assert result["source"] == "openai"
+    assert result["model"] == "gpt-5.2"
     assert result["titles"][0].startswith("Desafio")
     assert "JaguarTV" not in "\n".join(result["captions"])
 

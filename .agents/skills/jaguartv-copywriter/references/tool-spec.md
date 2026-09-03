@@ -4,7 +4,7 @@
 
 The copywriter is a browser tool for Chinese-speaking operators who need Brazilian Portuguese copy and a Chinese review translation.
 
-The current page is `/copywriter.html` served by the JaguarTV dashboard. It is not only a static page: Gemini generation requires the Python dashboard API.
+The current page is `/copywriter.html` served by the JaguarTV dashboard. It is not only a static page: AI generation requires the Python dashboard API.
 
 ## User Experience
 
@@ -95,7 +95,7 @@ Response shape:
       "seo": {"title": "...", "description": "...", "keywords": ["..."]}
     },
     "note": "...",
-    "source": "gemini",
+    "source": "openai",
     "model": "..."
   }
 }
@@ -103,26 +103,23 @@ Response shape:
 
 If the endpoint returns non-OK or times out in the browser, `copywriter.js` falls back to local templates and shows a fallback note.
 
-## Gemini Integration
+## AI Integration
 
 Server-side functions live in `src/jaguartv_factory/dashboard.py`:
 
 - `copywriter_request`
 - `copywriter_prompt`
 - `extract_json_object`
-- `gemini_text`
-- `normalize_gemini_copywriter_result`
-- `generate_copywriter_with_gemini`
-- `gemini_model_name`
-- `gemini_model_candidates`
+- `normalize_ai_copywriter_result`
+- `generate_copywriter_with_ai`
+- `copywriter_ai_model_name`
+- `copywriter_ai_model_candidates`
 
 Model handling:
 
-- `gemini-3.1-Pro` and similar aliases normalize to `gemini-3.1-pro-preview`.
-- `gemini-3.1-pro-preview` falls back to `gemini-3.1-flash-lite`.
-- A final fallback uses `gemini-2.5-flash`.
-
-Use `urllib.request` for Gemini calls in this project because local Python `requests/urllib3` showed slow HTTPS behavior on this Mac.
+- Primary model: `gpt-5.2` through the OpenAI Responses endpoint.
+- Fallback model: `deepseek-v4-flash` through a DeepSeek-compatible chat completions endpoint.
+- Missing key, HTTP error, timeout, empty text, invalid JSON, or failed normalization counts as "not callable" and triggers the next provider.
 
 ## Local Runbook
 
@@ -130,9 +127,10 @@ Start the dashboard:
 
 ```bash
 cd "/Users/jaguar/Documents/ChatGPT/jaguar视频二创"
-export GEMINI_API_KEY="..."
-export GEMINI_MODEL="gemini-3.1-pro-preview"
-export GEMINI_TIMEOUT_SECONDS="20"
+export JAGUARTV_OPENAI_API_KEY="..."
+export JAGUARTV_OPENAI_MODEL="gpt-5.2"
+export JAGUARTV_DEEPSEEK_API_KEY="..."
+export JAGUARTV_DEEPSEEK_MODEL="deepseek-v4-flash"
 PYTHONPATH="$PWD/src" /Users/jaguar/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m jaguartv_factory.cli ui --host 127.0.0.1 --port 8788
 ```
 
@@ -166,6 +164,6 @@ Localtunnel may show a reminder/password page. The password is usually the curre
 
 ## Production Notes
 
-Localtunnel is not stable production hosting. For "any computer can open it long-term", deploy the dashboard behind a real server/domain and store `GEMINI_API_KEY` in server environment variables or secret storage.
+Localtunnel is not stable production hosting. For "any computer can open it long-term", deploy the dashboard behind a real server/domain and store `JAGUARTV_OPENAI_API_KEY` and `JAGUARTV_DEEPSEEK_API_KEY` in server environment variables or secret storage.
 
-Do not deploy the tool as plain static HTML if Gemini generation is required; `/api/copywriter/generate` must be available.
+Do not deploy the tool as plain static HTML if AI generation is required; `/api/copywriter/generate` must be available.

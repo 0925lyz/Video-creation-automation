@@ -18,9 +18,9 @@
 
 ## 发布文案 AI
 
-审核页发布弹窗使用 DeepSeek 兼容 API 生成巴西葡语标题和标签，默认模型为 `deepseek-v4-flash`。服务端执行结构化输出校验。发布弹窗提供“自定义信息”输入框：用户可在自动生成后补充视频主题、风格或平台要求，强制用这些信息重新生成标题、文案和标签，适合来源元数据不足的导入视频。模型不可用时回退到来源关键词规则，发布按钮不会因此失效。
+审核页发布弹窗和独立 Copywriter 工具统一使用服务器 AI 代理生成巴西葡语标题、文案和标签：先调用 `gpt-5.2`，不可调用时再调用 `deepseek-v4-flash`。服务端执行结构化输出校验。发布弹窗提供“相关信息”输入框：用户可在自动生成后补充视频主题、风格或平台要求，强制用这些信息重新生成标题、文案和标签，适合来源元数据不足的导入视频。两个模型都不可用时，发布弹窗回退到来源关键词规则，发布按钮不会因此失效。
 
-生产服务器只需在私有 `.env` 中设置 `JAGUARTV_DEEPSEEK_API_KEY`。可选的 `JAGUARTV_DEEPSEEK_BASE_URL` 和 `JAGUARTV_DEEPSEEK_MODEL` 分别覆盖兼容 API 地址和模型。密钥不得写入 Git。YouTube 弹窗只显示“标题文案”和“说明标签”；说明标签最终进入 YouTube 说明框，隐藏的通用“文案标签”保持空白。
+生产服务器在私有 `.env` 中设置 `JAGUARTV_OPENAI_API_KEY` 或 `OPENAI_API_KEY` 作为主模型密钥，设置 `JAGUARTV_DEEPSEEK_API_KEY` 作为备用模型密钥。可选的 `JAGUARTV_OPENAI_MODEL`、`JAGUARTV_OPENAI_BASE_URL`、`JAGUARTV_DEEPSEEK_BASE_URL` 和 `JAGUARTV_DEEPSEEK_MODEL` 可覆盖模型或接口地址。密钥不得写入 Git。YouTube 弹窗只显示“标题文案”和“说明标签”；说明标签最终进入 YouTube 说明框，隐藏的通用“文案标签”保持空白。
 
 ## 分类关键词维护
 
