@@ -973,6 +973,43 @@ def test_signed_youtube_auth_link_bypasses_admin_cookie_for_oauth_start(tmp_path
         app.server_close()
 
 
+def test_publish_api_generates_account_bound_youtube_auth_link(tmp_path: Path, monkeypatch):
+    config = dashboard_config(tmp_path)
+    monkeypatch.setenv("JAGUARTV_DASHBOARD_TOKEN", "dashboard-secret")
+    monkeypatch.setenv("JAGUARTV_DASHBOARD_PUBLIC", "0")
+    monkeypatch.setenv("JAGUARTV_GOOGLE_REDIRECT_URI", "https://factory.jarg.top/oauth/youtube/callback")
+    monkeypatch.setenv("JAGUARTV_OAUTH_STATE_SECRET", "state-secret")
+    app = DashboardApplication(("127.0.0.1", 0), config)
+    thread = threading.Thread(target=app.serve_forever, daemon=True)
+    thread.start()
+    try:
+        body = json.dumps({"account": "JaguarTV Revendedor", "ttl_seconds": 120}).encode("utf-8")
+        connection = http.client.HTTPConnection("127.0.0.1", app.server_address[1], timeout=5)
+        connection.request("POST", "/api/publish/youtube-auth-link", body=body, headers={
+            "Content-Type": "application/json",
+        })
+        assert connection.getresponse().status == 401
+        connection.close()
+
+        connection = http.client.HTTPConnection("127.0.0.1", app.server_address[1], timeout=5)
+        connection.request("POST", "/api/publish/youtube-auth-link", body=body, headers={
+            "Authorization": "Bearer dashboard-secret",
+            "Content-Type": "application/json",
+        })
+        response = connection.getresponse()
+        payload = json.loads(response.read().decode("utf-8"))
+        connection.close()
+
+        assert response.status == 201
+        assert payload["account"] == "partner_revendedor"
+        assert payload["ttl_seconds"] == 120
+        assert youtube_auth_link_is_valid(parse_qs(urlparse(payload["url"]).query), now=payload["expires_at"] - 1)
+    finally:
+        app.shutdown()
+        thread.join(timeout=5)
+        app.server_close()
+
+
 def test_youtube_oauth_callback_encrypts_refresh_token(tmp_path: Path, monkeypatch):
     from jaguartv_factory.dashboard import make_oauth_state
 

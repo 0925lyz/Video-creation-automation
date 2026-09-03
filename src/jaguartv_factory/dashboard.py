@@ -1752,6 +1752,20 @@ def youtube_auth_link(config: dict[str, Any], account: str, *, expires_at: int) 
     return f"{base_url}/oauth/youtube/start?{urlencode(params)}"
 
 
+def generate_youtube_auth_link(config: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    account = canonical_account_id(str(payload.get("account") or "").strip())
+    ttl_raw = payload.get("ttl_seconds", payload.get("expires_in", YOUTUBE_AUTH_LINK_MAX_TTL_SECONDS))
+    ttl_seconds = int_value(ttl_raw, YOUTUBE_AUTH_LINK_MAX_TTL_SECONDS)
+    ttl_seconds = max(60, min(ttl_seconds, YOUTUBE_AUTH_LINK_MAX_TTL_SECONDS))
+    expires_at = int(time.time()) + ttl_seconds
+    return {
+        "account": account,
+        "expires_at": expires_at,
+        "ttl_seconds": ttl_seconds,
+        "url": youtube_auth_link(config, account, expires_at=expires_at),
+    }
+
+
 def make_oauth_state(account: str) -> str:
     canonical = canonical_account_id(account or "consumer_football")
     timestamp = str(int(time.time()))
@@ -4671,6 +4685,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     return self.send_json(generate_publish_copy_preview(self.server.config, payload), HTTPStatus.OK)
                 except RuntimeError as error:
                     return self.send_json({"error": str(error)}, HTTPStatus.SERVICE_UNAVAILABLE)
+            if parsed.path == "/api/publish/youtube-auth-link":
+                try:
+                    return self.send_json(generate_youtube_auth_link(self.server.config, payload), HTTPStatus.CREATED)
+                except ValueError as error:
+                    return self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
             if parsed.path == "/api/publications":
                 if payload.get("asset_id") or payload.get("title") or payload.get("operation_type"):
                     return self.send_json(create_publish_operation(self.server.config, payload), HTTPStatus.CREATED)
