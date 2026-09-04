@@ -96,9 +96,8 @@ def doctor(config_path: Path = Path("config/pipeline.yaml")) -> int:
     project_root = Path(config.get("_root") or Path.cwd())
     skill_names = (
         "jaguartv-content-factory", "jaguartv-copywriter", "content-strategy",
-        "copy-editing", "copywriting", "captions-overlay", "embedded-captions",
-        "media-use", "motion-doctrine", "motion-graphics", "product-marketing",
-        "social", "talking-head-recut", "analytics", "attribution",
+        "copy-editing", "copywriting", "captions-overlay", "social", "analytics",
+        "attribution",
     )
     checks["project_agent_skills"] = {
         name: (project_root / ".agents" / "skills" / name / "SKILL.md").is_file()

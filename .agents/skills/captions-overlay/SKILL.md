@@ -1,11 +1,11 @@
 ---
 name: captions-overlay
-description: Overlay doctrine for the embedded-captions workflow — the caption MODEL (drop / rail / embed) and the rule that captions are an OVERLAY composited on top of the film, never a reserved bottom band you shift content up to avoid. Load when adding captions/subtitles to a talking-head or launch video, when deciding whether a phrase should be dropped, ride the verbatim rail, or be promoted to a scarce embedded climax, when laying out a composition that will carry captions (do NOT reserve a keep-out band), or when centering a composition on the true frame center under captions. Quotes the rail+embed model from embedded-captions and constraint #13 (captions overlay, keep-out band retired) from the product-launch-video scene agent. Applies ON TOP of embedded-captions.
+description: Overlay doctrine for JaguarTV caption planning — the caption MODEL (drop / rail / embed) and the rule that captions are an OVERLAY composited on top of the film, never a reserved bottom band you shift content up to avoid. Load when adding captions/subtitles to a talking-head or launch video, when deciding whether a phrase should be dropped, ride the verbatim rail, or be promoted to a scarce embedded climax, when laying out a composition that will carry captions (do NOT reserve a keep-out band), or when centering a composition on the true frame center under captions. Planning guidance only; the production renderer is Remotion.
 ---
 
 # Captions Overlay Doctrine
 
-> **Overlay doctrine — supplements the upstream `embedded-captions` skill. Applies ON TOP of it; do not expect it folded into the upstream skill.**
+> **Overlay doctrine — planning guidance only. JaguarTV production still renders captions through the Remotion template.**
 
 Two ideas combine here. First, the **caption model** — every spoken phrase is `drop`,
 `rail`, or `embed`, and embed is the scarce earned peak, not the default. Second, the
@@ -17,7 +17,7 @@ frame and centers on the true vertical center.
 
 ## The caption model — drop / rail / embed
 
-Every spoken phrase is one of three things (verbatim from `embedded-captions`):
+Every spoken phrase is one of three things:
 
 |           | What                                             | How it's shown                                                                                                                                                    |
 | --------- | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -36,7 +36,7 @@ the words must read.
 
 ### Rail-first, embed-scarce (the load-bearing rules)
 
-Quoted from the `embedded-captions` non-negotiables:
+Core rules:
 
 - **Rail-first for talking-head / explainer.** Don't embed the whole transcript — most
   text is the rail; embed only peaks. Embedding everything is the default mistake.

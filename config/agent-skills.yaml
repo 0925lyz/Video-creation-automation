@@ -4,9 +4,8 @@ skills:
   factory: [jaguartv-content-factory]
   strategy: [content-strategy]
   copy: [jaguartv-copywriter, copywriting, copy-editing, social]
-  captions: [captions-overlay, embedded-captions]
-  video: [captions-overlay, embedded-captions, motion-doctrine, motion-graphics, media-use]
-  optional_talking_head: [talking-head-recut]
+  captions: [captions-overlay]
+  video: [captions-overlay]
   growth: [analytics, attribution]
 rules:
   runtime_entrypoint: .agents/skills/jaguartv-content-factory/scripts/factory.sh

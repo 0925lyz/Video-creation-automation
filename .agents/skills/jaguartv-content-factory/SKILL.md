@@ -47,14 +47,11 @@ This skill is the only factory entry point. The skills below provide agent guida
 
 - Use `content-strategy` for topic lanes and campaign planning.
 - Use `jaguartv-copywriter`, `copywriting`, and `copy-editing` for pt-BR titles, captions, tags, and Chinese review copy.
-- Use `captions-overlay` and `embedded-captions` when planning subtitle layout; the actual render still runs through Remotion.
-- Use `motion-doctrine` and `motion-graphics` for edit decisions that are then expressed through the factory production options and Remotion template.
-- Use `talking-head-recut` only for footage that actually contains a speaking presenter.
-- Use `media-use` for audio and media handling guidance; actual files remain under the candidate workspace.
+- Use `captions-overlay` when planning subtitle layout; the actual render still runs through Remotion.
 - Use `social` for channel-specific positioning after the candidate has passed review.
 - Use `analytics` and `attribution` when interpreting publication metrics and feedback proposals.
 
-Do not route to removed Hyperframes, WorkBuddy, SEO, sales, email, paywall, or unrelated marketing skills. Hyperframes was never a production renderer in this repository; Remotion is the single supported render engine.
+Do not route to removed Hyperframes, WorkBuddy, SEO, sales, email, paywall, generic media, generic motion, talking-head, or unrelated marketing skills. Hyperframes was never a production renderer in this repository; Remotion is the single supported render engine.
 
 Check pinned external repositories with `scripts/factory.sh integrations`. MediaCrawler and Agent Reach feed normalized discovery records; `yt-dlp` performs YouTube/TikTok/Facebook/X/Instagram/Kwai downloads, `f2` is the exclusive Douyin downloader, and KrillinAI is the required localization subprocess. Synchronization is explicit and may access the network: `scripts/factory.sh integrations --sync --name krillinai`.
 
