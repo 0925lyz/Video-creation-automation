@@ -128,7 +128,6 @@ const xAccountSlots = [
   "partner_revendedor",
   "partner_academia",
 ];
-const youtubeAccountSlots = ["jaguartv_vivo", ...xAccountSlots];
 
 function scoreTooltip(breakdown) {
   if (!breakdown || !Object.keys(breakdown).length) return "";
@@ -1179,9 +1178,8 @@ function authAvailabilityLabel(status) {
 }
 
 function renderYouTubeAuths() {
-  const byAccount = new Map(state.youtubeAuths.map((item) => [item.id, item]));
-  const rows = youtubeAccountSlots.map((id, index) => {
-    const item = byAccount.get(id) || { id, status: "UNAVAILABLE", display_name: "", channel_id: "", updated_at: "", status_reason: "尚未授权" };
+  const rows = state.youtubeAuths.map((item, index) => {
+    const id = item.id;
     const link = state.youtubeAuthLinks[id] || "";
     return `
       <tr>
@@ -1190,11 +1188,11 @@ function renderYouTubeAuths() {
         <td><span class="status-pill ${item.status === "AVAILABLE" ? "ready" : "failed"}">${escapeHtml(authAvailabilityLabel(item.status))}</span><small>${escapeHtml(item.status_reason || "")}</small></td>
         <td>${dateText(item.updated_at || item.authorized_at)}</td>
         <td class="auth-link-cell">${link ? `<a href="${escapeHtml(link)}" target="_blank" rel="noopener">${escapeHtml(link)}</a>` : "尚未生成"}</td>
-        <td class="table-actions"><button class="secondary-button tiny-button" data-youtube-auth-link="${escapeHtml(id)}" type="button">生成链接</button></td>
+        <td class="table-actions"><button class="secondary-button tiny-button" data-youtube-auth-link="${escapeHtml(id)}" type="button">生成链接</button><button class="secondary-button danger-button tiny-button" data-youtube-auth-delete="${escapeHtml(id)}" type="button">删除</button></td>
       </tr>
     `;
   });
-  document.querySelector("#youtubeAuthTable").innerHTML = rows.join("");
+  document.querySelector("#youtubeAuthTable").innerHTML = rows.length ? rows.join("") : `<tr><td colspan="6"><div class="empty-state">尚无 YouTube 授权位<br>先新增一个授权位</div></td></tr>`;
 }
 
 function renderXAuths() {
@@ -2949,7 +2947,47 @@ document.querySelector("#scheduleForm").addEventListener("submit", async (event)
   } catch (error) { toast(error.message, "error"); }
 });
 
+document.querySelector("#youtubeAuthSlotForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const input = document.querySelector("#youtubeAuthSlotId");
+  const account = input.value.trim();
+  if (!account) return toast("请输入授权位 ID", "error");
+  try {
+    await api("/api/publish/youtube-auth-slots", {
+      method: "POST",
+      body: JSON.stringify({ account }),
+    });
+    input.value = "";
+    state.youtubeAuths = await api("/api/publish/accounts?platform=youtube");
+    renderYouTubeAuths();
+    toast("YouTube 授权位已新增");
+  } catch (error) {
+    toast(`新增授权位失败：${error.message}`, "error");
+  }
+});
+
 document.querySelector("#youtubeAuthTable").addEventListener("click", async (event) => {
+  const deleteButton = event.target.closest("[data-youtube-auth-delete]");
+  if (deleteButton) {
+    const account = deleteButton.dataset.youtubeAuthDelete;
+    if (!window.confirm(`删除 YouTube 授权位 ${account}？`)) return;
+    deleteButton.disabled = true;
+    try {
+      await api("/api/publish/youtube-auth-slots", {
+        method: "POST",
+        body: JSON.stringify({ account, action: "delete" }),
+      });
+      delete state.youtubeAuthLinks[account];
+      state.youtubeAuths = await api("/api/publish/accounts?platform=youtube");
+      renderYouTubeAuths();
+      toast("YouTube 授权位已删除");
+    } catch (error) {
+      toast(`删除授权位失败：${error.message}`, "error");
+    } finally {
+      deleteButton.disabled = false;
+    }
+    return;
+  }
   const button = event.target.closest("[data-youtube-auth-link]");
   if (!button) return;
   button.disabled = true;

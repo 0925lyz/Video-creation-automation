@@ -300,6 +300,7 @@ GOOGLE_OAUTH_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 YOUTUBE_CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels"
 YOUTUBE_AUTH_LINK_MAX_TTL_SECONDS = 7 * 24 * 3600
+YOUTUBE_ACCOUNT_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]{2,63}$")
 DEFAULT_X_OAUTH_SCOPES = ("tweet.read", "users.read", "tweet.write", "media.write", "offline.access")
 X_OAUTH_AUTH_URL = "https://x.com/i/oauth2/authorize"
 X_OAUTH_TOKEN_URL = "https://api.x.com/2/oauth2/token"
@@ -1563,6 +1564,13 @@ def canonical_account_id(account: str) -> str:
     return ACCOUNT_ALIASES.get(normalized, normalized)
 
 
+def validate_youtube_account_id(account: str) -> str:
+    canonical = canonical_account_id(account)
+    if not YOUTUBE_ACCOUNT_ID_PATTERN.fullmatch(canonical):
+        raise ValueError("YouTube account id must use lowercase letters, digits, and underscores")
+    return canonical
+
+
 def youtube_category_account_routes(config: dict[str, Any]) -> dict[str, str]:
     configured = (config.get("publishing", {}) or {}).get("youtube_category_accounts") or {}
     routes = dict(DEFAULT_YOUTUBE_CATEGORY_ACCOUNTS)
@@ -1713,9 +1721,7 @@ def sign_oauth_state(payload: str) -> str:
 
 
 def sign_youtube_auth_link(account: str, expires_at: int) -> str:
-    canonical = canonical_account_id(account)
-    if canonical not in set(ACCOUNT_ALIASES.values()):
-        raise ValueError(f"unknown YouTube account: {canonical or 'empty'}")
+    canonical = validate_youtube_account_id(account)
     payload = f"youtube-oauth-start:{canonical}:{int(expires_at)}"
     return sign_oauth_state(payload)
 
@@ -1738,7 +1744,7 @@ def youtube_auth_link_is_valid(query: dict[str, list[str]], *, now: int | None =
 
 
 def youtube_auth_link(config: dict[str, Any], account: str, *, expires_at: int) -> str:
-    canonical = canonical_account_id(account)
+    canonical = validate_youtube_account_id(account)
     callback = youtube_oauth_redirect_uri(config)
     callback_path = "/oauth/youtube/callback"
     if not callback.endswith(callback_path):
@@ -1753,7 +1759,7 @@ def youtube_auth_link(config: dict[str, Any], account: str, *, expires_at: int) 
 
 
 def generate_youtube_auth_link(config: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
-    account = canonical_account_id(str(payload.get("account") or "").strip())
+    account = ensure_youtube_auth_slot(config, str(payload.get("account") or "").strip())["account"]
     ttl_raw = payload.get("ttl_seconds", payload.get("expires_in", YOUTUBE_AUTH_LINK_MAX_TTL_SECONDS))
     ttl_seconds = int_value(ttl_raw, YOUTUBE_AUTH_LINK_MAX_TTL_SECONDS)
     ttl_seconds = max(60, min(ttl_seconds, YOUTUBE_AUTH_LINK_MAX_TTL_SECONDS))
@@ -1766,8 +1772,41 @@ def generate_youtube_auth_link(config: dict[str, Any], payload: dict[str, Any]) 
     }
 
 
+def ensure_youtube_auth_slot(config: dict[str, Any], account: str) -> dict[str, Any]:
+    account_id = validate_youtube_account_id(account)
+    timestamp = now_iso()
+    ensure_oauth_tables(config)
+    connection = connect_db(config)
+    connection.execute(
+        """
+        INSERT INTO youtube_channel_auths(
+          account,authorized_at,updated_at,metadata_json,status
+        ) VALUES(?,?,?,?,?)
+        ON CONFLICT(account) DO NOTHING
+        """,
+        (
+            account_id,
+            timestamp,
+            timestamp,
+            json.dumps({"provider": "google_oauth", "slot_only": True}, ensure_ascii=False),
+            "NEEDS_REAUTH",
+        ),
+    )
+    connection.commit()
+    return {"account": account_id}
+
+
+def delete_youtube_auth_slot(config: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    account = validate_youtube_account_id(str(payload.get("account") or ""))
+    ensure_oauth_tables(config)
+    connection = connect_db(config)
+    cursor = connection.execute("DELETE FROM youtube_channel_auths WHERE account=?", (account,))
+    connection.commit()
+    return {"account": account, "deleted": int(cursor.rowcount or 0)}
+
+
 def make_oauth_state(account: str) -> str:
-    canonical = canonical_account_id(account or "consumer_football")
+    canonical = validate_youtube_account_id(account or "consumer_football")
     timestamp = str(int(time.time()))
     nonce = secrets.token_urlsafe(12)
     payload = f"{canonical}:{timestamp}:{nonce}"
@@ -4688,6 +4727,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/publish/youtube-auth-link":
                 try:
                     return self.send_json(generate_youtube_auth_link(self.server.config, payload), HTTPStatus.CREATED)
+                except ValueError as error:
+                    return self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            if parsed.path == "/api/publish/youtube-auth-slots":
+                action = str(payload.get("action") or "add").strip().lower()
+                try:
+                    if action == "delete":
+                        return self.send_json(delete_youtube_auth_slot(self.server.config, payload), HTTPStatus.OK)
+                    return self.send_json(ensure_youtube_auth_slot(self.server.config, str(payload.get("account") or "")), HTTPStatus.CREATED)
                 except ValueError as error:
                     return self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
             if parsed.path == "/api/publications":

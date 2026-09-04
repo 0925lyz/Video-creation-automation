@@ -924,7 +924,7 @@ def test_signed_youtube_auth_link_allows_known_account_until_expiry(tmp_path: Pa
     assert not youtube_auth_link_is_valid(query, now=expires_at)
 
 
-def test_signed_youtube_auth_link_rejects_tampering_unknown_accounts_and_long_ttl(monkeypatch):
+def test_signed_youtube_auth_link_rejects_tampering_invalid_accounts_and_long_ttl(monkeypatch):
     monkeypatch.setenv("JAGUARTV_OAUTH_STATE_SECRET", "state-secret")
     expires_at = 1_800_000_000
     signature = sign_youtube_auth_link("consumer_main", expires_at)
@@ -935,7 +935,7 @@ def test_signed_youtube_auth_link_rejects_tampering_unknown_accounts_and_long_tt
         "signature": [signature],
     }, now=expires_at - 60)
     assert not youtube_auth_link_is_valid({
-        "account": ["unknown_account"],
+        "account": ["bad/account"],
         "expires": [str(expires_at)],
         "signature": [signature],
     }, now=expires_at - 60)
@@ -1004,6 +1004,41 @@ def test_publish_api_generates_account_bound_youtube_auth_link(tmp_path: Path, m
         assert payload["account"] == "partner_revendedor"
         assert payload["ttl_seconds"] == 120
         assert youtube_auth_link_is_valid(parse_qs(urlparse(payload["url"]).query), now=payload["expires_at"] - 1)
+    finally:
+        app.shutdown()
+        thread.join(timeout=5)
+        app.server_close()
+
+
+def test_publish_api_adds_deletes_dynamic_youtube_auth_slot(tmp_path: Path, monkeypatch):
+    config = dashboard_config(tmp_path)
+    monkeypatch.setenv("JAGUARTV_DASHBOARD_TOKEN", "dashboard-secret")
+    monkeypatch.setenv("JAGUARTV_DASHBOARD_PUBLIC", "0")
+    app = DashboardApplication(("127.0.0.1", 0), config)
+    thread = threading.Thread(target=app.serve_forever, daemon=True)
+    thread.start()
+    headers = {"Authorization": "Bearer dashboard-secret", "Content-Type": "application/json"}
+    try:
+        connection = http.client.HTTPConnection("127.0.0.1", app.server_address[1], timeout=5)
+        connection.request("POST", "/api/publish/youtube-auth-slots", body=json.dumps({"account": "partner_store_01"}), headers=headers)
+        response = connection.getresponse()
+        assert response.status == 201
+        connection.close()
+
+        connection = http.client.HTTPConnection("127.0.0.1", app.server_address[1], timeout=5)
+        connection.request("GET", "/api/publish/accounts?platform=youtube", headers=headers)
+        payload = json.loads(connection.getresponse().read().decode("utf-8"))
+        connection.close()
+        assert [row["id"] for row in payload] == ["partner_store_01"]
+        assert payload[0]["status"] == "UNAVAILABLE"
+
+        connection = http.client.HTTPConnection("127.0.0.1", app.server_address[1], timeout=5)
+        connection.request("POST", "/api/publish/youtube-auth-slots", body=json.dumps({"account": "partner_store_01", "action": "delete"}), headers=headers)
+        response = connection.getresponse()
+        deleted = json.loads(response.read().decode("utf-8"))
+        connection.close()
+        assert response.status == 200
+        assert deleted == {"account": "partner_store_01", "deleted": 1}
     finally:
         app.shutdown()
         thread.join(timeout=5)

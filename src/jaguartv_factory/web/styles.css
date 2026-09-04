@@ -252,6 +252,7 @@ tbody tr:hover { background: #fafcfb; }
 .operation-band form { display: grid; grid-template-columns: repeat(2, minmax(120px, 1fr)); gap: 8px; }
 .auth-panel { margin-top: 22px; }
 .inline-auth-form { display: flex; align-items: center; gap: 8px; }
+.inline-auth-form input { max-width: 320px; }
 .inline-auth-form select { min-width: 260px; }
 .auth-link-cell { max-width: 360px; overflow-wrap: anywhere; font-size: 10px; line-height: 1.45; }
 .auth-link-cell a { color: var(--green); }
