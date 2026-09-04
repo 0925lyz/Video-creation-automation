@@ -3,6 +3,8 @@ const state = {
   candidates: [],
   publications: [],
   xAuths: [],
+  youtubeAuths: [],
+  youtubeAuthLinks: {},
   workers: [],
   feedback: [],
   downloadClaims: [],
@@ -126,6 +128,7 @@ const xAccountSlots = [
   "partner_revendedor",
   "partner_academia",
 ];
+const youtubeAccountSlots = ["jaguartv_vivo", ...xAccountSlots];
 
 function scoreTooltip(breakdown) {
   if (!breakdown || !Object.keys(breakdown).length) return "";
@@ -164,8 +167,8 @@ async function refreshAll(showToast = false) {
   const button = document.querySelector("#refreshButton");
   button.disabled = true;
   try {
-    const [overview, candidatePage, publications, xAuths, workers, feedback, downloadClaims, keywordGroups, categoryKeywords, tasks, settings, sessions, health, capabilities, uploads, ctaAssets, posterCounts, importCapabilities] = await Promise.all([
-      api("/api/overview"), api(inventoryApiPath()), api("/api/publications"), api("/api/x-auths"), api("/api/workers"), api("/api/feedback"), api("/api/download-claims"), api("/api/keywords"), api("/api/category-keywords?date=today"), api("/api/tasks"), api("/api/settings"), api("/api/sessions"), api("/api/health"), api("/api/publish/capabilities"),
+    const [overview, candidatePage, publications, xAuths, youtubeAuths, workers, feedback, downloadClaims, keywordGroups, categoryKeywords, tasks, settings, sessions, health, capabilities, uploads, ctaAssets, posterCounts, importCapabilities] = await Promise.all([
+      api("/api/overview"), api(inventoryApiPath()), api("/api/publications"), api("/api/x-auths"), api("/api/publish/accounts?platform=youtube"), api("/api/workers"), api("/api/feedback"), api("/api/download-claims"), api("/api/keywords"), api("/api/category-keywords?date=today"), api("/api/tasks"), api("/api/settings"), api("/api/sessions"), api("/api/health"), api("/api/publish/capabilities"),
       api("/api/uploads").catch(() => []),
       api("/api/cta").catch(() => []),
       api("/api/originals/counts"),
@@ -182,7 +185,7 @@ async function refreshAll(showToast = false) {
       },
       inventorySourceCounts: candidatePage.source_counts || { all: 0, source_import: 0 },
       importCapabilities,
-      publications, xAuths, workers, feedback, downloadClaims, keywordGroups, categoryKeywords,
+      publications, xAuths, youtubeAuths, workers, feedback, downloadClaims, keywordGroups, categoryKeywords,
       tasks, settings, sessions, health, publishCapabilities: capabilities, uploads, ctaAssets, posterCounts,
     });
     renderAll();
@@ -249,6 +252,7 @@ function renderAll() {
   renderPlatforms();
   renderKeywords();
   renderRecent();
+  renderYouTubeAuths();
   renderXAuths();
   renderInventory();
   renderPosterCounts();
@@ -1167,6 +1171,32 @@ function authStatusLabel(status) {
   }[status] || status || "未授权";
 }
 
+function authAvailabilityLabel(status) {
+  return {
+    AVAILABLE: "可发布",
+    UNAVAILABLE: "需重授",
+  }[status] || status || "未授权";
+}
+
+function renderYouTubeAuths() {
+  const byAccount = new Map(state.youtubeAuths.map((item) => [item.id, item]));
+  const rows = youtubeAccountSlots.map((id, index) => {
+    const item = byAccount.get(id) || { id, status: "UNAVAILABLE", display_name: "", channel_id: "", updated_at: "", status_reason: "尚未授权" };
+    const link = state.youtubeAuthLinks[id] || "";
+    return `
+      <tr>
+        <td><strong>YouTube ${index + 1}</strong><small>${escapeHtml(id)}</small></td>
+        <td>${escapeHtml(item.display_name || item.username || "未授权")}<small>${escapeHtml(item.channel_id || "")}</small></td>
+        <td><span class="status-pill ${item.status === "AVAILABLE" ? "ready" : "failed"}">${escapeHtml(authAvailabilityLabel(item.status))}</span><small>${escapeHtml(item.status_reason || "")}</small></td>
+        <td>${dateText(item.updated_at || item.authorized_at)}</td>
+        <td class="auth-link-cell">${link ? `<a href="${escapeHtml(link)}" target="_blank" rel="noopener">${escapeHtml(link)}</a>` : "尚未生成"}</td>
+        <td class="table-actions"><button class="secondary-button tiny-button" data-youtube-auth-link="${escapeHtml(id)}" type="button">生成链接</button></td>
+      </tr>
+    `;
+  });
+  document.querySelector("#youtubeAuthTable").innerHTML = rows.join("");
+}
+
 function renderXAuths() {
   const byAccount = new Map(state.xAuths.map((item) => [item.account, item]));
   const rows = xAccountSlots.map((id, index) => {
@@ -1847,11 +1877,11 @@ async function downloadUploadAsset(uploadId) {
   }
 }
 
-async function copyText(value) {
+async function copyText(value, message = "登录命令已复制") {
   if (!value) return toast("还没有可复制的命令", "error");
   try {
     await navigator.clipboard.writeText(value);
-    toast("登录命令已复制");
+    toast(message);
   } catch {
     toast(value);
   }
@@ -2917,6 +2947,26 @@ document.querySelector("#scheduleForm").addEventListener("submit", async (event)
     toast("已加入发布队列");
     await refreshAll();
   } catch (error) { toast(error.message, "error"); }
+});
+
+document.querySelector("#youtubeAuthTable").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-youtube-auth-link]");
+  if (!button) return;
+  button.disabled = true;
+  try {
+    const account = button.dataset.youtubeAuthLink;
+    const result = await api("/api/publish/youtube-auth-link", {
+      method: "POST",
+      body: JSON.stringify({ account }),
+    });
+    state.youtubeAuthLinks[result.account] = result.url;
+    renderYouTubeAuths();
+    await copyText(result.url, "YouTube 授权链接已生成并复制");
+  } catch (error) {
+    toast(`生成链接失败：${error.message}`, "error");
+  } finally {
+    button.disabled = false;
+  }
 });
 
 document.querySelector("#xAuthTable").addEventListener("click", async (event) => {

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <link rel="icon" type="image/png" href="/assets/brand/dashboard_favicon.png">
   <title>JaguarTV Content OS</title>
-  <link rel="stylesheet" href="/styles.css?v=20260828-cta-review-edit-v1">
+  <link rel="stylesheet" href="/styles.css?v=20260904-youtube-auth-link-v1">
 </head>
 <body>
   <aside class="sidebar">
@@ -161,6 +161,12 @@
           <button class="primary-button" type="submit">加入队列</button>
         </form>
       </div>
+      <section class="settings-panel auth-panel">
+        <div class="section-heading compact">
+          <div><p class="eyebrow">YOUTUBE AUTHORIZATION</p><h2>YouTube 授权链接</h2><p>每个授权位生成专属链接，账号持有人打开后完成授权。</p></div>
+        </div>
+        <div class="table-wrap"><table><thead><tr><th>授权位</th><th>YouTube 频道</th><th>状态</th><th>更新时间</th><th>专属链接</th><th></th></tr></thead><tbody id="youtubeAuthTable"></tbody></table></div>
+      </section>
       <section class="settings-panel auth-panel">
         <div class="section-heading compact">
           <div><p class="eyebrow">X AUTHORIZATION</p><h2>X 账号授权中心</h2><p>8 个账号分别授权；系统校验真实 X User ID、视频上传权限和长期刷新权限。</p></div>
@@ -584,6 +590,6 @@
   </dialog>
 
   <div class="toast" id="toast" role="status"></div>
-  <script src="/app.js?v=20260901-inventory-time-v1"></script>
+  <script src="/app.js?v=20260904-youtube-auth-link-v1"></script>
 </body>
 </html>
